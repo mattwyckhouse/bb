@@ -1,12 +1,14 @@
 import type {
   AsEntity,
   AssuranceStudioClient,
+  ForgeComputeInvocation,
   ForgeComputeClient,
   ForgeJobStatus,
   ForgeJobTerminalStatus,
   Json,
   PlatformClient,
   RemoteArtifact,
+  RemotePageRequest,
   RemoteServices,
   TaraFence,
   VexStatus,
@@ -119,13 +121,91 @@ const invalidVex: VexStatus = "AFFECTED";
 void validVex;
 void invalidVex;
 
+void platform.setVexStatus({
+  projectVersionId: "version-1",
+  findingId: "101",
+  status: "EXPLOITABLE",
+});
+
+// @ts-expect-error Single VEX PUT resolves only after HTTP 204, with no body.
+const inventedSingleEnvelope: Promise<Record<string, Json>> =
+  platform.setVexStatus({
+    projectVersionId: "version-1",
+    findingId: "101",
+    status: "EXPLOITABLE",
+  });
+void inventedSingleEnvelope;
+
+void platform.setVexStatus({
+  projectVersionId: "version-1",
+  findingId: "101",
+  status: "NOT_AFFECTED",
+  // @ts-expect-error Empty optional values normalize before this client boundary.
+  justification: "",
+});
+
+void platform.setVexStatus({
+  projectVersionId: "version-1",
+  findingId: "101",
+  status: "EXPLOITABLE",
+  // @ts-expect-error Dry-run is an owner-service preview, not a transport field.
+  dryRun: true,
+});
+
 // @ts-expect-error Bulk clear resolves void after 204, not an invented envelope.
 const inventedClearEnvelope: Promise<{ success: true }> =
   platform.clearVexStatus({
     projectVersionId: "version-1",
-    findingIds: ["finding-1"],
+    findingIds: ["101"],
   });
 void inventedClearEnvelope;
+
+const firstPage: RemotePageRequest = { pageSize: 100 };
+const resumedPage: RemotePageRequest = {
+  continuation: "opaque-token",
+  pageSize: 100,
+};
+void firstPage;
+void resumedPage;
+
+void platform.getFindings({
+  projectVersionId: "version-1",
+  page: resumedPage,
+});
+void platform.getFindingActivity({
+  projectId: "project-1",
+  projectVersionId: "version-1",
+  cve: "CVE-2026-0001",
+  page: resumedPage,
+});
+void platform.getFindingActivity({
+  projectId: "project-1",
+  projectVersionId: "version-1",
+  cve: "CVE-2026-0001",
+  // @ts-expect-error D-1 has no workspace scope dimension.
+  workspaceId: "workspace-1",
+});
+// @ts-expect-error Activity scope requires both explicit D-1 identifiers.
+void platform.getFindingActivity({
+  projectId: "project-1",
+  cve: "CVE-2026-0001",
+});
+void assuranceStudio.listEntities("threat", {
+  projectId: "project-1",
+  page: firstPage,
+});
+void forgeCompute.listJobs({ page: firstPage });
+
+void platform.getFindings({
+  projectVersionId: "version-1",
+  // @ts-expect-error Raw Platform offsets never escape the normalized contract.
+  offset: 100,
+});
+void assuranceStudio.listEntities("threat", {
+  projectId: "project-1",
+  // @ts-expect-error Raw AS page numbers never escape the normalized contract.
+  pageNumber: 2,
+});
 
 void platform.securityAssessment({
   tool: "stp_callgraph",
@@ -147,10 +227,13 @@ void firmwareMetadata;
 void firmwareBytes;
 
 void forgeCompute.listJobs({ tool: "verify_dynamic" });
-void forgeCompute.listJobs({
-  // @ts-expect-error Job filters cannot name an unreviewed Forge/MCP tool.
-  tool: "arbitrary_tool",
-});
+void forgeCompute.listJobs({ tool: "wider_registry_recipe" });
+
+const reviewedInvocation: ForgeComputeInvocation = "verify_dynamic";
+// @ts-expect-error Arbitrary MCP invocation names are outside the reviewed allowlist.
+const unreviewedInvocation: ForgeComputeInvocation = "wider_registry_recipe";
+void reviewedInvocation;
+void unreviewedInvocation;
 
 void platform.securityAssessment({
   // @ts-expect-error An eleventh or arbitrary STP relay cannot be represented.

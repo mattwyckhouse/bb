@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Closed remote-service contracts for the Finite State plugin.
  *
@@ -29,6 +31,31 @@ export interface RemotePage<T> {
   total: number | null;
   /** Opaque continuation token; its value never reveals upstream paging style. */
   next: string | null;
+}
+
+/** The one paging input understood by every normalized remote list method. */
+export interface RemotePageRequest {
+  continuation?: string;
+  pageSize?: number;
+}
+
+export interface RemotePageLoadRequest {
+  /** Zero-based item index in the normalized sequence, not an upstream offset/page. */
+  index: number;
+  pageSize: number;
+  signal?: AbortSignal;
+}
+
+export interface RemotePageBatch<T> {
+  items: T[];
+  total: number | null;
+  hasMore: boolean;
+}
+
+export interface RemotePageAdapterOptions {
+  service: RemoteService;
+  defaultPageSize: number;
+  maxPageSize: number;
 }
 
 export interface RemoteHealth {
@@ -67,12 +94,349 @@ export class RemoteError extends Error {
   }
 }
 
+const REMOTE_CONTINUATION_PREFIX = "rp1";
+
+function remoteAbortError(service: RemoteService): RemoteError {
+  return new RemoteError("Remote operation was aborted", {
+    service,
+    code: "REMOTE_ABORTED",
+    status: null,
+    retryable: false,
+    retryAfterMs: null,
+    details: null,
+  });
+}
+
+function assertRemoteCallActive(
+  service: RemoteService,
+  signal: AbortSignal | undefined,
+): void {
+  if (signal?.aborted) throw remoteAbortError(service);
+}
+
+async function awaitRemoteCall<T>(
+  service: RemoteService,
+  signal: AbortSignal | undefined,
+  operation: Promise<T>,
+): Promise<T> {
+  assertRemoteCallActive(service, signal);
+  if (!signal) return operation;
+
+  return await new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(remoteAbortError(service));
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function invalidPagingError(
+  service: RemoteService,
+  code: string,
+  details: Json,
+): RemoteError {
+  return new RemoteError("Invalid remote paging state", {
+    service,
+    code,
+    status: null,
+    retryable: false,
+    retryAfterMs: null,
+    details,
+  });
+}
+
+function encodeRemoteContinuation(index: number, pageSize: number): string {
+  return `${REMOTE_CONTINUATION_PREFIX}.${index.toString(36)}.${pageSize.toString(36)}`;
+}
+
+function decodeRemoteContinuation(
+  continuation: string,
+  service: RemoteService,
+): { index: number; pageSize: number } {
+  const match = /^rp1\.([0-9a-z]+)\.([0-9a-z]+)$/.exec(continuation);
+  if (!match) {
+    throw invalidPagingError(service, "REMOTE_BAD_CONTINUATION", null);
+  }
+
+  const index = Number.parseInt(match[1], 36);
+  const pageSize = Number.parseInt(match[2], 36);
+  if (
+    !Number.isSafeInteger(index) ||
+    index < 0 ||
+    !Number.isSafeInteger(pageSize) ||
+    pageSize < 1
+  ) {
+    throw invalidPagingError(service, "REMOTE_BAD_CONTINUATION", null);
+  }
+  return { index, pageSize };
+}
+
+/**
+ * Adapts offset-, page-, or registry-backed loaders to one resumable stream.
+ * Transport implementations map the normalized item index inside `load`.
+ */
+export async function* iterateRemotePages<T>(
+  page: RemotePageRequest | undefined,
+  ctx: RemoteCallContext | undefined,
+  options: RemotePageAdapterOptions,
+  load: (request: RemotePageLoadRequest) => Promise<RemotePageBatch<T>>,
+): AsyncIterable<RemotePage<T>> {
+  const decoded = page?.continuation
+    ? decodeRemoteContinuation(page.continuation, options.service)
+    : null;
+  const requestedPageSize = page?.pageSize ?? decoded?.pageSize;
+  const pageSize = requestedPageSize ?? options.defaultPageSize;
+
+  if (
+    !Number.isSafeInteger(pageSize) ||
+    pageSize < 1 ||
+    pageSize > options.maxPageSize
+  ) {
+    throw invalidPagingError(options.service, "REMOTE_INVALID_PAGE_SIZE", {
+      pageSize,
+      maxPageSize: options.maxPageSize,
+    });
+  }
+  if (decoded && page?.pageSize !== undefined && page.pageSize !== decoded.pageSize) {
+    throw invalidPagingError(
+      options.service,
+      "REMOTE_CONTINUATION_PAGE_SIZE_MISMATCH",
+      null,
+    );
+  }
+
+  let index = decoded?.index ?? 0;
+  while (true) {
+    assertRemoteCallActive(options.service, ctx?.signal);
+    const request: RemotePageLoadRequest = {
+      index,
+      pageSize,
+      ...(ctx?.signal ? { signal: ctx.signal } : {}),
+    };
+    const batch = await awaitRemoteCall(
+      options.service,
+      ctx?.signal,
+      load(request),
+    );
+    assertRemoteCallActive(options.service, ctx?.signal);
+
+    if (batch.hasMore && batch.items.length === 0) {
+      throw invalidPagingError(
+        options.service,
+        "REMOTE_EMPTY_NONTERMINAL_PAGE",
+        { index, pageSize },
+      );
+    }
+
+    const nextIndex = index + batch.items.length;
+    const next = batch.hasMore
+      ? encodeRemoteContinuation(nextIndex, pageSize)
+      : null;
+    yield { items: batch.items, total: batch.total, next };
+    if (!batch.hasMore) return;
+    index = nextIndex;
+  }
+}
+
 export interface RemoteArtifact {
   readonly mediaType: string;
   readonly size: number | null;
   readonly sha256: string | null;
   stream(): AsyncIterable<Uint8Array>;
   readJson<T extends Json>(maxBytes: number): Promise<T>;
+}
+
+export interface RemoteArtifactSource {
+  service: RemoteService;
+  mediaType: string;
+  size: number | null;
+  sha256: string | null;
+  stream(): AsyncIterable<Uint8Array>;
+}
+
+function artifactError(
+  source: RemoteArtifactSource,
+  code: string,
+  message: string,
+  details: Json,
+): RemoteError {
+  return new RemoteError(message, {
+    service: source.service,
+    code,
+    status: null,
+    retryable: false,
+    retryAfterMs: null,
+    details,
+  });
+}
+
+function isJson(value: unknown): value is Json {
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "string"
+  ) {
+    return true;
+  }
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJson);
+  if (typeof value !== "object") return false;
+  return Object.values(value).every(isJson);
+}
+
+/** Creates a byte-only artifact that enforces declared size/hash boundaries. */
+export function createRemoteArtifact(
+  source: RemoteArtifactSource,
+): RemoteArtifact {
+  if (
+    source.size !== null &&
+    (!Number.isSafeInteger(source.size) || source.size < 0)
+  ) {
+    throw artifactError(
+      source,
+      "REMOTE_ARTIFACT_INVALID_METADATA",
+      "Artifact size metadata is invalid",
+      { size: source.size },
+    );
+  }
+  if (source.sha256 !== null && !/^[0-9a-f]{64}$/.test(source.sha256)) {
+    throw artifactError(
+      source,
+      "REMOTE_ARTIFACT_INVALID_METADATA",
+      "Artifact digest metadata is invalid",
+      null,
+    );
+  }
+
+  const artifact: RemoteArtifact = {
+    mediaType: source.mediaType,
+    size: source.size,
+    sha256: source.sha256,
+    async *stream() {
+      let bytes = 0;
+      const hash = source.sha256 === null ? null : createHash("sha256");
+      for await (const chunk of source.stream()) {
+        if (!(chunk instanceof Uint8Array)) {
+          throw artifactError(
+            source,
+            "REMOTE_ARTIFACT_INVALID_CHUNK",
+            "Artifact stream yielded a non-byte chunk",
+            null,
+          );
+        }
+        bytes += chunk.byteLength;
+        if (source.size !== null && bytes > source.size) {
+          throw artifactError(
+            source,
+            "REMOTE_ARTIFACT_SIZE_MISMATCH",
+            "Artifact stream exceeded its declared size",
+            { expected: source.size, actual: bytes },
+          );
+        }
+        hash?.update(chunk);
+        yield chunk;
+      }
+      if (source.size !== null && bytes !== source.size) {
+        throw artifactError(
+          source,
+          "REMOTE_ARTIFACT_SIZE_MISMATCH",
+          "Artifact stream did not match its declared size",
+          { expected: source.size, actual: bytes },
+        );
+      }
+      if (source.sha256 !== null && hash?.digest("hex") !== source.sha256) {
+        throw artifactError(
+          source,
+          "REMOTE_ARTIFACT_HASH_MISMATCH",
+          "Artifact stream did not match its declared digest",
+          null,
+        );
+      }
+    },
+    async readJson<T extends Json>(maxBytes: number): Promise<T> {
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+        throw artifactError(
+          source,
+          "REMOTE_ARTIFACT_INVALID_LIMIT",
+          "Artifact JSON read limit is invalid",
+          { maxBytes },
+        );
+      }
+      if (source.size !== null && source.size > maxBytes) {
+        throw artifactError(
+          source,
+          "REMOTE_ARTIFACT_TOO_LARGE",
+          "Artifact exceeds the JSON read limit",
+          { maxBytes, size: source.size },
+        );
+      }
+
+      const chunks: Uint8Array[] = [];
+      let bytes = 0;
+      for await (const chunk of artifact.stream()) {
+        bytes += chunk.byteLength;
+        if (bytes > maxBytes) {
+          throw artifactError(
+            source,
+            "REMOTE_ARTIFACT_TOO_LARGE",
+            "Artifact exceeds the JSON read limit",
+            { maxBytes, size: bytes },
+          );
+        }
+        chunks.push(chunk);
+      }
+
+      const combined = new Uint8Array(bytes);
+      let offset = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+
+      try {
+        const parsed: unknown = JSON.parse(
+          new TextDecoder("utf-8", { fatal: true }).decode(combined),
+        );
+        if (!isJson(parsed)) throw new TypeError("JSON value is not JSON-safe");
+        return parsed as T;
+      } catch (error: unknown) {
+        if (error instanceof RemoteError) throw error;
+        throw artifactError(
+          source,
+          "REMOTE_ARTIFACT_INVALID_JSON",
+          "Artifact did not contain valid JSON",
+          null,
+        );
+      }
+    },
+  };
+  return artifact;
+}
+
+/** Enforces operations whose reviewed HTTP contract is exactly 204/empty. */
+export function assertRemoteNoContent(input: {
+  service: RemoteService;
+  operation: string;
+  status: number;
+  bodyBytes: number;
+}): void {
+  if (input.status === 204 && input.bodyBytes === 0) return;
+  throw new RemoteError("Remote operation returned an unexpected response", {
+    service: input.service,
+    code: "REMOTE_EXPECTED_NO_CONTENT",
+    status: input.status,
+    retryable: false,
+    retryAfterMs: null,
+    details: { operation: input.operation, bodyBytes: input.bodyBytes },
+  });
 }
 
 export const VEX_STATUSES = [
@@ -116,14 +480,44 @@ export type VexJustification = (typeof VEX_JUSTIFICATIONS)[number];
 export interface VexDecisionInput {
   findingId: string;
   status: VexStatus;
-  response?: VexResponse | "";
-  justification?: VexJustification | "";
+  response?: VexResponse;
+  justification?: VexJustification;
   reason?: string;
 }
 
 export interface VexInput extends VexDecisionInput {
   projectVersionId: string;
-  dryRun?: boolean;
+}
+
+/**
+ * Normalizes UI/YAML optional values before the mutating Platform boundary.
+ * Empty strings never become wire fields, and finding ids follow the vendored
+ * decimal-string schema so int64 precision is preserved.
+ */
+export function normalizeVexDecisionInput(input: {
+  findingId: string;
+  status: VexStatus;
+  response?: VexResponse | "";
+  justification?: VexJustification | "";
+  reason?: string;
+}): VexDecisionInput {
+  if (!/^-?[0-9]+$/.test(input.findingId)) {
+    throw new RemoteError("Finding id must be a decimal string", {
+      service: "platform",
+      code: "PLATFORM_INVALID_FINDING_ID",
+      status: null,
+      retryable: false,
+      retryAfterMs: null,
+      details: null,
+    });
+  }
+  return {
+    findingId: input.findingId,
+    status: input.status,
+    ...(input.response ? { response: input.response } : {}),
+    ...(input.justification ? { justification: input.justification } : {}),
+    ...(input.reason ? { reason: input.reason } : {}),
+  };
 }
 
 export interface VexBulkSetResult {
@@ -142,30 +536,30 @@ export interface ComponentListInput {
   filter?: string;
   excluded?: boolean;
   sort?: string;
-  offset?: number;
-  limit?: number;
+  page?: RemotePageRequest;
   editStatus?: "any" | "edited" | "unedited";
 }
 
 export interface ComponentSearchInput {
   name: string;
   version?: string;
-  offset?: number;
-  limit?: number;
+  page?: RemotePageRequest;
   sort?: string;
 }
 
 export interface PlatformClient {
   health(ctx?: RemoteCallContext): Promise<RemoteHealth>;
   listProjects(
+    page?: RemotePageRequest,
     ctx?: RemoteCallContext,
   ): AsyncIterable<RemotePage<Record<string, Json>>>;
   listVersions(
     projectId: string,
+    page?: RemotePageRequest,
     ctx?: RemoteCallContext,
   ): AsyncIterable<RemotePage<Record<string, Json>>>;
   getFindings(
-    input: { projectVersionId: string; offset?: number; limit?: number },
+    input: { projectVersionId: string; page?: RemotePageRequest },
     ctx?: RemoteCallContext,
   ): AsyncIterable<RemotePage<Record<string, Json>>>;
   getFindingDetail(
@@ -175,10 +569,9 @@ export interface PlatformClient {
   getFindingActivity(
     input: {
       projectId: string;
-      projectVersionId?: string;
+      projectVersionId: string;
       cve: string;
-      cursor?: string;
-      limit?: number;
+      page?: RemotePageRequest;
     },
     ctx?: RemoteCallContext,
   ): AsyncIterable<RemotePage<Record<string, Json>>>;
@@ -187,8 +580,7 @@ export interface PlatformClient {
     input: {
       projectVersionId: string;
       findingId: string;
-      cursor?: string;
-      limit?: number;
+      page?: RemotePageRequest;
     },
     ctx?: RemoteCallContext,
   ): AsyncIterable<RemotePage<Record<string, Json>>>;
@@ -199,7 +591,7 @@ export interface PlatformClient {
   setVexStatus(
     input: VexInput,
     ctx?: RemoteCallContext,
-  ): Promise<Record<string, Json>>;
+  ): Promise<void>;
   batchSetVexStatus(
     input: { projectVersionId: string; findings: VexDecisionInput[] },
     ctx?: RemoteCallContext,
@@ -374,8 +766,7 @@ export interface AssuranceStudioClient {
     kind: AsEntityKind,
     input: {
       projectId: string;
-      cursor?: string;
-      limit?: number;
+      page?: RemotePageRequest;
       filters?: Record<string, Json>;
     },
     ctx?: RemoteCallContext,
@@ -415,8 +806,7 @@ export interface AssuranceStudioClient {
   listProjectSbomPackages(
     input: {
       projectId: string;
-      cursor?: string;
-      limit?: number;
+      page?: RemotePageRequest;
       filters?: Record<string, Json>;
     },
     ctx?: RemoteCallContext,
@@ -427,8 +817,7 @@ export interface AssuranceStudioClient {
       status?: string;
       type?: string;
       requirementId?: string;
-      cursor?: string;
-      limit?: number;
+      page?: RemotePageRequest;
     },
     ctx?: RemoteCallContext,
   ): AsyncIterable<RemotePage<Record<string, Json>>>;
@@ -460,12 +849,18 @@ export const FORGE_JOB_TERMINAL_STATUSES = [
   "TIMEOUT",
 ] as const;
 
-export const FORGE_COMPUTE_TOOLS = ["verify_dynamic", "pen_test_run"] as const;
+export const FORGE_COMPUTE_INVOCATIONS = [
+  "verify_dynamic",
+  "pen_test_run",
+  "get_job_status",
+  "list_jobs",
+] as const;
 
 export type ForgeJobStatus = (typeof FORGE_JOB_STATUSES)[number];
 export type ForgeJobTerminalStatus =
   (typeof FORGE_JOB_TERMINAL_STATUSES)[number];
-export type ForgeComputeTool = (typeof FORGE_COMPUTE_TOOLS)[number];
+export type ForgeComputeInvocation =
+  (typeof FORGE_COMPUTE_INVOCATIONS)[number];
 
 export interface ForgeJobError {
   code: string;
@@ -475,7 +870,8 @@ export interface ForgeJobError {
 export interface ForgeJobSnapshot {
   jobId: string;
   status: ForgeJobStatus;
-  tool: ForgeComputeTool;
+  /** Open registry metadata; this is not an MCP invocation selector. */
+  tool: string;
   recipe: string | null;
   scope: Json;
   environment: Json;
@@ -487,6 +883,33 @@ export interface ForgeJobSnapshot {
   result: Json | null;
   /** Raw CANCELLED is represented as FAILED with FORGE_JOB_CANCELLED here. */
   error: ForgeJobError | null;
+}
+
+export interface ForgeJobCandidate
+  extends Omit<ForgeJobSnapshot, "status" | "error"> {
+  status: ForgeJobStatus | "CANCELLED";
+  error?: ForgeJobError | null;
+}
+
+/** Normalizes the raw registry-only CANCELLED state without closing tool metadata. */
+export function normalizeForgeJobSnapshot(
+  candidate: ForgeJobCandidate,
+): ForgeJobSnapshot {
+  if (candidate.status === "CANCELLED") {
+    return {
+      ...candidate,
+      status: "FAILED",
+      error: {
+        code: "FORGE_JOB_CANCELLED",
+        message: candidate.error?.message ?? "Forge cancelled job",
+      },
+    };
+  }
+  return {
+    ...candidate,
+    status: candidate.status,
+    error: candidate.error ?? null,
+  };
 }
 
 export interface ForgeDeploymentContext {
@@ -536,7 +959,11 @@ export interface ForgeComputeClient {
     ctx?: RemoteCallContext,
   ): Promise<ForgeJobSnapshot>;
   listJobs(
-    input?: { status?: ForgeJobStatus; tool?: ForgeComputeTool },
+    input?: {
+      status?: ForgeJobStatus;
+      tool?: string;
+      page?: RemotePageRequest;
+    },
     ctx?: RemoteCallContext,
   ): AsyncIterable<RemotePage<ForgeJobSnapshot>>;
   watchJob(
