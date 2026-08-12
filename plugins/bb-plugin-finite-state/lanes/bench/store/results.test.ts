@@ -10,6 +10,14 @@ import {
 
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
+interface LatestResultRow {
+  result_id: string;
+  run_id: string;
+  outcome: string;
+  is_latest: number;
+  superseded_by: string | null;
+}
+
 afterEach(async () => {
   await Promise.all(hosts.splice(0).map((host) => host.harness.lifecycle.dispose()));
 });
@@ -74,6 +82,58 @@ describe("bench results repository", () => {
     expect(storeEvidenceCheckpointWithResult(fixture.db, bundle, SYNCED_AT).changed).toBe(true);
     expect(storeEvidenceCheckpointWithResult(fixture.db, bundle, SYNCED_AT).changed).toBe(false);
     expect(fixture.db.prepare("SELECT COUNT(*) FROM verification_results").pluck().get()).toBe(1);
+  });
+
+  it("atomically supersedes the prior latest result without self-superseding replay", () => {
+    const fixture = createBenchTestStore("results-latest");
+    hosts.push(fixture.host);
+    seedMappedCheck(fixture.db);
+    const result = (outcome: "pass" | "fail") => ({
+      requirementId: "REQ-A",
+      checkId: "check-a",
+      outcome,
+      evidenceSummary: null,
+    });
+    storeEvidenceCheckpointWithResult(
+      fixture.db,
+      evidenceBundle({
+        run: { ...evidenceBundle().run, runId: "run-pass" },
+        results: [result("pass")],
+      }),
+      SYNCED_AT,
+    );
+    const failingBundle = evidenceBundle({
+      run: { ...evidenceBundle().run, runId: "run-fail" },
+      results: [result("fail")],
+    });
+    storeEvidenceCheckpointWithResult(fixture.db, failingBundle, SYNCED_AT);
+
+    const rows = fixture.db
+      .prepare<[], LatestResultRow>(
+        `SELECT result_id, run_id, outcome, is_latest, superseded_by
+         FROM verification_results ORDER BY run_id`,
+      )
+      .all();
+    const failing = rows.find((row) => row.run_id === "run-fail");
+    const passing = rows.find((row) => row.run_id === "run-pass");
+    expect(failing).toMatchObject({ outcome: "fail", is_latest: 1, superseded_by: null });
+    expect(passing).toMatchObject({
+      outcome: "pass",
+      is_latest: 0,
+      superseded_by: failing?.result_id,
+    });
+
+    expect(storeEvidenceCheckpointWithResult(fixture.db, failingBundle, SYNCED_AT).changed).toBe(
+      false,
+    );
+    expect(
+      fixture.db
+        .prepare(
+          `SELECT is_latest, superseded_by FROM verification_results
+           WHERE run_id = 'run-fail'`,
+        )
+        .get(),
+    ).toEqual({ is_latest: 1, superseded_by: null });
   });
 
   it("rolls back the entire checkpoint when one result is invalid", () => {

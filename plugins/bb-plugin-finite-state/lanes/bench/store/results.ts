@@ -110,6 +110,41 @@ function upsertBenchResults(
       result.requirementId,
       result.checkId,
     ]);
+    const existingResult = db
+      .prepare<[string, string, string, string], BenchResultRow>(
+        `SELECT * FROM verification_results
+         WHERE project_id = ? AND project_version_id = ?
+           AND generation_id = ? AND result_id = ?`,
+      )
+      .get(
+        location.projectId,
+        location.projectVersionId,
+        location.generationId,
+        resultId,
+      );
+    if (mapped && !existingResult) {
+      const superseded = db
+        .prepare(
+          `UPDATE verification_results
+           SET is_latest = 0, superseded_by = @resultId
+           WHERE project_id = @projectId
+             AND project_version_id = @projectVersionId
+             AND generation_id = @generationId
+             AND requirement_key = @requirementKey
+             AND check_id = @checkId
+             AND is_latest = 1
+             AND result_id <> @resultId`,
+        )
+        .run({
+          projectId: location.projectId,
+          projectVersionId: location.projectVersionId,
+          generationId: location.generationId,
+          requirementKey: result.requirementId,
+          checkId: result.checkId,
+          resultId,
+        });
+      changes += superseded.changes;
+    }
     const raw = serializeBenchRaw({
       reportedRequirementId: result.requirementId,
       reportedCheckId: result.checkId,
@@ -129,7 +164,7 @@ function upsertBenchResults(
            (@projectId, @projectVersionId, @generationId, @resultId, @runId,
             @requirementKey, @checkId, @tier, @status, @outcome, NULL,
             @evidenceSummary, NULL, NULL, @executedAt, NULL, NULL, NULL, NULL,
-            NULL, 1, NULL, NULL, @mappingState, @raw, @pulledAt)
+            NULL, @isLatest, NULL, NULL, @mappingState, @raw, @pulledAt)
          ON CONFLICT (project_id, project_version_id, generation_id, result_id) DO UPDATE SET
            requirement_key = excluded.requirement_key,
            check_id = excluded.check_id,
@@ -165,6 +200,7 @@ function upsertBenchResults(
         evidenceSummary: result.evidenceSummary,
         executedAt: bundle.run.finishedAt ?? bundle.run.startedAt,
         mappingState: mapped ? "mapped" : "unmapped",
+        isLatest: mapped ? 1 : 0,
         raw,
         pulledAt,
       });

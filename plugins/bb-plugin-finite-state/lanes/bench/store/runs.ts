@@ -15,20 +15,15 @@ import type {
 
 const FRESH_FOR_MS = 5 * 60 * 1_000;
 const SHA256 = /^[a-f0-9]{64}$/u;
+export const BENCH_EVIDENCE_ENTITY_KIND = "verificationRun" as const;
 
-interface GenerationRow {
+interface AcceptedGenerationRow {
   generation_id: string;
+  base_revision: number;
 }
 
 interface CacheRow {
   synced_at: string | null;
-  generation_id: string | null;
-  base_revision: number | null;
-}
-
-interface EmptyCacheRow {
-  generation_id: string | null;
-  base_revision: number | null;
 }
 
 interface CountRow {
@@ -104,56 +99,65 @@ export function serializeBenchRaw(raw: unknown): string {
   return serialized;
 }
 
+export function getAcceptedBenchGeneration(
+  db: Database.Database,
+  projectId: string,
+  projectVersionId: string,
+): AcceptedGenerationRow {
+  const accepted = db
+    .prepare<[string, string, string], AcceptedGenerationRow>(
+      `SELECT s.accepted_generation_id AS generation_id, s.base_revision
+       FROM sync_state s
+       JOIN pull_generation g
+         ON g.project_id = s.project_id
+        AND g.project_version_id = s.project_version_id
+        AND g.generation_id = s.accepted_generation_id
+       WHERE s.project_id = ? AND s.project_version_id = ?
+         AND s.entity_kind = ? AND s.accepted_generation_id IS NOT NULL
+         AND g.status = 'accepted'`,
+    )
+    .get(projectId, projectVersionId, BENCH_EVIDENCE_ENTITY_KIND);
+  if (!accepted) {
+    throw new Error("Bench evidence requires an accepted verificationRun generation");
+  }
+  return accepted;
+}
+
 export function resolveRunLocation(
   db: Database.Database,
   run: BenchRunRecord,
 ): StoredRunLocation {
   validateRun(run);
   const projectVersionId = toStorageProjectVersionId(run.pvId);
-  const rows = db
+  const accepted = getAcceptedBenchGeneration(db, run.projectId, projectVersionId);
+  const historicalRows = db
     .prepare<[string, string, string], BenchRunRow>(
       `SELECT * FROM verification_runs
        WHERE project_id = ? AND project_version_id = ? AND run_id = ?
-       ORDER BY synced_at DESC, generation_id DESC
-       LIMIT 2`,
+       ORDER BY generation_id`,
     )
     .all(run.projectId, projectVersionId, run.runId);
-  if (rows.length > 1) {
-    throw new Error(`Bench run ${run.runId} exists in multiple cache generations`);
-  }
-  const existing = rows[0] ?? null;
-  if (existing) {
+  for (const historical of historicalRows) {
     if (
-      existing.firmware_digest !== null &&
+      historical.firmware_digest !== null &&
       run.firmwareDigest !== null &&
-      existing.firmware_digest !== run.firmwareDigest
+      historical.firmware_digest !== run.firmwareDigest
     ) {
       throw new Error(`Bench run ${run.runId} firmware digest is immutable`);
     }
-    return {
-      projectId: run.projectId,
-      projectVersionId,
-      generationId: existing.generation_id,
-      row: existing,
-    };
   }
-
-  const generation = db
-    .prepare<[string, string], GenerationRow>(
-      `SELECT generation_id FROM pull_generation
-       WHERE project_id = ? AND project_version_id = ? AND status = 'accepted'
-       ORDER BY COALESCE(accepted_at, completed_at, started_at) DESC, generation_id DESC
-       LIMIT 1`,
+  const existing = db
+    .prepare<[string, string, string, string], BenchRunRow>(
+      `SELECT * FROM verification_runs
+       WHERE project_id = ? AND project_version_id = ?
+         AND generation_id = ? AND run_id = ?`,
     )
-    .get(run.projectId, projectVersionId);
-  if (!generation) {
-    throw new Error("Bench evidence requires an accepted cache generation");
-  }
+    .get(run.projectId, projectVersionId, accepted.generation_id, run.runId) ?? null;
   return {
     projectId: run.projectId,
     projectVersionId,
-    generationId: generation.generation_id,
-    row: null,
+    generationId: accepted.generation_id,
+    row: existing,
   };
 }
 
@@ -289,40 +293,22 @@ export function getBenchCacheState(
   now = new Date().toISOString(),
 ): BenchCacheState {
   const projectVersionId = toStorageProjectVersionId(pvId);
+  const accepted = getAcceptedBenchGeneration(db, projectId, projectVersionId);
   const row = db
-    .prepare<[string, string], CacheRow>(
-      `SELECT r.synced_at,
-              r.generation_id,
-              COALESCE(
-                (SELECT MAX(s.base_revision) FROM sync_state s
-                 WHERE s.project_id = r.project_id
-                   AND s.project_version_id = r.project_version_id
-                   AND s.accepted_generation_id = r.generation_id),
-                0
-              ) AS base_revision
+    .prepare<[string, string, string], CacheRow>(
+      `SELECT MAX(r.synced_at) AS synced_at
        FROM verification_runs r
-       WHERE r.project_id = ? AND r.project_version_id = ?
-       ORDER BY r.synced_at DESC, r.run_id DESC
-       LIMIT 1`,
+       WHERE r.project_id = ? AND r.project_version_id = ? AND r.generation_id = ?`,
     )
-    .get(projectId, projectVersionId);
+    .get(projectId, projectVersionId, accepted.generation_id);
   const asOf = row?.synced_at ?? null;
   if (asOf === null) {
-    const accepted = db
-      .prepare<[string, string], EmptyCacheRow>(
-        `SELECT accepted_generation_id AS generation_id, base_revision
-         FROM sync_state
-         WHERE project_id = ? AND project_version_id = ? AND accepted_generation_id IS NOT NULL
-         ORDER BY base_revision DESC, accepted_generation_id DESC
-         LIMIT 1`,
-      )
-      .get(projectId, projectVersionId);
     return {
       state: "empty",
       asOf: null,
       message: "No bench evidence is cached for this scope.",
-      acceptedGenerationId: accepted?.generation_id ?? null,
-      baseRevision: accepted?.base_revision ?? 0,
+      acceptedGenerationId: accepted.generation_id,
+      baseRevision: accepted.base_revision,
     };
   }
   const age = Date.parse(now) - Date.parse(asOf);
@@ -331,8 +317,8 @@ export function getBenchCacheState(
     state: fresh ? "fresh" : "stale",
     asOf,
     message: fresh ? null : "Bench evidence is older than the freshness window.",
-    acceptedGenerationId: row?.generation_id ?? null,
-    baseRevision: row?.base_revision ?? 0,
+    acceptedGenerationId: accepted.generation_id,
+    baseRevision: accepted.base_revision,
   };
 }
 
@@ -344,12 +330,13 @@ export function listBenchRuns(
     throw new Error("Bench run pageSize must be between 1 and 200");
   }
   const projectVersionId = toStorageProjectVersionId(query.pvId);
+  const accepted = getAcceptedBenchGeneration(db, query.projectId, projectVersionId);
   const cursor = query.continuation === null ? null : decodeCursor(query.continuation);
   const rows = cursor
     ? db
-        .prepare<[string, string, string, string, string, number], BenchRunRow>(
+        .prepare<[string, string, string, string, string, string, number], BenchRunRow>(
           `SELECT * FROM verification_runs
-           WHERE project_id = ? AND project_version_id = ?
+           WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
              AND (COALESCE(started_at, synced_at) < ?
                OR (COALESCE(started_at, synced_at) = ? AND run_id < ?))
            ORDER BY COALESCE(started_at, synced_at) DESC, run_id DESC
@@ -358,27 +345,29 @@ export function listBenchRuns(
         .all(
           query.projectId,
           projectVersionId,
+          accepted.generation_id,
           cursor.at,
           cursor.at,
           cursor.runId,
           query.pageSize + 1,
         )
     : db
-        .prepare<[string, string, number], BenchRunRow>(
+        .prepare<[string, string, string, number], BenchRunRow>(
           `SELECT * FROM verification_runs
-           WHERE project_id = ? AND project_version_id = ?
+           WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
            ORDER BY COALESCE(started_at, synced_at) DESC, run_id DESC
            LIMIT ?`,
         )
-        .all(query.projectId, projectVersionId, query.pageSize + 1);
+        .all(query.projectId, projectVersionId, accepted.generation_id, query.pageSize + 1);
   const hasMore = rows.length > query.pageSize;
   const visible = rows.slice(0, query.pageSize);
   const last = visible.at(-1);
   const count = db
-    .prepare<[string, string], CountRow>(
-      "SELECT COUNT(*) AS count FROM verification_runs WHERE project_id = ? AND project_version_id = ?",
+    .prepare<[string, string, string], CountRow>(
+      `SELECT COUNT(*) AS count FROM verification_runs
+       WHERE project_id = ? AND project_version_id = ? AND generation_id = ?`,
     )
-    .get(query.projectId, projectVersionId)?.count ?? 0;
+    .get(query.projectId, projectVersionId, accepted.generation_id)?.count ?? 0;
   return {
     items: visible.map(summarizeRun),
     total: count,
@@ -395,13 +384,14 @@ function getScopedBenchRun(
   lookup: BenchRunLookup,
 ): BenchRunDetail | null {
   const projectVersionId = toStorageProjectVersionId(lookup.pvId);
+  const accepted = getAcceptedBenchGeneration(db, lookup.projectId, projectVersionId);
   const row = db
-    .prepare<[string, string, string], BenchRunRow>(
+    .prepare<[string, string, string, string], BenchRunRow>(
       `SELECT * FROM verification_runs
-       WHERE project_id = ? AND project_version_id = ? AND run_id = ?
-       ORDER BY synced_at DESC, generation_id DESC LIMIT 1`,
+       WHERE project_id = ? AND project_version_id = ?
+         AND generation_id = ? AND run_id = ?`,
     )
-    .get(lookup.projectId, projectVersionId, lookup.runId);
+    .get(lookup.projectId, projectVersionId, accepted.generation_id, lookup.runId);
   return row
     ? {
         run: summarizeRun(row),
@@ -418,11 +408,22 @@ export function getBenchRun(
 ): BenchRunDetail | null {
   if (typeof runIdOrLookup !== "string") return getScopedBenchRun(db, runIdOrLookup);
   const rows = db
-    .prepare<[string], BenchRunRow>(
-      `SELECT * FROM verification_runs WHERE run_id = ?
-       ORDER BY synced_at DESC, generation_id DESC LIMIT 2`,
+    .prepare<[string, string], BenchRunRow>(
+      `SELECT r.* FROM verification_runs r
+       JOIN sync_state s
+         ON s.project_id = r.project_id
+        AND s.project_version_id = r.project_version_id
+        AND s.accepted_generation_id = r.generation_id
+        AND s.entity_kind = ?
+       JOIN pull_generation g
+         ON g.project_id = r.project_id
+        AND g.project_version_id = r.project_version_id
+        AND g.generation_id = r.generation_id
+        AND g.status = 'accepted'
+       WHERE r.run_id = ?
+       ORDER BY r.synced_at DESC LIMIT 2`,
     )
-    .all(runIdOrLookup);
+    .all(BENCH_EVIDENCE_ENTITY_KIND, runIdOrLookup);
   if (rows.length > 1) throw new Error(`Bench run ${runIdOrLookup} is ambiguous without scope`);
   const row = rows[0];
   if (!row) return null;

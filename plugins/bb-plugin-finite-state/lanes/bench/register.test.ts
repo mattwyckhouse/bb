@@ -14,7 +14,21 @@ describe("bench registration", () => {
   it("registers frozen RPCs, bounded stream seams, and one job service without a CLI", async () => {
     const host = createFakePluginHost({ pluginId: "finite-state-bench-registration" });
     hosts.push(host);
-    registerBench(host.bb, createPluginContext(host.bb));
+    const context = createPluginContext(host.bb);
+    registerBench(host.bb, context);
+    context.db().exec(
+      `INSERT INTO pull_generation
+         (project_id, project_version_id, generation_id, status,
+          requested_kinds_json, started_at, completed_at, accepted_at)
+       VALUES ('project-a', 'version-a', 'generation-a', 'accepted',
+               '["verificationRun"]', '2026-08-12T20:00:00.000Z',
+               '2026-08-12T20:00:00.000Z', '2026-08-12T20:00:00.000Z');
+       INSERT INTO sync_state
+         (project_id, project_version_id, entity_kind, accepted_generation_id,
+          base_revision, last_pull)
+       VALUES ('project-a', 'version-a', 'verificationRun', 'generation-a', 1,
+               '2026-08-12T20:00:00.000Z');`,
+    );
 
     const page = await host.harness.behavior.callRpc("benchRunsList", {
       projectId: "project-a",
