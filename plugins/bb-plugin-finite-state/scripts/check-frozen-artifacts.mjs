@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -60,6 +60,16 @@ function acceptIdFromArguments(argv) {
   }
   if (!/^(?:A|AMD)-\d{3,}$/u.test(candidate)) {
     fail(`Invalid amendment id ${JSON.stringify(candidate)}`);
+  }
+  return candidate;
+}
+
+function baseRefFromArguments(argv) {
+  const baseFlag = argv.indexOf("--base");
+  if (baseFlag === -1) return null;
+  const candidate = argv[baseFlag + 1];
+  if (!candidate || candidate.startsWith("--") || argv.filter((argument) => argument === "--base").length !== 1) {
+    fail("--base requires exactly one immutable Git revision");
   }
   return candidate;
 }
@@ -170,12 +180,27 @@ function parseAmendments(source) {
   return amendments;
 }
 
-function priorBaseline(root, baselineRelativePath) {
+function gitText(root, arguments_) {
+  return execFileSync("git", arguments_, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+}
+
+function priorBaseline(root, baselineRelativePath, baseRef) {
   const relativePath = toPosix(baselineRelativePath);
+  const revision = baseRef ?? (() => {
+    try {
+      return gitText(root, ["merge-base", "HEAD", "origin/finite-state/integration"]).trim();
+    } catch {
+      return null;
+    }
+  })();
+  if (!revision) return null;
   try {
-    const isDirty = spawnSync("git", ["diff", "--quiet", "--", relativePath], { cwd: root, stdio: ["ignore", "pipe", "ignore"] }).status !== 0;
-    const revision = isDirty ? "HEAD" : "HEAD^1";
-    return JSON.parse(execFileSync("git", ["show", `${revision}:${relativePath}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }));
+    gitText(root, ["cat-file", "-e", `${revision}^{commit}`]);
+  } catch {
+    fail(`Immutable baseline revision is unavailable: ${revision}`);
+  }
+  try {
+    return JSON.parse(gitText(root, ["show", `${revision}:${relativePath}`]));
   } catch {
     return null;
   }
@@ -303,7 +328,7 @@ async function accept(root, amendmentId) {
   process.stdout.write(`Accepted ${amendmentId} for ${changedTargets.join(", ")}\n`);
 }
 
-async function check(root) {
+async function check(root, baseRef) {
   const baselinePath = path.join(root, pluginRelativePath, "frozen-artifacts.json");
   let baseline;
   try {
@@ -313,7 +338,7 @@ async function check(root) {
   }
   validateBaseline(baseline);
   const approvedAmendments = await readApprovedAmendmentMap(root);
-  assertMonotonicBaseline(priorBaseline(root, path.relative(root, baselinePath)), baseline, approvedAmendments);
+  assertMonotonicBaseline(priorBaseline(root, path.relative(root, baselinePath), baseRef), baseline, approvedAmendments);
   for (const artifact of frozenRelativePaths) {
     const amendmentId = baseline.artifacts[artifact].amendment;
     if (baseline.artifacts[artifact].active && amendmentId && !approvedAmendments.get(amendmentId)?.artifacts.includes(artifact)) {
@@ -335,7 +360,7 @@ export { fixtureTreeHash, parseAmendments };
 
 async function main() {
   const argv = process.argv.slice(2);
-  const recognized = new Set(["--root", "--accept"]);
+  const recognized = new Set(["--root", "--accept", "--base"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (!recognized.has(argv[index])) {
       fail(`Unknown argument ${JSON.stringify(argv[index])}`);
@@ -347,10 +372,11 @@ async function main() {
   }
   const root = rootFromArguments(argv);
   const amendmentId = acceptIdFromArguments(argv);
+  const baseRef = baseRefFromArguments(argv);
   if (amendmentId) {
     await accept(root, amendmentId);
   } else {
-    await check(root);
+    await check(root, baseRef);
   }
 }
 

@@ -8,6 +8,8 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const pluginRelativePath = "plugins/bb-plugin-finite-state";
 const sections = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 const recovery = "file an amendment; do not edit the frozen artifact locally.";
+const zodSpecifier = "^4.3.6";
+const zodVersion = "4.3.6";
 
 function fail(message) {
   throw new Error(`${message}\nRecovery: ${recovery}`);
@@ -35,6 +37,30 @@ async function readJson(filePath, label) {
   }
 }
 
+function pluginImporter(lockfile) {
+  const marker = `  ${pluginRelativePath}:`;
+  const start = lockfile.indexOf(marker);
+  if (start === -1) fail("pnpm-lock.yaml is missing the Finite State plugin importer");
+  const nextImporter = lockfile.indexOf("\npackages:", start + marker.length);
+  return lockfile.slice(start, nextImporter === -1 ? lockfile.length : nextImporter);
+}
+
+function assertPinnedZod(root, actual) {
+  if (actual.dependencies.zod !== zodSpecifier) {
+    fail(`Plugin must declare zod exactly as ${zodSpecifier}`);
+  }
+  return fs.readFile(path.join(root, "pnpm-lock.yaml"), "utf8").then((lockfile) => {
+    const importer = pluginImporter(lockfile);
+    if (!new RegExp(`\\bzod:\\n\\s+specifier: ${zodVersion}\\n\\s+version: ${zodVersion}\\b`, "u").test(importer)) {
+      fail(`Finite State plugin importer must resolve zod ${zodSpecifier} to ${zodVersion}`);
+    }
+    const resolutions = [...lockfile.matchAll(/^  zod@(?<version>\d+\.\d+\.\d+):$/gmu)].map((match) => match.groups?.version);
+    if (resolutions.length !== 1 || resolutions[0] !== zodVersion) {
+      fail(`pnpm-lock.yaml must contain exactly one zod package resolution (${zodVersion})`);
+    }
+  });
+}
+
 async function main() {
   const root = rootFromArguments(process.argv.slice(2));
   const pluginRoot = path.join(root, pluginRelativePath);
@@ -49,15 +75,12 @@ async function main() {
   if (drift.length) {
     fail(`Plugin dependency freeze drift in ${drift.join(", ")}`);
   }
-  const pluginZod = sections.find((section) => Object.hasOwn(actual[section], "zod"));
-  if (pluginZod) {
-    fail(`Plugin must not declare zod directly (found in ${pluginZod}); the repository override pins zod 4.3.6`);
-  }
   const rootManifest = await readJson(path.join(root, "package.json"), "root package.json");
   if (rootManifest.pnpm?.overrides?.zod !== "4.3.6") {
     fail("Root zod override must remain pinned to 4.3.6");
   }
-  process.stdout.write("Plugin dependency baseline is intact; zod is repository-pinned to 4.3.6.\n");
+  await assertPinnedZod(root, actual);
+  process.stdout.write("Plugin dependency baseline is intact; zod resolves once to repository-pinned 4.3.6.\n");
 }
 
 main().catch((error) => {

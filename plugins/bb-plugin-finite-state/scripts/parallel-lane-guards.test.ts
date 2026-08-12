@@ -58,6 +58,10 @@ function git(root: string, ...arguments_: string[]) {
   execFileSync("git", arguments_, { cwd: root, stdio: "ignore" });
 }
 
+function gitText(root: string, ...arguments_: string[]) {
+  return execFileSync("git", arguments_, { cwd: root, encoding: "utf8" }).trim();
+}
+
 function amendment(id: string, artifacts: string[], contractVersion = "n/a", status = "approved") {
   return `### ${id} — fixture amendment\n\n- Status: ${status}\n- Artifacts:\n${artifacts.map((artifact) => `  - \`${artifact}\``).join("\n")}\n- Contract version: ${contractVersion}\n`;
 }
@@ -73,7 +77,22 @@ async function fixtureRoot() {
   await write(root, `${pluginRootRelativePath}lib/sync/registry.ts`, "export {};\n");
   await write(root, `${pluginRootRelativePath}lib/remote/types.ts`, "export {};\n");
   await write(root, `${pluginRootRelativePath}test/mock-remote/fixtures/base.json`, '{"fixture":true}\n');
-  await write(root, `${pluginRootRelativePath}package.json`, JSON.stringify({ name: "bb-plugin-finite-state", dependencies: { yaml: "^2.9.0" } }));
+  await write(root, `${pluginRootRelativePath}package.json`, JSON.stringify({ name: "bb-plugin-finite-state", dependencies: { yaml: "^2.9.0", zod: "^4.3.6" } }));
+  await write(root, "pnpm-lock.yaml", `lockfileVersion: '9.0'
+
+importers:
+
+  plugins/bb-plugin-finite-state:
+    dependencies:
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+
+packages:
+
+  zod@4.3.6:
+    resolution: {integrity: sha512-fixture}
+`);
   await write(root, `${pluginRootRelativePath}AMENDMENTS.md`, amendment("A-000", [...artifactPaths, `${pluginRootRelativePath}package.json`], "0"));
   await write(root, `${pluginRootRelativePath}lib/agentic/registry.ts`, `export const AGENT_SURFACE = {
   tools: {
@@ -209,6 +228,22 @@ describe("parallel lane guards", () => {
     expect(run(frozenScript, root).output).toContain("Frozen baseline change");
   });
 
+  it("rejects a two-commit baseline laundering attempt against the immutable base", async () => {
+    const root = await fixtureRoot();
+    commitFixtureBaseline(root);
+    const base = gitText(root, "rev-parse", "HEAD");
+    const baselinePath = path.join(root, `${pluginRootRelativePath}frozen-artifacts.json`);
+    const baseline = JSON.parse(await readFile(baselinePath, "utf8"));
+    baseline.artifacts[`${pluginRootRelativePath}server.ts`].active = false;
+    await writeFile(baselinePath, `${JSON.stringify(baseline)}\n`);
+    git(root, "add", ".");
+    git(root, "commit", "-m", "launder baseline");
+    await write(root, "unrelated.txt", "second commit\n");
+    git(root, "add", ".");
+    git(root, "commit", "-m", "hide baseline change");
+    expect(run(frozenScript, root, "--base", base).output).toContain("activation cannot be withdrawn");
+  });
+
   it.each([
     ["hex", '<div style={{ color: "#AABBCC" }} />', "raw hex color"],
     ["oklch", 'const color = "oklch(60% 0.2 30)"; export const panel = <div />;', "oklch() color"],
@@ -236,35 +271,44 @@ bb.agents.registerTool({ name: "fs_other_run", description: "apply server-side o
     expect(result.output).toContain("fs_other_run");
   });
 
-  it("allows human bb.rpc handlers while rejecting human-only methods in agent or CLI handlers", async () => {
+  it("allows human bb.rpc handlers and local HBOM proposals while rejecting human-only methods in agent or CLI handlers", async () => {
     const root = await fixtureRoot();
     await write(root, `${pluginRootRelativePath}lanes/findings/register.ts`, `bb.rpc.register({ name: "sync.push", handler() {} });
-bb.agents.registerTool({ name: "fs_bench_run", description: "neutral" });\n`);
+bb.agents.registerTool({ name: "fs_bench_run", description: "hbom.candidate.propose locally" });\n`);
     expect(run(uiScript, root).status).toBe(0);
-    await write(root, `${pluginRootRelativePath}lanes/findings/register.ts`, `bb.agents.registerTool({ name: "fs_bench_run", description: "neutral", execute() { return "sync.push"; } });\n`);
+    await write(root, `${pluginRootRelativePath}lanes/findings/register.ts`, `bb.agents.registerTool({ name: "fs_bench_run", description: "neutral", execute() { return "review.transition"; } });\n`);
+    expect(run(uiScript, root).output).toContain("agent/CLI handler exposes human-only mutation");
+    await write(root, `${pluginRootRelativePath}lanes/findings/register.ts`, `bb.cli.register({ name: "review", run() { return "verifications.manualAttestation.record"; } });\n`);
     expect(run(uiScript, root).output).toContain("agent/CLI handler exposes human-only mutation");
   });
 
-  it("rejects dependency additions, versions, and direct zod", async () => {
+  it("requires the accepted Zod range and rejects dependency additions, versions, and second resolutions", async () => {
     const root = await fixtureRoot();
     const manifestPath = `${pluginRootRelativePath}package.json`;
-    await write(root, manifestPath, JSON.stringify({ name: "bb-plugin-finite-state", dependencies: { yaml: "^2.9.0", added: "1.0.0" } }));
+    await write(root, manifestPath, JSON.stringify({ name: "bb-plugin-finite-state", dependencies: { yaml: "^2.9.0", zod: "^4.3.6", added: "1.0.0" } }));
     expect(run(dependencyScript, root).output).toContain("dependency freeze drift");
-    await write(root, manifestPath, JSON.stringify({ name: "bb-plugin-finite-state", dependencies: { yaml: "^3.0.0" } }));
+    await write(root, manifestPath, JSON.stringify({ name: "bb-plugin-finite-state", dependencies: { yaml: "^3.0.0", zod: "^4.3.6" } }));
     expect(run(dependencyScript, root).output).toContain("dependency freeze drift");
     await write(root, manifestPath, JSON.stringify({ name: "bb-plugin-finite-state", dependencies: { yaml: "^2.9.0", zod: "4.3.6" } }));
     expect(run(dependencyScript, root).output).toContain("dependency freeze drift");
-    const baselinePath = path.join(root, `${pluginRootRelativePath}frozen-artifacts.json`);
-    const baseline = JSON.parse(await readFile(baselinePath, "utf8"));
-    baseline.dependencyBaseline.dependencies.zod = "4.3.6";
-    await writeFile(baselinePath, `${JSON.stringify(baseline)}\n`);
-    expect(run(dependencyScript, root).output).toContain("must not declare zod directly");
+    await write(root, manifestPath, JSON.stringify({ name: "bb-plugin-finite-state", dependencies: { yaml: "^2.9.0", zod: "^4.3.6" } }));
+    await write(root, "pnpm-lock.yaml", `importers:
+  plugins/bb-plugin-finite-state:
+    dependencies:
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+packages:
+  zod@4.3.6:
+  zod@4.4.0:
+`);
+    expect(run(dependencyScript, root).output).toContain("exactly one zod package resolution");
   });
 
   it("keeps the exact guard command sequence in the verified CI workflow", async () => {
     const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/ci.yml"), "utf8");
     expect(workflow).toContain("pnpm exec turbo run typecheck test lint build --filter=bb-plugin-finite-state");
-    expect(workflow).toContain("node plugins/bb-plugin-finite-state/scripts/check-frozen-artifacts.mjs");
+    expect(workflow).toContain("node plugins/bb-plugin-finite-state/scripts/check-frozen-artifacts.mjs --base");
     expect(workflow).toContain("node plugins/bb-plugin-finite-state/scripts/check-ui-rules.mjs");
     expect(workflow).toContain("node plugins/bb-plugin-finite-state/scripts/check-dependency-freeze.mjs");
   });

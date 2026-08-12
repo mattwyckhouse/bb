@@ -9,7 +9,15 @@ const pluginRelativePath = "plugins/bb-plugin-finite-state";
 const recovery = "file an amendment; do not edit the frozen artifact locally.";
 const extensions = new Set([".ts", ".tsx", ".css"]);
 const actionToolNames = new Set(["fs_verification_run", "fs_bench_run", "fs_firmware_materialize"]);
-const humanOnlyMethods = new Set(["sync.push", "sync.push.retry", "sync.conflict.resolve", "hbom.review.resolve", "hbom.extraction.apply"]);
+const humanOnlyMethods = new Set([
+  "sync.push",
+  "sync.push.retry",
+  "sync.conflict.resolve",
+  "hbom.review.resolve",
+  "hbom.extraction.apply",
+  "review.transition",
+  "verifications.manualAttestation.record",
+]);
 
 function fail(message) {
   throw new Error(`${message}\nRecovery: ${recovery}`);

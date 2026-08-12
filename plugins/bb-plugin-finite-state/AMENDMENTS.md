@@ -66,11 +66,9 @@ Inactive entries are deliberately not frozen yet.
 - Broadcast commit: `4f5431306245d2aef2abaa6aac342d947c780bdf` (initial target-repository corpus import)
 - Result: Platform and Assurance Studio are direct typed REST data planes. Forge is nullable and restricted to the checksummed compute manifest. `prepareFirmwareRoot` is deliberately unresolved and must be removed or proven before WP-06 freezes.
 
-## Pending amendments
-
 ### A-001 — Declare the repo-pinned Zod runtime dependency
 
-- Status: implementation complete; pending independent review
+- Status: approved
 - Artifacts:
   - `plugins/bb-plugin-finite-state/package.json`
 - Contract version: n/a
@@ -83,9 +81,13 @@ Inactive entries are deliberately not frozen yet.
 - Reason: WP-03 requires a runtime Zod import, but the plugin package cannot resolve Zod under an isolated Node 22.19 workspace install unless it declares the dependency directly. The repository override already pins Zod to 4.3.6.
 - Migration: declare `zod` `^4.3.6` in the plugin runtime dependencies and add only that dependency to the finite-state lockfile importer, reusing the existing `zod@4.3.6` package resolution. No source contract, composition root, or product behavior changes.
 - Affected WPs and gates: WP-03 (FS-17) and WP-09 dependency-freeze checks; Node 22.19 frozen install and the scoped finite-state typecheck/test/lint/build gate
-- Contract owner: Matt Wyckhouse (task authority; merge approval pending)
-- Affected-lane reviewer: pending independent review on the A-001 draft pull request
+- Contract owner: Matt Wyckhouse (task authority)
+- Affected-lane reviewer: independent review approved before PR #7 merge
 - Implementation base commit: `ba28401a45b31dd1e907a043138207505fb01a4f`
-- Merge commit: pending
-- Broadcast commit: pending; FS-17 resumes only after A-001 merges to `finite-state/integration`
-- Result: pending merge. The plugin resolves the repo-pinned Zod 4.3.6 runtime directly, while the lockfile retains every pre-existing importer and package resolution unchanged.
+- Merge commit: `ad2a96b09b063ab8c8b9f50484d8f6a5f98d9210`
+- Broadcast commit: `ad2a96b09b063ab8c8b9f50484d8f6a5f98d9210`
+- Result: merged to `finite-state/integration`. The plugin resolves the repo-pinned Zod 4.3.6 runtime directly, while the lockfile retains every pre-existing importer and package resolution unchanged.
+
+## Pending amendments
+
+None.
