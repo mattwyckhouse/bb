@@ -5,5 +5,6 @@ This file records intentional changes outside `plugins/bb-plugin-finite-state/`.
 | Commit | Path | Reason | Recovery |
 |---|---|---|---|
 | `7a8f7c5725b886c3b537c756f7e1aea7ba2c8dbb` | `.nvmrc`, `.bb-env-setup.sh` | Pin every autonomous worktree to Node 22.19.0 and a frozen-lockfile install; fail provisioning closed | Revert the commit after the upstream repository adopts an equivalent or newer compatible pin |
+| `FS-23 (this commit)` | `.github/workflows/ci.yml` | Run the finite-state plugin's explicit Turbo gate plus frozen-artifact, UI/safety, and dependency guards in the established CI workflow | Revert this row and the `finite-state-guards` job together if the plugin is removed |
 
 WP-01 may update `.nvmrc` only if the already-recorded pin is absent. WP-02 exclusively owns the builtin plugin registry change. Any other out-of-directory edit requires an amendment.

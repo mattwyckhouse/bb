@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "contractVersion": 0,
+  "artifacts": {
+    "plugins/bb-plugin-finite-state/server.ts": {
+      "sha256": "510c19ab0ef428a52a0d23c4225c9ded3f2a64d3518dcfe158900c05e849941c",
+      "amendment": null,
+      "active": true
+    },
+    "plugins/bb-plugin-finite-state/app.tsx": {
+      "sha256": "f7e8aa6d22be0b432ad3b631864f2f381deaf768ca0cc9d1cb85558cb1f8a6d0",
+      "amendment": null,
+      "active": true
+    },
+    "plugins/bb-plugin-finite-state/shared/contract.ts": {
+      "sha256": "e7710752b7c8817cc561098ab993ab259279e603e2e67653b888d60cc56a2219",
+      "amendment": null,
+      "active": false
+    },
+    "plugins/bb-plugin-finite-state/lib/store/schema.ts": {
+      "sha256": "933fb82cfa4634a4e11b69eee839725aa5a6f5805007129f2bb697a038972c53",
+      "amendment": null,
+      "active": false
+    },
+    "plugins/bb-plugin-finite-state/lib/sync/registry.ts": {
+      "sha256": "0d13ed068e92c840151d017f5f225178104734f717d0cee543e85d25c2e90c8c",
+      "amendment": null,
+      "active": false
+    },
+    "plugins/bb-plugin-finite-state/lib/remote/types.ts": {
+      "sha256": "ca5963cfe55a6708d1ba6f29a6ac660ab3879360dbd0018e1a3a4badb6e0a110",
+      "amendment": null,
+      "active": false
+    },
+    "plugins/bb-plugin-finite-state/test/mock-remote/fixtures/**": {
+      "treeSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "amendment": null,
+      "active": false
+    }
+  },
+  "dependencyBaseline": {
+    "dependencies": {
+      "@modelcontextprotocol/sdk": "^1.29.0",
+      "@tanstack/react-virtual": "^3.14.2",
+      "@xyflow/react": "^12.11.2",
+      "elkjs": "^0.12.0",
+      "exceljs": "^4.4.0",
+      "yaml": "^2.9.0"
+    },
+    "devDependencies": {
+      "@bb/domain": "workspace:*",
+      "@bb/plugin-build": "workspace:*",
+      "@bb/plugin-sdk": "workspace:*",
+      "@bb/tsconfig": "workspace:*",
+      "@testing-library/react": "^16.3.2",
+      "@types/better-sqlite3": "^7.6.12",
+      "@types/node": "^22.0.0",
+      "@types/react": "^19.0.0",
+      "better-sqlite3": "12.10.0",
+      "jsdom": "^29.0.1",
+      "react": "^19.0.0",
+      "react-dom": "^19.0.0",
+      "typescript": "npm:@typescript/typescript6@^6.0.2",
+      "typescript-7": "npm:typescript@^7.0.2",
+      "vitest": "^4.1.1"
+    },
+    "peerDependencies": {},
+    "optionalDependencies": {}
+  }
+}

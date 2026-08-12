@@ -13,11 +13,47 @@ Each amendment must record:
 
 No amendment is implied by an implementation task, code comment, or local workaround.
 
+## Guard entry format
+
+`check-frozen-artifacts.mjs --accept <id>` accepts only an already-approved
+`A-*` or `AMD-*` entry with these exact fields directly below its `###` heading.
+The artifact list must name exactly the frozen paths (or plugin `package.json`)
+whose baseline changes. `Contract version` is the numeric `CONTRACT_VERSION`
+when `shared/contract.ts` changes, otherwise `n/a`. This intentionally small,
+line-oriented format keeps the approval visible in review while making a prose
+edit unable to bypass the guard.
+
+The WP-09 bootstrap records SHA-256 provenance for all listed interfaces, but
+only activates the two composition roots. The currently unresolved WP-03/04/05/06
+and WP-08 entries remain `active: false`; their owning, independently reviewed
+merge must change the artifact and run `--accept <AMD-id>` to activate its hash.
+Inactive entries are deliberately not frozen yet.
+
+```md
+### AMD-0001 — Short title
+
+- Status: approved
+- Artifacts:
+  - `plugins/bb-plugin-finite-state/shared/contract.ts`
+- Contract version: 2
+```
+
 ## Approved amendments
 
 ### A-000 — Direct APIs and optional Forge compute
 
-- Status: approved and merged
+- Status: approved
+- Merge status: merged
+- Artifacts:
+  - `plugins/bb-plugin-finite-state/server.ts`
+  - `plugins/bb-plugin-finite-state/app.tsx`
+  - `plugins/bb-plugin-finite-state/shared/contract.ts`
+  - `plugins/bb-plugin-finite-state/lib/store/schema.ts`
+  - `plugins/bb-plugin-finite-state/lib/sync/registry.ts`
+  - `plugins/bb-plugin-finite-state/lib/remote/types.ts`
+  - `plugins/bb-plugin-finite-state/test/mock-remote/fixtures/**`
+  - `plugins/bb-plugin-finite-state/package.json`
+- Contract version: 0
 - Prior artifact hashes: pre-freeze; no contract baseline existed
 - New artifact hashes: `BASELINE.json` records the approved spec and vendored-input hashes
 - Reason: replace Forge-as-data-gateway with direct typed Platform and Assurance Studio REST while retaining only unique Forge compute
