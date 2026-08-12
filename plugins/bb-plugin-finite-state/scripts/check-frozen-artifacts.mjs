@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -140,8 +141,18 @@ function validateBaseline(baseline) {
 }
 
 function parseAmendments(source) {
+  let fence = null;
+  let unfencedSource = "";
+  for (const line of source.split("\n")) {
+    const marker = /^\s*(?<marker>`{3,}|~{3,})/u.exec(line)?.groups?.marker;
+    if (marker) {
+      fence = fence ? null : marker[0];
+    } else if (!fence) {
+      unfencedSource += `${line}\n`;
+    }
+  }
   const amendments = new Map();
-  const sections = source.split(/^### /mu).slice(1);
+  const sections = unfencedSource.split(/^### /mu).slice(1);
   for (const section of sections) {
     const [heading, ...bodyLines] = section.split("\n");
     const idMatch = /^(?<id>(?:A|AMD)-\d{3,})\s+—/u.exec(heading);
@@ -157,6 +168,39 @@ function parseAmendments(source) {
     amendments.set(idMatch.groups.id, { artifacts, contractVersion });
   }
   return amendments;
+}
+
+function priorBaseline(root, baselineRelativePath) {
+  const relativePath = toPosix(baselineRelativePath);
+  try {
+    const isDirty = spawnSync("git", ["diff", "--quiet", "--", relativePath], { cwd: root, stdio: ["ignore", "pipe", "ignore"] }).status !== 0;
+    const revision = isDirty ? "HEAD" : "HEAD^1";
+    return JSON.parse(execFileSync("git", ["show", `${revision}:${relativePath}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }));
+  } catch {
+    return null;
+  }
+}
+
+function assertMonotonicBaseline(previous, current, approvedAmendments) {
+  if (!previous) return;
+  validateBaseline(previous);
+  for (const artifact of frozenRelativePaths) {
+    const before = previous.artifacts[artifact];
+    const after = current.artifacts[artifact];
+    const key = artifact.endsWith("/**") ? "treeSha256" : "sha256";
+    if (before.active && !after.active) {
+      fail(`Frozen baseline activation cannot be withdrawn: ${artifact}`);
+    }
+    if (!before.active && !after.active && before[key] !== after[key]) {
+      fail(`Inactive baseline provenance cannot be rewritten before activation: ${artifact}`);
+    }
+    if (before[key] !== after[key] || (!before.active && after.active)) {
+      const amendmentId = after.amendment;
+      if (amendmentId === before.amendment || !amendmentId || !approvedAmendments.get(amendmentId)?.artifacts.includes(artifact)) {
+        fail(`Frozen baseline change for ${artifact} requires a structured approved amendment`);
+      }
+    }
+  }
 }
 
 async function readApprovedAmendment(root, amendmentId) {
@@ -190,12 +234,12 @@ async function currentHashes(root) {
   return hashes;
 }
 
-function generatedBaseline(hashes, dependencyBaseline, contractVersion) {
+function generatedBaseline(hashes, dependencyBaseline, contractVersion, amendmentId) {
   const artifacts = Object.fromEntries(frozenRelativePaths.map((artifact) => [
     artifact,
     artifact.endsWith("/**")
-      ? { treeSha256: hashes[artifact], amendment: null, active: compositionRootPaths.has(artifact) }
-      : { sha256: hashes[artifact], amendment: null, active: compositionRootPaths.has(artifact) },
+      ? { treeSha256: hashes[artifact], amendment: amendmentId, active: compositionRootPaths.has(artifact) }
+      : { sha256: hashes[artifact], amendment: amendmentId, active: compositionRootPaths.has(artifact) },
   ]));
   return { version: 1, contractVersion, artifacts, dependencyBaseline };
 }
@@ -242,7 +286,7 @@ async function accept(root, amendmentId) {
     }
   }
 
-  const next = baseline ?? generatedBaseline(hashes, dependencies, contractVersion);
+  const next = baseline ?? generatedBaseline(hashes, dependencies, contractVersion, amendmentId);
   if (baseline) {
     for (const artifact of changedArtifacts) {
       const key = artifact.endsWith("/**") ? "treeSha256" : "sha256";
@@ -269,6 +313,7 @@ async function check(root) {
   }
   validateBaseline(baseline);
   const approvedAmendments = await readApprovedAmendmentMap(root);
+  assertMonotonicBaseline(priorBaseline(root, path.relative(root, baselinePath)), baseline, approvedAmendments);
   for (const artifact of frozenRelativePaths) {
     const amendmentId = baseline.artifacts[artifact].amendment;
     if (baseline.artifacts[artifact].active && amendmentId && !approvedAmendments.get(amendmentId)?.artifacts.includes(artifact)) {

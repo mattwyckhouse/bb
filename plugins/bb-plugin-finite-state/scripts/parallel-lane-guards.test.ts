@@ -54,6 +54,10 @@ async function write(root: string, relativePath: string, contents: string) {
   await writeFile(destination, contents);
 }
 
+function git(root: string, ...arguments_: string[]) {
+  execFileSync("git", arguments_, { cwd: root, stdio: "ignore" });
+}
+
 function amendment(id: string, artifacts: string[], contractVersion = "n/a", status = "approved") {
   return `### ${id} — fixture amendment\n\n- Status: ${status}\n- Artifacts:\n${artifacts.map((artifact) => `  - \`${artifact}\``).join("\n")}\n- Contract version: ${contractVersion}\n`;
 }
@@ -71,6 +75,13 @@ async function fixtureRoot() {
   await write(root, `${pluginRootRelativePath}test/mock-remote/fixtures/base.json`, '{"fixture":true}\n');
   await write(root, `${pluginRootRelativePath}package.json`, JSON.stringify({ name: "bb-plugin-finite-state", dependencies: { yaml: "^2.9.0" } }));
   await write(root, `${pluginRootRelativePath}AMENDMENTS.md`, amendment("A-000", [...artifactPaths, `${pluginRootRelativePath}package.json`], "0"));
+  await write(root, `${pluginRootRelativePath}lib/agentic/registry.ts`, `export const AGENT_SURFACE = {
+  tools: {
+    fs_verification_run: { class: "action", server: "invoke" },
+    fs_bench_run: { class: "action", server: "invoke" },
+    fs_firmware_materialize: { class: "action", server: "read-fetch" },
+  },
+} as const;\n`);
   await write(root, `${pluginRootRelativePath}lanes/findings/register.app.tsx`, 'export const panel = <div className="bg-card text-muted-foreground">CVE-2025-1234 #CVE deadbeef</div>;\n');
   expect(run(frozenScript, root, "--accept", "A-000").status).toBe(0);
   const baselinePath = path.join(root, `${pluginRootRelativePath}frozen-artifacts.json`);
@@ -78,6 +89,14 @@ async function fixtureRoot() {
   for (const artifact of Object.values(baseline.artifacts)) artifact.active = true;
   await writeFile(baselinePath, `${JSON.stringify(baseline)}\n`);
   return root;
+}
+
+function commitFixtureBaseline(root: string) {
+  git(root, "init");
+  git(root, "config", "user.email", "fixture@example.test");
+  git(root, "config", "user.name", "Fixture");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "fixture baseline");
 }
 
 afterEach(async () => {
@@ -133,6 +152,11 @@ describe("parallel lane guards", () => {
     const pending = run(frozenScript, root, "--accept", "AMD-0001");
     expect(pending.status).toBe(1);
     expect(pending.output).toContain("structured approved entry");
+
+    await write(root, `${pluginRootRelativePath}AMENDMENTS.md`, `\`\`\`md\n${amendment("AMD-0001", [`${pluginRootRelativePath}app.tsx`])}\`\`\`\n`);
+    const fenced = run(frozenScript, root, "--accept", "AMD-0001");
+    expect(fenced.status).toBe(1);
+    expect(fenced.output).toContain("structured approved entry");
   });
 
   it("updates only the approved changed artifact", async () => {
@@ -142,7 +166,7 @@ describe("parallel lane guards", () => {
     expect(run(frozenScript, root, "--accept", "AMD-0001").status).toBe(0);
     const baseline = JSON.parse(await readFile(path.join(root, `${pluginRootRelativePath}frozen-artifacts.json`), "utf8"));
     expect(baseline.artifacts[`${pluginRootRelativePath}app.tsx`].amendment).toBe("AMD-0001");
-    expect(baseline.artifacts[`${pluginRootRelativePath}server.ts`].amendment).toBeNull();
+    expect(baseline.artifacts[`${pluginRootRelativePath}server.ts`].amendment).toBe("A-000");
   });
 
   it("requires an advancing CONTRACT_VERSION for contract amendments", async () => {
@@ -163,10 +187,26 @@ describe("parallel lane guards", () => {
     await writeFile(baselinePath, `${JSON.stringify(baseline)}\n`);
     await write(root, `${pluginRootRelativePath}lib/remote/types.ts`, "export type Remote = { id: string };\n");
     expect(run(frozenScript, root).status).toBe(0);
-    await write(root, `${pluginRootRelativePath}AMENDMENTS.md`, amendment("AMD-0004", [`${pluginRootRelativePath}lib/remote/types.ts`]));
+    const amendmentLog = await readFile(path.join(root, `${pluginRootRelativePath}AMENDMENTS.md`), "utf8");
+    await write(root, `${pluginRootRelativePath}AMENDMENTS.md`, `${amendmentLog}\n${amendment("AMD-0004", [`${pluginRootRelativePath}lib/remote/types.ts`])}`);
     expect(run(frozenScript, root, "--accept", "AMD-0004").status).toBe(0);
     await write(root, `${pluginRootRelativePath}lib/remote/types.ts`, "export type Remote = { id: number };\n");
     expect(run(frozenScript, root).output).toContain(`${pluginRootRelativePath}lib/remote/types.ts`);
+  });
+
+  it("rejects baseline hash rewrites and deactivation after a baseline is committed", async () => {
+    const root = await fixtureRoot();
+    commitFixtureBaseline(root);
+    const baselinePath = path.join(root, `${pluginRootRelativePath}frozen-artifacts.json`);
+    const baseline = JSON.parse(await readFile(baselinePath, "utf8"));
+    baseline.artifacts[`${pluginRootRelativePath}server.ts`].active = false;
+    await writeFile(baselinePath, `${JSON.stringify(baseline)}\n`);
+    expect(run(frozenScript, root).output).toContain("activation cannot be withdrawn");
+
+    baseline.artifacts[`${pluginRootRelativePath}server.ts`].active = true;
+    baseline.artifacts[`${pluginRootRelativePath}lib/remote/types.ts`].sha256 = "0".repeat(64);
+    await writeFile(baselinePath, `${JSON.stringify(baseline)}\n`);
+    expect(run(frozenScript, root).output).toContain("Frozen baseline change");
   });
 
   it.each([
@@ -178,13 +218,31 @@ describe("parallel lane guards", () => {
     ["frontend remote import", 'import { PlatformClient } from "../../lib/remote/client"; export const panel = <div />;', "frontend import crosses the RPC boundary"],
     ["direct API access", 'export const panel = <div>{fetch("/api")}</div>;', "frontend direct-API/compute access"],
     ["human mutation", 'export const name = "fs_sync_push";', "human-only mutation path"],
-    ["unapproved action tool", 'bb.agents.registerTool({ name: "fs_other_run", description: "update a remote record" });', "agent action tool is outside the three-name allowlist"],
+    ["unregistered agent tool", 'bb.agents.registerTool({ name: "fs_other_run", description: "Execute the remote assurance workflow" });', "agent registration is absent from canonical registry"],
   ])("rejects %s", async (_name, source, expected) => {
     const root = await fixtureRoot();
     await write(root, `${pluginRootRelativePath}lanes/findings/register.app.tsx`, source);
     const result = run(uiScript, root);
     expect(result.status).toBe(1);
     expect(result.output).toContain(expected);
+  });
+
+  it("checks each agent registration against the canonical action set, independent of order or wording", async () => {
+    const root = await fixtureRoot();
+    await write(root, `${pluginRootRelativePath}lanes/findings/register.ts`, `bb.agents.registerTool({ name: "fs_bench_run", description: "${"neutral descriptor ".repeat(80)}" });
+bb.agents.registerTool({ name: "fs_other_run", description: "apply server-side operation" });\n`);
+    const result = run(uiScript, root);
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("fs_other_run");
+  });
+
+  it("allows human bb.rpc handlers while rejecting human-only methods in agent or CLI handlers", async () => {
+    const root = await fixtureRoot();
+    await write(root, `${pluginRootRelativePath}lanes/findings/register.ts`, `bb.rpc.register({ name: "sync.push", handler() {} });
+bb.agents.registerTool({ name: "fs_bench_run", description: "neutral" });\n`);
+    expect(run(uiScript, root).status).toBe(0);
+    await write(root, `${pluginRootRelativePath}lanes/findings/register.ts`, `bb.agents.registerTool({ name: "fs_bench_run", description: "neutral", execute() { return "sync.push"; } });\n`);
+    expect(run(uiScript, root).output).toContain("agent/CLI handler exposes human-only mutation");
   });
 
   it("rejects dependency additions, versions, and direct zod", async () => {
