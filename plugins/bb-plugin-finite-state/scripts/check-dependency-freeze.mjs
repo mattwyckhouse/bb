@@ -41,8 +41,9 @@ function pluginImporter(lockfile) {
   const marker = `  ${pluginRelativePath}:`;
   const start = lockfile.indexOf(marker);
   if (start === -1) fail("pnpm-lock.yaml is missing the Finite State plugin importer");
-  const nextImporter = lockfile.indexOf("\npackages:", start + marker.length);
-  return lockfile.slice(start, nextImporter === -1 ? lockfile.length : nextImporter);
+  const remainder = lockfile.slice(start + marker.length);
+  const nextImporter = /\n {2}(?! )[^:\n]+:\n/u.exec(remainder);
+  return lockfile.slice(start, nextImporter ? start + marker.length + nextImporter.index : lockfile.indexOf("\npackages:", start + marker.length));
 }
 
 function assertPinnedZod(root, actual) {

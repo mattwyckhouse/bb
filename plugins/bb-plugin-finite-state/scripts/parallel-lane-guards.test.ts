@@ -96,9 +96,22 @@ packages:
   await write(root, `${pluginRootRelativePath}AMENDMENTS.md`, amendment("A-000", [...artifactPaths, `${pluginRootRelativePath}package.json`], "0"));
   await write(root, `${pluginRootRelativePath}lib/agentic/registry.ts`, `export const AGENT_SURFACE = {
   tools: {
+    fs_sync_status: { class: "read", server: "none" },
+    fs_sync_plan: { class: "read", server: "read-refresh" },
+    fs_findings_query: { class: "read", server: "none" },
+    fs_triage_set: { class: "write", server: "none" },
+    fs_triage_apply_policy: { class: "write", server: "none" },
+    fs_tara_query: { class: "read", server: "none" },
+    fs_requirement_write: { class: "write", server: "none" },
+    fs_ears_convert: { class: "read", server: "none" },
     fs_verification_run: { class: "action", server: "invoke" },
+    fs_sbom_query: { class: "read", server: "none" },
+    fs_hbom_extract: { class: "write", server: "none" },
+    fs_hbom_review: { class: "read", server: "none" },
     fs_bench_run: { class: "action", server: "invoke" },
     fs_firmware_materialize: { class: "action", server: "read-fetch" },
+    fs_bench_status: { class: "read", server: "none" },
+    fs_doc_search: { class: "read", server: "none" },
   },
 } as const;\n`);
   await write(root, `${pluginRootRelativePath}lanes/findings/register.app.tsx`, 'export const panel = <div className="bg-card text-muted-foreground">CVE-2025-1234 #CVE deadbeef</div>;\n');
@@ -271,6 +284,13 @@ bb.agents.registerTool({ name: "fs_other_run", description: "apply server-side o
     expect(result.output).toContain("fs_other_run");
   });
 
+  it("allows canonical read and tracked-local write registrations", async () => {
+    const root = await fixtureRoot();
+    await write(root, `${pluginRootRelativePath}lanes/findings/register.ts`, `bb.agents.registerTool({ name: "fs_findings_query", description: "read" });
+bb.agents.registerTool({ name: "fs_triage_set", description: "tracked local write" });\n`);
+    expect(run(uiScript, root).status).toBe(0);
+  });
+
   it("allows human bb.rpc handlers and local HBOM proposals while rejecting human-only methods in agent or CLI handlers", async () => {
     const root = await fixtureRoot();
     await write(root, `${pluginRootRelativePath}lanes/findings/register.ts`, `bb.rpc.register({ name: "sync.push", handler() {} });
@@ -303,6 +323,21 @@ packages:
   zod@4.4.0:
 `);
     expect(run(dependencyScript, root).output).toContain("exactly one zod package resolution");
+    await write(root, "pnpm-lock.yaml", `importers:
+  plugins/bb-plugin-finite-state:
+    dependencies:
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
+  another-importer:
+    dependencies:
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+packages:
+  zod@4.3.6:
+`);
+    expect(run(dependencyScript, root).output).toContain("Finite State plugin importer must resolve zod");
   });
 
   it("keeps the exact guard command sequence in the verified CI workflow", async () => {

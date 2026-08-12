@@ -9,6 +9,24 @@ const pluginRelativePath = "plugins/bb-plugin-finite-state";
 const recovery = "file an amendment; do not edit the frozen artifact locally.";
 const extensions = new Set([".ts", ".tsx", ".css"]);
 const actionToolNames = new Set(["fs_verification_run", "fs_bench_run", "fs_firmware_materialize"]);
+const canonicalToolNames = new Set([
+  "fs_sync_status",
+  "fs_sync_plan",
+  "fs_findings_query",
+  "fs_triage_set",
+  "fs_triage_apply_policy",
+  "fs_tara_query",
+  "fs_requirement_write",
+  "fs_ears_convert",
+  "fs_verification_run",
+  "fs_sbom_query",
+  "fs_hbom_extract",
+  "fs_hbom_review",
+  "fs_firmware_materialize",
+  "fs_bench_run",
+  "fs_bench_status",
+  "fs_doc_search",
+]);
 const humanOnlyMethods = new Set([
   "sync.push",
   "sync.push.retry",
@@ -124,25 +142,26 @@ function callObjects(source, callee) {
   return objects;
 }
 
-function canonicalActionTools(source) {
+function canonicalToolRegistry(source) {
   const toolsMarker = source.indexOf("tools:");
   if (toolsMarker === -1) return null;
   const opening = source.indexOf("{", toolsMarker);
   const toolsObject = opening === -1 ? null : extractBalanced(source, opening);
   if (!toolsObject) return null;
-  const actions = new Set();
+  const tools = new Map();
   for (const entry of propertyEntries(toolsObject)) {
     const separator = entry.indexOf(":");
     const objectStart = entry.indexOf("{");
     if (separator === -1 || objectStart === -1) continue;
     const name = entry.slice(0, separator).trim().replace(/^["']|["']$/gu, "");
     const specification = extractBalanced(entry, objectStart);
-    if (specification && literalProperty(specification, "class") === "action") actions.add(name);
+    const toolClass = specification ? literalProperty(specification, "class") : null;
+    if (toolClass) tools.set(name, toolClass);
   }
-  return actions;
+  return tools;
 }
 
-function violationsFor(relativePath, source, registryActions = null) {
+function violationsFor(relativePath, source, registryTools = null) {
   const clean = withoutComments(source);
   const violations = [];
   const isCss = relativePath.endsWith(".css");
@@ -160,7 +179,7 @@ function violationsFor(relativePath, source, registryActions = null) {
   for (const objectSource of callObjects(clean, "bb.agents.registerTool")) {
     const name = literalProperty(objectSource, "name");
     if (!name) violations.push("agent registration must use a literal canonical name");
-    else if (!registryActions?.has(name)) violations.push(`agent registration is absent from canonical registry: ${name}`);
+    else if (!registryTools?.has(name)) violations.push(`agent registration is absent from canonical registry: ${name}`);
   }
   for (const callee of ["bb.agents.registerTool", "bb.cli.register"]) {
     for (const objectSource of callObjects(clean, callee)) {
@@ -173,8 +192,12 @@ function violationsFor(relativePath, source, registryActions = null) {
   return violations;
 }
 
-function actionSetViolation(actions) {
-  if (!actions) return null;
+function registryViolation(tools) {
+  if (!tools) return null;
+  const actions = new Set([...tools].filter(([, toolClass]) => toolClass === "action").map(([name]) => name));
+  if (tools.size !== canonicalToolNames.size || [...tools.keys()].some((name) => !canonicalToolNames.has(name))) {
+    return `canonical registry must contain exactly the ${canonicalToolNames.size} declared tool names`;
+  }
   if (actions.size !== actionToolNames.size || [...actions].some((name) => !actionToolNames.has(name))) {
     return `canonical action-kind set must be exactly ${[...actionToolNames].join(", ")}`;
   }
@@ -186,19 +209,19 @@ async function main() {
   const laneDirectory = `${pluginRelativePath}/lanes`;
   const registryPath = path.join(root, pluginRelativePath, "lib/agentic/registry.ts");
   const registrySource = await fs.readFile(registryPath, "utf8").catch((error) => error && typeof error === "object" && "code" in error && error.code === "ENOENT" ? null : Promise.reject(error));
-  const registryActions = registrySource ? canonicalActionTools(withoutComments(registrySource)) : null;
+  const registryTools = registrySource ? canonicalToolRegistry(withoutComments(registrySource)) : null;
   const violations = [];
-  const actionViolation = actionSetViolation(registryActions);
-  if (actionViolation) violations.push(`plugins/bb-plugin-finite-state/lib/agentic/registry.ts: ${actionViolation}`);
+  const registryError = registryViolation(registryTools);
+  if (registryError) violations.push(`plugins/bb-plugin-finite-state/lib/agentic/registry.ts: ${registryError}`);
   for (const filePath of await sourceFiles(root, laneDirectory)) {
     const relativePath = path.relative(root, filePath).split(path.sep).join("/");
-    for (const violation of violationsFor(relativePath, await fs.readFile(filePath, "utf8"), registryActions)) violations.push(`${relativePath}: ${violation}`);
+    for (const violation of violationsFor(relativePath, await fs.readFile(filePath, "utf8"), registryTools)) violations.push(`${relativePath}: ${violation}`);
   }
   if (violations.length) fail(`Finite State UI/safety rule violations:\n${violations.join("\n")}`);
   process.stdout.write("Finite State UI and lane safety rules are intact.\n");
 }
 
-export { actionSetViolation, canonicalActionTools, violationsFor };
+export { canonicalToolRegistry, registryViolation, violationsFor };
 
 main().catch((error) => {
   process.stderr.write(`${error.message}\n`);
