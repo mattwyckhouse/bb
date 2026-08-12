@@ -32,14 +32,20 @@ function run(script: string, root: string, ...arguments_: string[]) {
     let output = "";
     if (error && typeof error === "object") {
       if ("status" in error && typeof error.status === "number") status = error.status;
-      if ("stdout" in error && Buffer.isBuffer(error.stdout)) output += error.stdout.toString();
-      if ("stderr" in error && Buffer.isBuffer(error.stderr)) output += error.stderr.toString();
+      if ("stdout" in error) output += processOutput(error.stdout);
+      if ("stderr" in error) output += processOutput(error.stderr);
     }
     return {
       status,
       output,
     };
   }
+}
+
+function processOutput(value: unknown) {
+  if (typeof value === "string") return value;
+  if (Buffer.isBuffer(value)) return value.toString();
+  return "";
 }
 
 async function write(root: string, relativePath: string, contents: string) {
@@ -84,6 +90,14 @@ describe("parallel lane guards", () => {
     expect(run(frozenScript, root).status).toBe(0);
     expect(run(dependencyScript, root).status).toBe(0);
     expect(run(uiScript, root).status).toBe(0);
+  });
+
+  it("captures diagnostics from a failed guard process", async () => {
+    const root = await fixtureRoot();
+    const result = run(frozenScript, root, "--accept", "AMD-0001");
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("Amendment AMD-0001 is not a structured approved entry");
+    expect(result.output).toContain("file an amendment; do not edit the frozen artifact locally.");
   });
 
   it("fails separately for root, frozen, and fixture-tree mutations", async () => {
