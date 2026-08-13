@@ -137,7 +137,6 @@ function findingIdentity(
   if (componentId === null) throw new TypeError("Platform finding is missing component identity id");
   const joined = identities.get(componentId);
   const purl = optionalString(row, "componentPurl")
-    ?? (component === null ? null : optionalString(component, "purl"))
     ?? joined?.purl
     ?? null;
   const parsed = purlIdentity(purl);
@@ -151,7 +150,6 @@ function findingIdentity(
     purl,
     name: parsed?.name ?? fallback,
     group: parsed?.group
-      ?? (component === null ? null : optionalString(component, "group"))
       ?? joined?.group
       ?? null,
     version: parsed?.version

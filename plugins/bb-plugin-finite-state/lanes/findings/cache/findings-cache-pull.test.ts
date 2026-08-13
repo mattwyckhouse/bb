@@ -51,20 +51,25 @@ describe("findings cache pull", () => {
     const nested = normalizeFinding({
       ...finding,
       component: {
+        appId: "app-component-1",
         id: "component-1",
         name: "Mbed TLS",
-        group: "Arm",
+        vcId: "vc-component-1",
         version: "3.0.0",
-        purl: "pkg:generic/mbed-tls@3.0.0",
       },
     }, identities);
-    const joinedFromNestedId = normalizeFinding({
+    const missingJoin = normalizeFinding({
       ...finding,
-      component: { id: "component-1" },
-    }, identities);
+      component: {
+        appId: "app-component-1",
+        id: "component-1",
+        name: "Mbed TLS",
+        vcId: "vc-component-1",
+        version: "3.0.0",
+      },
+    }, new Map());
 
     expect(nested.stableKey).toBe(flat.stableKey);
-    expect(joinedFromNestedId.stableKey).toBe(flat.stableKey);
     expect(nested.stableKey).toBe(findingStableKey({
       cve: "CVE-2026-34877",
       purl: "pkg:generic/mbed-tls@3.0.0",
@@ -72,6 +77,14 @@ describe("findings cache pull", () => {
       group: "Arm",
       version: "3.0.0",
     }, "purl"));
+    expect(missingJoin.stableKey).toBe(findingStableKey({
+      cve: "CVE-2026-34877",
+      purl: null,
+      name: "Mbed TLS",
+      group: null,
+      version: "3.0.0",
+    }, "name-group-version"));
+    expect(missingJoin.stableKey).not.toBe(nested.stableKey);
   });
 
   it("reports payload keys when component identity is genuinely missing", () => {

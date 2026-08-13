@@ -172,7 +172,6 @@ export function normalizeFinding(
     ?? (component ? stringValue(component, ["id"]) : null);
   const joined = componentId ? identities.get(componentId) : undefined;
   const componentPurl = stringValue(row, ["componentPurl", "purl", "packageUrl"])
-    ?? (component ? stringValue(component, ["purl"]) : null)
     ?? joined?.purl
     ?? null;
   const componentName = stringValue(row, ["componentName", "name"])
@@ -180,24 +179,22 @@ export function normalizeFinding(
     ?? joined?.name
     ?? null;
   const componentGroup = stringValue(row, ["componentGroup", "group", "namespace"])
-    ?? (component ? stringValue(component, ["group"]) : null)
     ?? joined?.group
     ?? null;
   const componentVersion = stringValue(row, ["componentVersion", "version"])
     ?? (component ? stringValue(component, ["version"]) : null)
     ?? joined?.version
     ?? null;
-  const keyDetail = payloadKeyDetail(row, component);
   if (!componentName) {
     throw new FindingsCacheError(
       "FINDING_COMPONENT_IDENTITY_MISSING",
-      `Finding ${findingId} has no component name for canonical identity; ${keyDetail}`,
+      `Finding ${findingId} has no component name for canonical identity; ${payloadKeyDetail(row, component)}`,
     );
   }
   if (!componentPurl && !componentVersion) {
     throw new FindingsCacheError(
       "FINDING_COMPONENT_IDENTITY_MISSING",
-      `Finding ${findingId} has neither purl nor exact component version; ${keyDetail}`,
+      `Finding ${findingId} has neither purl nor exact component version; ${payloadKeyDetail(row, component)}`,
     );
   }
   let stableKey: string;
