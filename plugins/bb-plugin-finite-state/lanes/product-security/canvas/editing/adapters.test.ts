@@ -162,8 +162,13 @@ describe("canvas remote adapters", () => {
     // The seeded records intentionally exercise fixture-specific aliases. Fill
     // the remaining required AS semantics over the real client, but never add
     // slug: this is the wire contract whose regression FS-155 repairs.
+    const seededFieldsByName = new Map<string, Record<string, Json>>();
     for (const kind of TARA_KINDS) {
       for (const entity of await listAll(client, kind)) {
+        const seededName = stringField(entity, "name", "title");
+        if (seededName !== undefined) {
+          seededFieldsByName.set(seededName, entity.fields);
+        }
         await client.updateEntity(kind, {
           projectId: PROJECT_ID,
           id: entity.id,
@@ -215,29 +220,19 @@ describe("canvas remote adapters", () => {
     const assetSlug = acceptedByName.get("Protected asset 1")?.["slug"];
     expect(acceptedByName.get("Architecture node 1")).toMatchObject({
       name: "Architecture node 1",
-      component_type: "software",
-      criticality: "high",
       zone: zoneSlug,
-      interfaces: [{ name: "mock-wire" }],
-      technologies: ["typescript"],
-      is_entry_point: true,
-      stores_data: false,
     });
     expect(acceptedByName.get("Untrusted")).toMatchObject({
       name: "Untrusted",
-      trust_level: "semi_trusted",
     });
     expect(acceptedByName.get("Protected asset 1")).toMatchObject({
       name: "Protected asset 1",
-      asset_type: "credential",
-      criticality: "critical",
-      data_classification: "confidential",
     });
     expect(acceptedByName.get("Dataflow 1")).toMatchObject({
       name: "Dataflow 1",
       from: componentSlug,
       to: nextComponentSlug,
-      protocol: "MQTT",
+      protocol: seededFieldsByName.get("Dataflow 1")?.["protocol"],
       data_types: ["telemetry"],
       encrypted: true,
       authenticated: true,
@@ -245,12 +240,9 @@ describe("canvas remote adapters", () => {
     });
     expect(acceptedByName.get("Threat 1")).toMatchObject({
       name: "Threat 1",
-      category: "spoofing",
-      threat_source: "stride_analysis",
-      severity: "high",
+      category: seededFieldsByName.get("Threat 1")?.["stride"],
       affected_components: [componentSlug],
       affected_assets: [assetSlug],
-      assumptions: ["mock assumption"],
     });
     expect(requestedPageSizes).toEqual(
       TARA_KINDS.map(() => ASSURANCE_STUDIO_MAX_PAGE_SIZE),

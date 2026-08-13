@@ -772,6 +772,36 @@ describe("WP-35 plan ordering and adapter projections", () => {
       ).payload["fields"],
     ).toMatchObject({ slug: "gateway" });
   });
+
+  it("ignores an unmapped wire slug so inbound references share the ID-derived identity", () => {
+    const remoteId = "unmapped-gateway-id";
+    const fields = projectCreateFields(
+      component("gateway", "Gateway"),
+      scope,
+      projectionResolver,
+    );
+    const projected = projectRemoteEntity(
+      "component",
+      {
+        id: remoteId,
+        projectId: scope.projectId,
+        kind: "component",
+        reviewVersion: null,
+        reviewStatus: null,
+        humanEdited: null,
+        fields: { ...fields, slug: "wire-unmapped-gateway" },
+      },
+      scope,
+      {
+        remoteToSlug: () => null,
+        slugToRemote: () => null,
+      },
+    );
+
+    expect(projected.payload["fields"]).toMatchObject({
+      slug: `component-${hash(remoteId).slice(0, 20)}`,
+    });
+  });
 });
 
 describe("WP-35 delete impact, history, and conflict honesty", () => {

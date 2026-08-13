@@ -324,7 +324,6 @@ function remotePayload(
   resolver: AdapterSlugResolver,
 ): Record<string, unknown> {
   const slug = resolver.remoteToSlug(scope, kind, remoteId)
-    ?? stringField(fields, "slug")
     ?? derivedRemoteSlug(kind, remoteId);
   const name = stringField(fields, "name", "title", "label");
   if (!name) throw new Error(`${kind} remote payload lacks name.`);
