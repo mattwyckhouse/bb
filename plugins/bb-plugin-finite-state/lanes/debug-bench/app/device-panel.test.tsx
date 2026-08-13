@@ -57,6 +57,15 @@ async function firmwareBenchSlot() {
   return slot;
 }
 
+async function firmwareBenchThreadSlot() {
+  const app = await loadPluginApp(() => import("../../../app.js"));
+  const slot = app.threadPanelActions.find(
+    (panel) => panel.id === "firmware-bench-thread",
+  );
+  if (!slot) throw new Error("thread-scoped firmware bench panel not registered");
+  return slot;
+}
+
 function registryResult(families: FamilyStatus[] = [availableFamily], deviceCount = 0) {
   return { families, deviceCount, truncated: false, scannedAt: "2026-08-13T10:00:00.000Z" };
 }
@@ -154,18 +163,18 @@ describe("firmware device panel", () => {
   });
 
   it("groups devices, renders stale/setup states, confirms installs, and claims/releases", async () => {
-    const panel = await firmwareBenchSlot();
+    const panel = await firmwareBenchThreadSlot();
     const mutableDevice = { ...device };
     const install = vi.fn(() => ({
       proposalToken: "proposal-1",
       familyId: "saleae-logic",
       helperId: "logic2-automation",
       state: "installed" as const,
-      confirmedBy: "human-response:thread-1",
+      confirmedBy: "request-input-response:thread-1:fixture",
       message: "installed",
       completedAt: "2026-08-13T10:01:00.000Z",
     }));
-    const slot = renderSlot(panel, { subPath: "" }, {
+    const slot = renderSlot(panel, { threadId: "thread-1", params: null }, {
       context: { projectId: "project-1", threadId: "thread-1" },
       rpc: {
         benchDevRegistryRescan: () => registryResult([availableFamily, unavailableFamily], 1),
@@ -207,6 +216,23 @@ describe("firmware device panel", () => {
     await waitFor(() => expect(install).toHaveBeenCalledWith(expect.objectContaining({
       threadId: "thread-1",
     })));
+    slot.lifecycle.unmount();
+  });
+
+  it("keeps helper installation off the nav-only route and points to the thread action", async () => {
+    const panel = await firmwareBenchSlot();
+    const slot = renderSlot(panel, { subPath: "" }, {
+      context: { projectId: "project-1", threadId: null },
+      rpc: {
+        benchDevRegistryRescan: () => registryResult([unavailableFamily]),
+        benchDevDevicesList: () => ({ items: [], total: 0, cursor: null }),
+      },
+    });
+
+    expect(await slot.findByText(/Open Firmware Bench from this thread's Actions menu/))
+      .toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Review helper install" })).toBeNull();
+    expect(slot.queryByRole("button", { name: "Confirm and install" })).toBeNull();
     slot.lifecycle.unmount();
   });
 

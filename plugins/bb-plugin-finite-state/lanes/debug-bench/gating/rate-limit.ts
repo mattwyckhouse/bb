@@ -57,6 +57,8 @@ function assertPolicy(policy: HardwareRateLimitPolicy): void {
 }
 
 function stateFor(deps: RateLimitDeps, at: number): SessionBuckets {
+  const policy = deps.rateLimitPolicy ?? DEFAULT_HARDWARE_RATE_LIMIT_POLICY;
+  assertPolicy(policy);
   let sessions = bucketsByDatabase.get(deps.db);
   if (!sessions) {
     sessions = new Map();
@@ -64,14 +66,19 @@ function stateFor(deps: RateLimitDeps, at: number): SessionBuckets {
   }
   let state = sessions.get(deps.sessionId);
   if (!state) {
-    const policy = deps.rateLimitPolicy ?? DEFAULT_HARDWARE_RATE_LIMIT_POLICY;
-    assertPolicy(policy);
     state = {
       policy,
       session: { tokens: policy.session.capacity, updatedAtMs: at },
       devices: new Map(),
     };
     sessions.set(deps.sessionId, state);
+  } else if (
+    state.policy.device.capacity !== policy.device.capacity ||
+    state.policy.device.refillPerSecond !== policy.device.refillPerSecond ||
+    state.policy.session.capacity !== policy.session.capacity ||
+    state.policy.session.refillPerSecond !== policy.session.refillPerSecond
+  ) {
+    throw new Error("HARDWARE_RATE_LIMIT_POLICY_CHANGED_WITHIN_SESSION");
   }
   return state;
 }

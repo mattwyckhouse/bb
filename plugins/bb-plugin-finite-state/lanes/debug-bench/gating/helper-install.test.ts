@@ -6,9 +6,7 @@ import { helperInstallRecord } from "../registry/helpers.js";
 import {
   confirmHelperInstall,
   helperInstallGateAudit,
-  listPendingHelperInstalls,
   proposeHelperInstall,
-  requestHelperInstall,
 } from "./helper-install.js";
 import type { GatingDeps } from "./mode.js";
 
@@ -44,19 +42,6 @@ afterEach(async () => {
   await Promise.all(hosts.splice(0).map((host) => host.harness.lifecycle.dispose()));
 });
 describe("helper installation gate", () => {
-  it("persists bounded pending package confirmations with paging", async () => {
-    const fx = fixture();
-    const pending = await requestHelperInstall(fx.deps, ["pyocd", "pyocd", "cmsis-pack-manager"]);
-    expect(pending).toMatchObject({
-      packages: ["pyocd", "cmsis-pack-manager"],
-      state: "pending",
-      resolvedAt: null,
-    });
-    expect(listPendingHelperInstalls(fx.deps, { pageSize: 1 })).toMatchObject({
-      items: [expect.objectContaining({ confirmationId: pending.confirmationId })],
-    });
-  });
-
   it("never invokes the installer before a submitted human interaction", async () => {
     const fx = fixture();
     const proposal = proposeHelperInstall(fx.deps.db, family, fx.deps.now?.());
@@ -94,12 +79,12 @@ describe("helper installation gate", () => {
 
     await expect(confirmation).resolves.toMatchObject({
       state: "installed",
-      confirmedBy: "human-response:thread-a",
+      confirmedBy: expect.stringMatching(/^request-input-response:thread-a:/),
     });
     expect(installer).toHaveBeenCalledOnce();
     expect(helperInstallGateAudit(fx.deps, proposal.proposalToken)).toMatchObject({
       callerOrigin: "bb.ui.requestInput",
-      confirmedBy: "human-response:thread-a",
+      confirmedBy: expect.stringMatching(/^request-input-response:thread-a:/),
       outcome: "installed",
       consumedAt: "2026-08-13T12:00:00.000Z",
     });

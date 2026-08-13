@@ -67,11 +67,14 @@ describe("debug-mode feasibility", () => {
   });
 
   it("records executable plugin-only verdicts and the unavailable turn signal", () => {
+    const host = createFakePluginHost({ pluginId: "finite-state-feasibility-evidence" });
     expect(() => assertDebugModeFeasibility({
       refusalGate: true,
       conditionalToolsAtSessionStart: true,
       hotSessionMutationAttempted: false,
       bbCoreSourceUsed: false,
+      interactionResponseSdkCallable:
+        typeof host.bb.sdk.threads.interactions.respond === "function",
     })).not.toThrow();
     expect(DEBUG_MODE_FEASIBILITY).toEqual({
       refusalGate: "plugin-handler-precondition",
@@ -79,6 +82,8 @@ describe("debug-mode feasibility", () => {
       hotSessionMutation: false,
       bbCoreChangeRequired: false,
       destructiveTurnEvidence: "unavailable",
+      requestInputActorEvidence: "unavailable",
+      destructiveEvidenceUnblock: "https://github.com/get-bb/bb/issues/1564",
     });
   });
 });

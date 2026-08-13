@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import type { FamilyDescriptor } from "../registry/families.js";
 import {
@@ -20,14 +19,6 @@ import type { GatingDeps } from "./mode.js";
 
 export type { HelperInstallOutcome, HelperInstallProposal } from "../registry/helpers.js";
 
-export interface PendingConfirmation {
-  confirmationId: string;
-  packages: string[];
-  state: "pending" | "rejected" | "confirmed";
-  requestedAt: string;
-  resolvedAt: string | null;
-}
-
 export interface ConfirmHelperInstallRequest {
   bb: Pick<BbPluginApi, "ui">;
   deps: GatingDeps;
@@ -36,27 +27,10 @@ export interface ConfirmHelperInstallRequest {
   installer?: HelperInstaller;
 }
 
-interface PendingRow {
-  confirmation_id: string;
-  packages_json: string;
-  state: PendingConfirmation["state"];
-  requested_at: string;
-  resolved_at: string | null;
-}
-
 const initialized = new WeakSet<GatingDeps["db"]>();
 
 function initialize(deps: GatingDeps): void {
   if (initialized.has(deps.db)) return;
-  deps.db.exec(
-    `CREATE TABLE IF NOT EXISTS bench_helper_confirmation (
-       confirmation_id TEXT PRIMARY KEY,
-       packages_json TEXT NOT NULL,
-       state TEXT NOT NULL CHECK (state IN ('pending','rejected','confirmed')),
-       requested_at TEXT NOT NULL,
-       resolved_at TEXT
-     )`,
-  );
   deps.db.exec(
     `CREATE TABLE IF NOT EXISTS bench_helper_install_gate_audit (
        proposal_token TEXT PRIMARY KEY,
@@ -70,14 +44,6 @@ function initialize(deps: GatingDeps): void {
   initialized.add(deps.db);
 }
 
-function parsePackages(value: string): string[] {
-  const parsed: unknown = JSON.parse(value);
-  if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "string")) {
-    throw new Error("INVALID_HELPER_CONFIRMATION_RECORD");
-  }
-  return parsed;
-}
-
 function displayCommand(value: string): string {
   const parsed: unknown = JSON.parse(value);
   if (
@@ -89,68 +55,12 @@ function displayCommand(value: string): string {
   return parsed.join(" ");
 }
 
-function toPending(row: PendingRow): PendingConfirmation {
-  return {
-    confirmationId: row.confirmation_id,
-    packages: parsePackages(row.packages_json),
-    state: row.state,
-    requestedAt: row.requested_at,
-    resolvedAt: row.resolved_at,
-  };
-}
-
 export function proposeHelperInstall(
   db: GatingDeps["db"],
   family: FamilyDescriptor,
   now?: Date,
 ): HelperInstallProposal {
   return proposeFamilyHelperInstall(db, family, now);
-}
-
-export async function requestHelperInstall(
-  deps: GatingDeps,
-  packages: string[],
-): Promise<PendingConfirmation> {
-  initialize(deps);
-  const normalized = [...new Set(packages.map((item) => item.trim()))];
-  if (
-    normalized.length === 0 || normalized.some((item) => item.length === 0 || item.length > 200)
-  ) {
-    throw new Error("INVALID_HELPER_PACKAGES");
-  }
-  const pending: PendingConfirmation = {
-    confirmationId: `helper-confirmation-${randomUUID()}`,
-    packages: normalized,
-    state: "pending",
-    requestedAt: (deps.now?.() ?? new Date()).toISOString(),
-    resolvedAt: null,
-  };
-  deps.db.prepare(
-    `INSERT INTO bench_helper_confirmation (
-       confirmation_id, packages_json, state, requested_at, resolved_at
-     ) VALUES (?, ?, 'pending', ?, NULL)`,
-  ).run(pending.confirmationId, JSON.stringify(pending.packages), pending.requestedAt);
-  return pending;
-}
-
-export function listPendingHelperInstalls(
-  deps: GatingDeps,
-  input: { pageSize?: number; cursor?: string | null } = {},
-): { items: PendingConfirmation[]; cursor: string | null } {
-  initialize(deps);
-  const pageSize = Math.min(Math.max(input.pageSize ?? 50, 1), 200);
-  const rows = deps.db.prepare<[string, number], PendingRow>(
-    `SELECT confirmation_id, packages_json, state, requested_at, resolved_at
-       FROM bench_helper_confirmation
-      WHERE state = 'pending' AND confirmation_id > ?
-      ORDER BY confirmation_id LIMIT ?`,
-  ).all(input.cursor ?? "", pageSize + 1);
-  const hasMore = rows.length > pageSize;
-  const items = rows.slice(0, pageSize).map(toPending);
-  return {
-    items,
-    cursor: hasMore ? items.at(-1)?.confirmationId ?? null : null,
-  };
 }
 
 export async function confirmHelperInstall(

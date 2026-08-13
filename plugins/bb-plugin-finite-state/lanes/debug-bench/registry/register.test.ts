@@ -50,7 +50,7 @@ describe("debug-bench registration", () => {
 
     await expect(installation).resolves.toMatchObject({
       state: "installed",
-      confirmedBy: "human-response:thread-1",
+      confirmedBy: expect.stringMatching(/^request-input-response:thread-1:/),
     });
     expect(helperInstallGateAudit({
       db: ctx.db(),

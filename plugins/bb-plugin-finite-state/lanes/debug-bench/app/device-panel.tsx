@@ -63,6 +63,7 @@ interface DevicePanelProps extends PluginNavPanelProps {
     projectVersionId: string | null;
     devices: readonly BenchDeviceRecord[];
   }) => ReactNode);
+  helperInstallThreadId?: string;
 }
 
 export function DestructiveConfirmationInteraction({
@@ -286,7 +287,7 @@ function FamilyUnavailableRow({
   busy,
   propose,
   confirm,
-  confirmationAvailable,
+  helperInstallAvailable,
 }: {
   family: FamilyStatus;
   proposal: {
@@ -298,7 +299,7 @@ function FamilyUnavailableRow({
   busy: boolean;
   propose(): void;
   confirm(): void;
-  confirmationAvailable: boolean;
+  helperInstallAvailable: boolean;
 }): React.JSX.Element {
   return (
     <div className="border-t border-border bg-muted/20 px-4 py-3 first:border-t-0">
@@ -310,10 +311,15 @@ function FamilyUnavailableRow({
           </div>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">{family.reason}</p>
         </div>
-        {family.needsConfiguration && proposal === null ? (
+        {family.needsConfiguration && proposal === null && helperInstallAvailable ? (
           <Button disabled={busy} onClick={propose} size="sm" variant="outline">
             Review helper install
           </Button>
+        ) : null}
+        {family.needsConfiguration && !helperInstallAvailable ? (
+          <p className="max-w-sm text-xs leading-5 text-muted-foreground">
+            Open Firmware Bench from this thread&apos;s Actions menu to review helper installation.
+          </p>
         ) : null}
       </div>
       {proposal ? (
@@ -322,28 +328,26 @@ function FamilyUnavailableRow({
           <p className="mt-1 text-xs leading-5 text-muted-foreground">{proposal.why}</p>
           <code className="mt-2 block overflow-x-auto rounded bg-muted px-2 py-1.5 text-xs text-foreground">{proposal.command}</code>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button disabled={busy || !confirmationAvailable} onClick={confirm} size="sm">
+            <Button disabled={busy} onClick={confirm} size="sm">
               Confirm and install
             </Button>
             <a className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground" href={proposal.source} rel="noreferrer" target="_blank">
               Helper source
             </a>
           </div>
-          {!confirmationAvailable ? (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Open Firmware Bench from a thread to confirm helper installation.
-            </p>
-          ) : null}
         </div>
       ) : null}
     </div>
   );
 }
 
-export function DevicePanel({ consoleSlot }: DevicePanelProps): React.JSX.Element {
+export function DevicePanel({
+  consoleSlot,
+  helperInstallThreadId,
+}: DevicePanelProps): React.JSX.Element {
   const rpc = useRpc<typeof rpcContract>();
   const registryRpc = useRpc<typeof debugBenchRpcContract>();
-  const { projectId: routeProjectId, threadId } = useBbContext();
+  const { projectId: routeProjectId, threadId: routeThreadId } = useBbContext();
   const sidebar = experimental_useSidebarThreads();
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const projectId = routeProjectId ?? selectedProjectId;
@@ -363,8 +367,8 @@ export function DevicePanel({ consoleSlot }: DevicePanelProps): React.JSX.Elemen
     [projectId],
   );
   const holder = useMemo(
-    () => panelHolder(projectId, threadId),
-    [projectId, threadId],
+    () => panelHolder(projectId, helperInstallThreadId ?? routeThreadId),
+    [helperInstallThreadId, projectId, routeThreadId],
   );
 
   const load = useCallback(async (rescan: boolean) => {
@@ -536,13 +540,13 @@ export function DevicePanel({ consoleSlot }: DevicePanelProps): React.JSX.Elemen
                     <FamilyUnavailableRow
                       busy={busyKey === family.familyId}
                       confirm={() => void perform(family.familyId, async () => {
-                        if (!scope || !threadId) return;
+                        if (!scope || !helperInstallThreadId) return;
                         const proposal = proposals[family.familyId];
                         if (!proposal) return;
                         await registryRpc.call("benchDevHelperInstall", {
                           ...scope,
                           proposalToken: proposal.proposalToken,
-                          threadId,
+                          threadId: helperInstallThreadId,
                         });
                         setProposals((current) => {
                           const next = { ...current };
@@ -550,7 +554,7 @@ export function DevicePanel({ consoleSlot }: DevicePanelProps): React.JSX.Elemen
                           return next;
                         });
                       })}
-                      confirmationAvailable={threadId !== null}
+                      helperInstallAvailable={helperInstallThreadId !== undefined}
                       family={family}
                       key={family.familyId}
                       proposal={proposals[family.familyId] ?? null}

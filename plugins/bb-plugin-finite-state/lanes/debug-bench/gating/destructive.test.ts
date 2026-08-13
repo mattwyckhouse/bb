@@ -72,7 +72,7 @@ describe("destructive grants", () => {
 
     expect(destructiveGrantAudit(fx.deps, minted.grantId)).toMatchObject({
       callerOrigin: "bb.ui.requestInput",
-      confirmedBy: "human-response:thread-a",
+      confirmedBy: expect.stringMatching(/^request-input-response:thread-a:/),
       grant: { consumedAt: null },
     });
 

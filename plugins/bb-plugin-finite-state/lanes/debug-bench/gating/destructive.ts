@@ -3,8 +3,9 @@ import type { BbPluginApi, JsonValue } from "@bb/plugin-sdk";
 import type { ActionToolName } from "../../../lib/agentic/registry.js";
 import { BENCH_CHANGED_CHANNEL } from "../registry/families.js";
 import type { GatingDeps, ToolExecutionCtx } from "./mode.js";
+import { DESTRUCTIVE_CONFIRMATION_RENDERER_ID } from "./destructive-contract.js";
 
-export const DESTRUCTIVE_CONFIRMATION_RENDERER_ID = "finite-state-destructive-confirmation";
+export { DESTRUCTIVE_CONFIRMATION_RENDERER_ID } from "./destructive-contract.js";
 export const DEFAULT_DESTRUCTIVE_GRANT_TTL_MS = 60_000;
 export const HELPER_INSTALL_OPERATION = "benchDevHelperInstall" as const;
 
@@ -155,7 +156,7 @@ export async function requestHumanConfirmation(
     threadId: request.threadId,
     toolName: request.toolName,
     deviceId: request.deviceId,
-    confirmedBy: `human-response:${request.threadId}`,
+    confirmedBy: `request-input-response:${request.threadId}:${randomUUID()}`,
     callerOrigin: "bb.ui.requestInput" as const,
     confirmedAt: confirmedAt.toISOString(),
     expiresAt: new Date(confirmedAt.getTime() + timeoutMs).toISOString(),

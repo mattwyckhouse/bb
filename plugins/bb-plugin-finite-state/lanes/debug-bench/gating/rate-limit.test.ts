@@ -56,7 +56,23 @@ describe("hardware rate policy", () => {
     await second.acquire(signal);
     await expect(second.acquire(signal)).rejects.toBeInstanceOf(HardwareRateLimitError);
 
-    const otherSession = fixture("session-b");
-    await expect(rateLimit(otherSession.deps, "device-a").acquire(signal)).resolves.toBeUndefined();
+    await expect(rateLimit({ ...fx.deps, sessionId: "session-b" }, "device-a").acquire(signal))
+      .resolves.toBeUndefined();
+  });
+
+  it("refuses a silent policy change for an existing session", async () => {
+    const fx = fixture();
+    const signal = new AbortController().signal;
+    await rateLimit(fx.deps, "device-a").acquire(signal);
+
+    await expect(rateLimit({
+      ...fx.deps,
+      rateLimitPolicy: {
+        device: { capacity: 4, refillPerSecond: 1 },
+        session: { capacity: 3, refillPerSecond: 1 },
+      },
+    }, "device-a").acquire(signal)).rejects.toThrow(
+      "HARDWARE_RATE_LIMIT_POLICY_CHANGED_WITHIN_SESSION",
+    );
   });
 });
