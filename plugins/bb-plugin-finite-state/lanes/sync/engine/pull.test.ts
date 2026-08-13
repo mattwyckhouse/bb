@@ -619,7 +619,7 @@ decisions:
     });
   });
 
-  it("publishes successful kinds while preserving a typed error for one failed kind", async () => {
+  it("isolates a failed kind, keeps prior accepted readers stable, and flips all kinds once on retry", async () => {
     let requirementTitle = "requirement-v1";
     let threatTitle = "threat-v1";
     let failThreat = false;
@@ -678,35 +678,28 @@ decisions:
     threatTitle = "threat-v2";
     failThreat = true;
     await expect(pull(deps, selectedScope, ["requirement", "threat"]))
-      .rejects.toMatchObject({
-        failures: [{ kind: "threat", message: "mock threat reset" }],
-        publishedKinds: ["requirement"],
-        acceptedAt: "2026-08-12T19:00:00.000Z",
-      });
+      .rejects.toMatchObject({ failures: [{ kind: "threat", message: "mock threat reset" }] });
     const staged = deps.db.prepare(
-      `SELECT entity_kind, accepted_generation_id, staging_generation_id, staged_rows, error
+      `SELECT entity_kind, accepted_generation_id, staging_generation_id, staged_rows
          FROM sync_state ORDER BY entity_kind`,
     ).all();
     expect(staged).toEqual([
-      { entity_kind: "requirement", accepted_generation_id: "generation-multi-2", staging_generation_id: null, staged_rows: 0, error: null },
-      { entity_kind: "threat", accepted_generation_id: first.generationId, staging_generation_id: null, staged_rows: 0, error: "mock threat reset" },
+      { entity_kind: "requirement", accepted_generation_id: first.generationId, staging_generation_id: "generation-multi-2", staged_rows: 1 },
+      { entity_kind: "threat", accepted_generation_id: first.generationId, staging_generation_id: "generation-multi-2", staged_rows: 0 },
     ]);
     expect(new BaseSnapshotStore(deps.db).listAccepted(
       selectedScope.projectId,
       selectedScope.projectVersionId,
       "requirement",
-    )).not.toEqual(acceptedBefore);
-    expect(deps.db.prepare(
-      "SELECT status, error FROM pull_generation WHERE generation_id = 'generation-multi-2'",
-    ).get()).toEqual({ status: "accepted", error: "threat: mock threat reset" });
+    )).toEqual(acceptedBefore);
 
     failThreat = false;
     await expect(pull(deps, selectedScope, ["requirement", "threat"]))
-      .resolves.toMatchObject({ generationId: "generation-multi-3" });
+      .resolves.toMatchObject({ generationId: "generation-multi-2" });
     expect(deps.db.prepare(
       "SELECT entity_kind, base_revision FROM sync_state ORDER BY entity_kind",
     ).all()).toEqual([
-      { entity_kind: "requirement", base_revision: 3 },
+      { entity_kind: "requirement", base_revision: 2 },
       { entity_kind: "threat", base_revision: 2 },
     ]);
   });

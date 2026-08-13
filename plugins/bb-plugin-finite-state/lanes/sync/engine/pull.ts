@@ -84,18 +84,12 @@ export class PullDataError extends Error {
 
 /** Failure after the engine has isolated and checkpointed every requested kind it could process. */
 export class PullFailedError extends Error {
-  /** Creates an aggregate failure and identifies any kinds already published safely. */
+  /** Creates an aggregate failure while preserving the resumable staging generation. */
   constructor(
     readonly generationId: string,
     readonly failures: readonly Readonly<{ kind: EntityKind; message: string }>[] ,
-    readonly publishedKinds: readonly EntityKind[] = [],
-    readonly acceptedAt: string | null = null,
   ) {
-    super(
-      publishedKinds.length === 0
-        ? `Pull generation ${generationId} did not publish: ${failures.map((item) => `${item.kind}: ${item.message}`).join("; ")}`
-        : `Pull generation ${generationId} published ${publishedKinds.join(", ")} with failures: ${failures.map((item) => `${item.kind}: ${item.message}`).join("; ")}`,
-    );
+    super(`Pull generation ${generationId} did not publish: ${failures.map((item) => `${item.kind}: ${item.message}`).join("; ")}`);
     this.name = "PullFailedError";
   }
 }
@@ -670,7 +664,6 @@ function publishGeneration(
   storageVersionId: string,
   generationId: string,
   kinds: readonly EntityKind[],
-  failures: readonly Readonly<{ kind: EntityKind; message: string }>[],
 ): string {
   const acceptedAt = nowIso(deps);
   deps.db.transaction(() => {
@@ -693,44 +686,12 @@ function publishGeneration(
       );
       if (result.changes !== 1) throw new Error(`Publication fence moved for ${kind}`);
     }
-    for (const failure of failures) {
-      const abandoned = deps.db.prepare(
-        `UPDATE sync_state
-            SET staging_generation_id = NULL, staging_continuation = NULL,
-                staged_pages = 0, staged_rows = 0
-          WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?
-            AND staging_generation_id = ?`,
-      ).run(scope.projectId, storageVersionId, failure.kind, generationId);
-      if (abandoned.changes !== 1) {
-        throw new Error(`Failed-kind fence moved for ${failure.kind}`);
-      }
-      deps.db.prepare(
-        `DELETE FROM base_snapshot
-          WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?
-            AND generation_id = ?`,
-      ).run(scope.projectId, storageVersionId, failure.kind, generationId);
-      deps.db.prepare(
-        `DELETE FROM id_map
-          WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?
-            AND generation_id = ?`,
-      ).run(scope.projectId, storageVersionId, failure.kind, generationId);
-    }
-    const generationError = failures.length === 0
-      ? null
-      : failures.map((failure) => `${failure.kind}: ${failure.message}`).join("; ").slice(0, 2_000);
     const accepted = deps.db.prepare(
       `UPDATE pull_generation
-          SET status = 'accepted', completed_at = ?, accepted_at = ?, error = ?
+          SET status = 'accepted', completed_at = ?, accepted_at = ?, error = NULL
         WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
           AND status = 'staging'`,
-    ).run(
-      acceptedAt,
-      acceptedAt,
-      generationError,
-      scope.projectId,
-      storageVersionId,
-      generationId,
-    );
+    ).run(acceptedAt, acceptedAt, scope.projectId, storageVersionId, generationId);
     if (accepted.changes !== 1) throw new Error(`Publication generation fence moved for ${generationId}`);
     // Base rows are machinery, not history: retain only rows referenced by
     // the current accepted or active staging pointer for their own kind.
@@ -765,9 +726,9 @@ function publishGeneration(
 }
 
 /**
- * Pulls every selected kind into staging, then publishes every successful kind
- * together. Failed kinds retain their prior accepted pointers and typed errors;
- * if every kind fails, the staging generation remains resumable.
+ * Pulls every selected adapter page into staging, then atomically publishes
+ * the generation. A failed kind is recorded and isolated; no partial
+ * generation becomes visible, and the next call resumes after whole pages.
  */
 export async function pull(
   deps: EngineDeps,
@@ -824,31 +785,24 @@ export async function pull(
       recordKindFailure(deps.db, scope, storageVersionId, generationId, cache.kind, message);
     }
   }
-  const failedKinds = new Set(failures.map((failure) => failure.kind));
-  const publishedKinds = selectedKinds.filter((kind) => !failedKinds.has(kind));
-  if (publishedKinds.length === 0) throw new PullFailedError(generationId, failures);
+  if (failures.length > 0) throw new PullFailedError(generationId, failures);
 
-  const publishedAdapters = adapters.filter((adapter) => !failedKinds.has(adapter.kind));
-  const working = await workingState(deps, scope, publishedAdapters);
+  const working = await workingState(deps, scope, adapters);
   const acceptedAt = publishGeneration(
     deps,
     scope,
     storageVersionId,
     generationId,
-    publishedKinds,
-    failures,
+    selectedKinds,
   );
   const fastForward = await fastForwardWorking(
     deps,
     scope,
     storageVersionId,
     generationId,
-    publishedAdapters,
+    adapters,
     working,
   );
-  if (failures.length > 0) {
-    throw new PullFailedError(generationId, failures, publishedKinds, acceptedAt);
-  }
   return {
     generationId,
     acceptedAt,

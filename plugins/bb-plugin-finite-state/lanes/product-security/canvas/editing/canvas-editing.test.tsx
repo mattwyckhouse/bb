@@ -675,8 +675,8 @@ describe("WP-35 plan ordering and adapter projections", () => {
     });
     expect(flowPatch).not.toHaveProperty("source_component_id");
     for (const [id, fields] of [
-      ["remote-flow-create", flowCreate],
-      ["remote-flow-patch", flowPatch],
+      ["remote-telemetry", flowCreate],
+      ["remote-telemetry", flowPatch],
     ] as const) {
       expect(
         projectRemoteEntity(
@@ -709,8 +709,8 @@ describe("WP-35 plan ordering and adapter projections", () => {
     expect(assetPatch.criticality).toBe("critical");
     expect(assetPatch).not.toHaveProperty("business_value");
     for (const [id, fields] of [
-      ["remote-asset-create", assetCreate],
-      ["remote-asset-patch", assetPatch],
+      ["remote-credentials", assetCreate],
+      ["remote-credentials", assetPatch],
     ] as const) {
       expect(
         projectRemoteEntity(
@@ -731,7 +731,7 @@ describe("WP-35 plan ordering and adapter projections", () => {
     }
   });
 
-  it("defaults optional remote semantics and derives fresh reference slugs", () => {
+  it("rejects missing remote semantics, derives fresh references, and preserves accepted identity", () => {
     const fields = projectCreateFields(
       component("gateway", "Gateway"),
       scope,
@@ -747,14 +747,14 @@ describe("WP-35 plan ordering and adapter projections", () => {
       fields: { ...fields, ...overrides },
     });
     const { criticality: _criticality, ...missingCriticality } = fields;
-    expect(
+    expect(() =>
       projectRemoteEntity(
         "component",
         { ...remote({}), fields: missingCriticality },
         scope,
         projectionResolver,
-      ).payload["fields"],
-    ).toMatchObject({ criticality: "medium" });
+      ),
+    ).toThrow(/REMOTE_FIELD_MISSING.*criticality/iu);
     expect(
       projectRemoteEntity(
         "component",
@@ -763,6 +763,14 @@ describe("WP-35 plan ordering and adapter projections", () => {
         projectionResolver,
       ).payload["fields"],
     ).toMatchObject({ zone: expect.stringMatching(/^zone-[0-9a-f]{20}$/u) });
+    expect(
+      projectRemoteEntity(
+        "component",
+        remote({ slug: "wire-renamed-gateway" }),
+        scope,
+        projectionResolver,
+      ).payload["fields"],
+    ).toMatchObject({ slug: "gateway" });
   });
 });
 

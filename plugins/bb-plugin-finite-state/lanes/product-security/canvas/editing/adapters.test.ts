@@ -8,6 +8,11 @@ import {
   ASSURANCE_STUDIO_MAX_PAGE_SIZE,
   AssuranceStudioClient,
 } from "../../../../lib/remote/assurance-studio/client.js";
+import type {
+  AsEntity,
+  AsEntityKind,
+  Json,
+} from "../../../../lib/remote/types.js";
 import {
   registerMockAssuranceStudio,
 } from "../../../../test/mock-remote/assurance-studio/register.js";
@@ -51,6 +56,83 @@ afterEach(async () => {
   host = null;
 });
 
+function stringField(entity: AsEntity, ...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = entity.fields[name];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+function canvasFields(
+  kind: (typeof TARA_KINDS)[number],
+  entity: AsEntity,
+): Record<string, Json> {
+  const common = { name: stringField(entity, "name", "title") ?? entity.id };
+  switch (kind) {
+    case "component": {
+      const zoneId = stringField(entity, "zoneId");
+      return {
+        ...common,
+        component_type: "software",
+        criticality: "high",
+        interfaces: [{ name: "mock-wire" }],
+        technologies: ["typescript"],
+        is_entry_point: true,
+        stores_data: false,
+        ...(zoneId === undefined ? {} : { zone_id: zoneId }),
+      };
+    }
+    case "zone":
+      return { ...common, trust_level: "semi_trusted" };
+    case "asset":
+      return {
+        ...common,
+        asset_type: "credential",
+        criticality: "critical",
+        data_classification: "confidential",
+      };
+    case "dataflow":
+      return {
+        ...common,
+        source_component_id: stringField(entity, "sourceId") ?? "as-component-01",
+        target_component_id: stringField(entity, "targetId") ?? "as-component-02",
+        protocol: stringField(entity, "protocol") ?? "MQTT",
+        data_types: ["telemetry"],
+        is_encrypted: true,
+        is_authenticated: true,
+        is_bidirectional: false,
+      };
+    case "threat": {
+      const componentId = stringField(entity, "componentId");
+      const assetId = stringField(entity, "assetId");
+      return {
+        ...common,
+        category: stringField(entity, "stride") ?? "spoofing",
+        threat_source: "stride_analysis",
+        severity: "high",
+        affected_component_ids: componentId === undefined ? [] : [componentId],
+        affected_asset_ids: assetId === undefined ? [] : [assetId],
+        affected_dataflow_ids: [],
+        mitigation_ids: [],
+        assumptions: ["mock assumption"],
+      };
+    }
+  }
+}
+
+async function listAll(
+  client: AssuranceStudioClient,
+  kind: AsEntityKind,
+): Promise<AsEntity[]> {
+  const entities: AsEntity[] = [];
+  for await (const page of client.listEntities(kind, {
+    projectId: PROJECT_ID,
+    page: { pageSize: 50 },
+  })) entities.push(...page.items);
+  return entities;
+}
+
 describe("canvas remote adapters", () => {
   it("pulls all five TARA kinds through the real AS client within its page cap", async () => {
     const requestedPageSizes: number[] = [];
@@ -77,6 +159,20 @@ describe("canvas remote adapters", () => {
       },
     });
 
+    // The seeded records intentionally exercise fixture-specific aliases. Fill
+    // the remaining required AS semantics over the real client, but never add
+    // slug: this is the wire contract whose regression FS-155 repairs.
+    for (const kind of TARA_KINDS) {
+      for (const entity of await listAll(client, kind)) {
+        await client.updateEntity(kind, {
+          projectId: PROJECT_ID,
+          id: entity.id,
+          fields: canvasFields(kind, entity),
+          force: true,
+        });
+      }
+    }
+
     requestedPageSizes.length = 0;
     const resolver: AdapterSlugResolver = {
       remoteToSlug: () => null,
@@ -101,6 +197,7 @@ describe("canvas remote adapters", () => {
       }]),
     ));
     const snapshots = new BaseSnapshotStore(db);
+    const acceptedByName = new Map<string, Record<string, unknown>>();
     for (const kind of TARA_KINDS) {
       const accepted = snapshots.listAccepted(PROJECT_ID, "@project", kind);
       expect(accepted).toHaveLength(expectedCounts[kind]);
@@ -108,8 +205,53 @@ describe("canvas remote adapters", () => {
         expect(row.payload).toMatchObject({
           slug: expect.stringMatching(new RegExp(`^${kind}-[0-9a-f]{20}$`, "u")),
         });
+        const name = row.payload["name"];
+        if (typeof name === "string") acceptedByName.set(name, row.payload);
       }
     }
+    const componentSlug = acceptedByName.get("Architecture node 1")?.["slug"];
+    const nextComponentSlug = acceptedByName.get("Architecture node 2")?.["slug"];
+    const zoneSlug = acceptedByName.get("Untrusted")?.["slug"];
+    const assetSlug = acceptedByName.get("Protected asset 1")?.["slug"];
+    expect(acceptedByName.get("Architecture node 1")).toMatchObject({
+      name: "Architecture node 1",
+      component_type: "software",
+      criticality: "high",
+      zone: zoneSlug,
+      interfaces: [{ name: "mock-wire" }],
+      technologies: ["typescript"],
+      is_entry_point: true,
+      stores_data: false,
+    });
+    expect(acceptedByName.get("Untrusted")).toMatchObject({
+      name: "Untrusted",
+      trust_level: "semi_trusted",
+    });
+    expect(acceptedByName.get("Protected asset 1")).toMatchObject({
+      name: "Protected asset 1",
+      asset_type: "credential",
+      criticality: "critical",
+      data_classification: "confidential",
+    });
+    expect(acceptedByName.get("Dataflow 1")).toMatchObject({
+      name: "Dataflow 1",
+      from: componentSlug,
+      to: nextComponentSlug,
+      protocol: "MQTT",
+      data_types: ["telemetry"],
+      encrypted: true,
+      authenticated: true,
+      bidirectional: false,
+    });
+    expect(acceptedByName.get("Threat 1")).toMatchObject({
+      name: "Threat 1",
+      category: "spoofing",
+      threat_source: "stride_analysis",
+      severity: "high",
+      affected_components: [componentSlug],
+      affected_assets: [assetSlug],
+      assumptions: ["mock assumption"],
+    });
     expect(requestedPageSizes).toEqual(
       TARA_KINDS.map(() => ASSURANCE_STUDIO_MAX_PAGE_SIZE),
     );
