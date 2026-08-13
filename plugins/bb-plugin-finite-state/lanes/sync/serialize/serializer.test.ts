@@ -26,9 +26,6 @@ import {
 
 const SOURCE_ID = "11111111-1111-4111-8111-111111111111";
 const TARGET_ID = "22222222-2222-4222-8222-222222222222";
-const FROZEN_FIXTURE_HEAD = "ea63cc684c5eb981760270b89e50d020732ce152";
-const FROZEN_ENTITIES_SHA256 = "0daf497c641eff3534545df18acc254c2975935285f56cb9e7e24a2383d0e5e7";
-const FROZEN_REQUIREMENTS_SHA256 = "06c87a51c6e1cb7cb0db0638d2c580c5fbb11fd5a41011513a6c2d8aa63e7b81";
 const NO_ID_REPLACEMENTS: SerializeOptions = { idToSlug: () => null };
 
 const DOMAIN_PAYLOADS = [
@@ -55,9 +52,9 @@ const DOMAIN_PAYLOADS = [
   ["citationFile", { file: "src/drivers/bme280.c", values: [] }],
 ] as const satisfies ReadonlyArray<readonly [EntityKind, Record<string, unknown>]>;
 
-// Exact row from the frozen WP-08 corpus at FROZEN_FIXTURE_HEAD. The `satisfies`
-// check pins this serializer test to the frozen WP-06 wire contract.
-const FROZEN_ASSET_ENTITY = {
+// Reviewed wire row retained as a focused frozen WP-06 type-contract sample.
+// The generated WP-08 fixture corpus itself is intentionally mutable.
+const REVIEWED_ASSET_ENTITY = {
   fields: {
     componentId: "as-component-01",
     name: "Protected asset 1",
@@ -73,6 +70,7 @@ const FROZEN_ASSET_ENTITY = {
 const fixtureRoot = fileURLToPath(new URL("../../../test/mock-remote/fixtures", import.meta.url));
 const entitiesFixture = join(fixtureRoot, "assurance-studio", "entities.jsonl");
 const requirementsFixture = join(fixtureRoot, "assurance-studio", "requirements.jsonl");
+const fixtureManifest = join(fixtureRoot, "manifest.json");
 const fixtureCorpusAvailable = existsSync(entitiesFixture) && existsSync(requirementsFixture);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -91,6 +89,20 @@ function isJson(value: unknown): value is Json {
 
 function isJsonRecord(value: unknown): value is Record<string, Json> {
   return isRecord(value) && Object.values(value).every((item) => isJson(item));
+}
+
+function manifestSha256(path: string): string {
+  const manifest: unknown = JSON.parse(readFileSync(fixtureManifest, "utf8"));
+  if (!isRecord(manifest) || !Array.isArray(manifest["files"])) {
+    throw new Error("fixture manifest has no files array");
+  }
+  const entry = manifest["files"].find((candidate) =>
+    isRecord(candidate) && candidate["path"] === path
+  );
+  if (!isRecord(entry) || typeof entry["sha256"] !== "string") {
+    throw new Error(`fixture manifest has no digest for ${path}`);
+  }
+  return entry["sha256"];
 }
 
 function isAsEntityKind(value: unknown): value is AsEntityKind {
@@ -231,7 +243,7 @@ describe("semanticPayload", () => {
   });
 
   it("unwraps the frozen AsEntity envelope and replaces camelCase references", () => {
-    expect(canonicalJson(semanticPayload("asset", entityRecord(FROZEN_ASSET_ENTITY), {
+    expect(canonicalJson(semanticPayload("asset", entityRecord(REVIEWED_ASSET_ENTITY), {
       "as-component-01": "component-0001",
     }))).toBe('{"componentId":"component-0001","name":"Protected asset 1"}');
   });
@@ -354,11 +366,11 @@ describe("createSerializer", () => {
     const options: SerializeOptions = {
       idToSlug: (remoteId) => remoteId === "as-component-01" ? "component-0001" : null,
     };
-    const envelope = entityRecord(FROZEN_ASSET_ENTITY);
+    const envelope = entityRecord(REVIEWED_ASSET_ENTITY);
     const yaml = serializer.toYaml(envelope, options);
     const parsed = serializer.fromYaml(yaml, "assets/asset-1.yaml");
     const changedEnvelope = entityRecord({
-      ...FROZEN_ASSET_ENTITY,
+      ...REVIEWED_ASSET_ENTITY,
       humanEdited: true,
       projectId: "project-changed",
       reviewStatus: "human_rejected",
@@ -373,7 +385,7 @@ describe("createSerializer", () => {
 
   it("fails closed when an Assurance Studio response drifts from the frozen envelope", () => {
     const driftedEnvelope = Object.fromEntries(
-      Object.entries(entityRecord(FROZEN_ASSET_ENTITY)).filter(([key]) => key !== "humanEdited"),
+      Object.entries(entityRecord(REVIEWED_ASSET_ENTITY)).filter(([key]) => key !== "humanEdited"),
     );
 
     expect(() => createSerializer("asset").semanticPayload(driftedEnvelope))
@@ -382,7 +394,7 @@ describe("createSerializer", () => {
       .toThrow("missing humanEdited");
 
     expect(() => createSerializer("asset").semanticPayload({
-      ...entityRecord(FROZEN_ASSET_ENTITY),
+      ...entityRecord(REVIEWED_ASSET_ENTITY),
       fields: { invalid: undefined },
     })).toThrow("fields must be a JSON object");
   });
@@ -416,7 +428,7 @@ describe("createSerializer", () => {
       throw new Error("test payload must satisfy the frozen JSON contract");
     }
     const payload = semanticPayload("asset", entityRecord({
-      ...FROZEN_ASSET_ENTITY,
+      ...REVIEWED_ASSET_ENTITY,
       fields: raw,
     } satisfies AsEntity));
 
@@ -425,13 +437,17 @@ describe("createSerializer", () => {
   });
 });
 
-describe.skipIf(!fixtureCorpusAvailable)(`frozen WP-08 fixture corpus at ${FROZEN_FIXTURE_HEAD}`, () => {
-  it("reads the exact reviewed fixture bytes", () => {
-    expect(fileSha256(entitiesFixture)).toBe(FROZEN_ENTITIES_SHA256);
-    expect(fileSha256(requirementsFixture)).toBe(FROZEN_REQUIREMENTS_SHA256);
+describe.skipIf(!fixtureCorpusAvailable)("generated WP-08 fixture corpus", () => {
+  it("matches the generated manifest digests", () => {
+    expect(fileSha256(entitiesFixture)).toBe(
+      manifestSha256("assurance-studio/entities.jsonl"),
+    );
+    expect(fileSha256(requirementsFixture)).toBe(
+      manifestSha256("assurance-studio/requirements.jsonl"),
+    );
   });
 
-  it("round-trips every frozen Assurance Studio entity with normalized hash equality", () => {
+  it("round-trips every generated Assurance Studio entity with normalized hash equality", () => {
     const entities = [...readAsEntities(entitiesFixture), ...readAsEntities(requirementsFixture)];
     const options = fixtureOptions(entities);
 

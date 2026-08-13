@@ -116,15 +116,15 @@
       "sha256": "00215cc1c8e31894acb1ca68543cb18ce68c2f4bd0e25309fb66fb778582091c"
     },
     {
-      "bytes": 8915,
+      "bytes": 14665,
       "path": "assurance-studio/entities-page-1.json",
-      "sha256": "464e483aaadc8632af3bfeaa3550226fb7306b6dd36266b0420f3782880f8837"
+      "sha256": "b8113217988d8d029a4c7e919e36a858cdf5c9d36e5d977da88285f22f3a968c"
     },
     {
-      "bytes": 14175,
+      "bytes": 21885,
       "path": "assurance-studio/entities.jsonl",
       "rows": 62,
-      "sha256": "0daf497c641eff3534545df18acc254c2975935285f56cb9e7e24a2383d0e5e7"
+      "sha256": "3ef240d20c7f68149a9ff1eb480d3e050d3b986b9e4e393120152927b56aeeab"
     },
     {
       "bytes": 13587,

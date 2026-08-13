@@ -20,6 +20,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   normalizeForgeJobSnapshot,
   type ForgeJobCandidate,
+  type Json,
 } from "../../lib/remote/types.js";
 import { generateFixtureCorpus } from "./generate-seed.js";
 import {
@@ -62,7 +63,7 @@ interface AsEntityFixture {
   projectId: string;
   kind: string;
   reviewVersion: string;
-  fields: Record<string, string | string[]>;
+  fields: Record<string, Json>;
 }
 
 interface TaraDriftFixture {
@@ -413,6 +414,7 @@ describe("deterministic-seed-corpus", () => {
     const entityIds = new Set(entities.map((entity) => entity.id));
     const componentOrEntityIds = new Set([...componentIds, ...entityIds]);
     const threatIds = new Set(entities.filter((entity) => entity.kind === "threat").map((entity) => entity.id));
+    const mitigationIds = new Set(entities.filter((entity) => entity.kind === "mitigation").map((entity) => entity.id));
     const assetIds = new Set(entities.filter((entity) => entity.kind === "asset").map((entity) => entity.id));
     const zoneIds = new Set(entities.filter((entity) => entity.kind === "zone").map((entity) => entity.id));
     const dataflowIds = new Set(entities.filter((entity) => entity.kind === "dataflow").map((entity) => entity.id));
@@ -422,13 +424,26 @@ describe("deterministic-seed-corpus", () => {
     expect(asEntitiesPage.data.total).toBe(entities.length);
     for (const entity of entities) {
       expectReference(projectIds, entity.projectId, `assurance-studio/entities.jsonl entity ${entity.id}`);
-      for (const [field, targets] of [["componentId", componentOrEntityIds], ["sourceId", entityIds], ["targetId", entityIds], ["zoneId", zoneIds], ["assetId", assetIds], ["threatId", threatIds]] as const) {
+      for (const [field, targets] of [["componentId", componentOrEntityIds], ["sourceId", entityIds], ["targetId", entityIds], ["source_component_id", entityIds], ["target_component_id", entityIds], ["zoneId", zoneIds], ["zone_id", zoneIds], ["assetId", assetIds], ["threatId", threatIds]] as const) {
         const reference = entity.fields[field];
         if (typeof reference === "string") expectReference(targets, reference, `assurance-studio/entities.jsonl entity ${entity.id}.${field}`);
       }
-      for (const [field, targets] of [["threatIds", threatIds], ["dataflowIds", dataflowIds]] as const) {
+      for (const [field, targets] of [["threatIds", threatIds], ["dataflowIds", dataflowIds], ["asset_ids", assetIds]] as const) {
         const references = entity.fields[field];
-        if (Array.isArray(references)) for (const reference of references) expectReference(targets, reference, `assurance-studio/entities.jsonl entity ${entity.id}.${field}`);
+        if (Array.isArray(references)) {
+          for (const reference of references) {
+            expect(typeof reference).toBe("string");
+            if (typeof reference === "string") expectReference(targets, reference, `assurance-studio/entities.jsonl entity ${entity.id}.${field}`);
+          }
+        }
+      }
+      const linkedMitigations = entity.fields.linked_mitigations;
+      if (Array.isArray(linkedMitigations)) {
+        for (const linked of linkedMitigations) {
+          if (typeof linked === "object" && linked !== null && "id" in linked && typeof linked.id === "string") {
+            expectReference(mitigationIds, linked.id, `assurance-studio/entities.jsonl entity ${entity.id}.linked_mitigations`);
+          }
+        }
       }
     }
 

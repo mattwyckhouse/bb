@@ -223,6 +223,19 @@ function buildCorpus(seed: string): {
     ]),
   );
 
+  /*
+   * FS-166 fixture-fidelity provenance (vendored under docs/Implementation/api-reference):
+   * - Component, Zone, and DataFlow field names/types come from the OpenAPI
+   *   `components.schemas.Component`, `.Zone`, and `.DataFlow` response schemas.
+   * - Asset `asset_type`, `criticality`, and `data_classification` are the exact
+   *   list-field names documented by `/api/projects/{projectId}/assets/export`;
+   *   `business_value` is deliberately absent because it is not a response field.
+   * - DataFlow `bidirectional` is the handler/DB response name proven by
+   *   `assurance-studio-api-gaps.md` section 3 (AS commit 031f2ab9).
+   * - Threat `stride_categories`, `threat_source`, `preconditions`, `asset_ids`,
+   *   and `linked_mitigations` come from `components.schemas.Threat`. The fixture
+   *   deliberately omits unsupported severity/component/dataflow relation keys.
+   */
   const taraComponents = Array.from({ length: COUNTS.taraNodes }, (_, index) => ({
     id: `as-component-${(index + 1).toString().padStart(2, "0")}`,
     projectId,
@@ -234,6 +247,13 @@ function buildCorpus(seed: string): {
       name: index === 3 ? "Contrôleur télémétrie" : `Architecture node ${index + 1}`,
       componentId: components[index].id,
       zoneId: `zone-${(index % 3) + 1}`,
+      zone_id: `zone-${(index % 3) + 1}`,
+      component_type: ["software", "hardware", "network", "sensor", "actuator"][index % 5],
+      criticality: ["low", "medium", "high", "critical"][index % 4],
+      interfaces: [index % 2 === 0 ? "ethernet" : "serial"],
+      technologies: [index % 2 === 0 ? "linux" : "bare-metal"],
+      is_entry_point: index % 4 === 0,
+      stores_data: index % 3 === 0,
     },
   }));
   const zones = Array.from({ length: 3 }, (_, index) => ({
@@ -243,7 +263,10 @@ function buildCorpus(seed: string): {
     reviewVersion: (300 + index).toString(),
     reviewStatus: "pending",
     humanEdited: false,
-    fields: { name: ["Untrusted", "Control", "Safety"][index] },
+    fields: {
+      name: ["Untrusted", "Control", "Safety"][index],
+      trust_level: ["untrusted", "semi_trusted", "highly_trusted"][index],
+    },
   }));
   const assets = Array.from({ length: 4 }, (_, index) => ({
     id: `asset-${index + 1}`,
@@ -252,7 +275,13 @@ function buildCorpus(seed: string): {
     reviewVersion: (400 + index).toString(),
     reviewStatus: "pending",
     humanEdited: false,
-    fields: { name: `Protected asset ${index + 1}`, componentId: taraComponents[index].id },
+    fields: {
+      name: `Protected asset ${index + 1}`,
+      componentId: taraComponents[index].id,
+      asset_type: ["data", "credential", "configuration", "device"][index],
+      criticality: ["critical", "high", "medium", "low"][index],
+      data_classification: ["restricted", "confidential", "internal", "public"][index],
+    },
   }));
   const dataflows = Array.from({ length: 11 }, (_, index) => ({
     id: `flow-${(index + 1).toString().padStart(2, "0")}`,
@@ -265,7 +294,13 @@ function buildCorpus(seed: string): {
       name: `Dataflow ${index + 1}`,
       sourceId: taraComponents[index].id,
       targetId: taraComponents[index + 1].id,
+      source_component_id: taraComponents[index].id,
+      target_component_id: taraComponents[index + 1].id,
       protocol: index % 2 === 0 ? "MQTT" : "TLS",
+      data_types: [index % 2 === 0 ? "telemetry" : "control"],
+      is_encrypted: index % 2 !== 0,
+      is_authenticated: index % 2 !== 0,
+      bidirectional: false,
     },
   }));
   const threats = Array.from({ length: 16 }, (_, index) => ({
@@ -276,10 +311,21 @@ function buildCorpus(seed: string): {
     reviewStatus: index === 2 ? "ai_flagged" : "pending",
     humanEdited: false,
     fields: {
+      name: `Threat ${index + 1}`,
       title: `Threat ${index + 1}`,
       componentId: taraComponents[index % taraComponents.length].id,
       assetId: assets[index % assets.length].id,
       stride: ["spoofing", "tampering", "repudiation", "information_disclosure"][index % 4],
+      stride_categories: [["spoofing"], ["tampering"], ["repudiation"], ["information_disclosure"]][index % 4],
+      threat_source: "stride_analysis",
+      preconditions: [`Fixture precondition ${index + 1}`],
+      asset_ids: [assets[index % assets.length].id],
+      linked_mitigations: index < 12
+        ? [{
+            id: `mitigation-${(index + 1).toString().padStart(2, "0")}`,
+            name: `Mitigation ${index + 1}`,
+          }]
+        : [],
     },
   }));
   const mitigations = Array.from({ length: 12 }, (_, index) => ({
