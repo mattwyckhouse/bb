@@ -78,8 +78,10 @@ export interface SbomPage<T> {
 export interface BomDeps {
   db: Database.Database;
   platform: Pick<PlatformClient, "listComponents">;
-  /** Verified worktree root. Staging is confined to .fs-sync/bom below it. */
+  /** Verified host-local root. Staging is confined to .fs-sync/bom below it. */
   worktreeRoot: string;
+  /** Existing sync-engine generation whose final publication fence is external. */
+  externalGenerationId?: string;
   signal?: AbortSignal;
   pageSize?: number;
   now?: () => Date;

@@ -419,36 +419,63 @@ function publishStage(
   generationId: string,
   state: StageMeta,
   pulledAt: string,
+  externalPublication: boolean,
 ): number {
   const alias = `bom_stage_${createHash("sha256").update(generationId).digest("hex").slice(0, 16)}`;
   deps.db.prepare(`ATTACH DATABASE ? AS ${alias}`).run(path);
   try {
     return deps.db.transaction(() => {
-      deps.db.prepare(
-        `UPDATE pull_generation
-            SET status = 'superseded'
-          WHERE project_id = ? AND project_version_id = ?
-            AND status = 'accepted' AND generation_id <> ?
-            AND generation_id = (
-              SELECT accepted_generation_id FROM sync_state
-               WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?
-            )`,
-      ).run(
-        input.projectId,
-        input.projectVersionId,
-        generationId,
-        input.projectId,
-        input.projectVersionId,
-        ENTITY_KIND,
-      );
-      deps.db.prepare(
-        `DELETE FROM sbom_vuln_rollup
-          WHERE project_id = ? AND project_version_id = ?`,
-      ).run(input.projectId, input.projectVersionId);
-      deps.db.prepare(
-        `DELETE FROM sbom_components
-          WHERE project_id = ? AND project_version_id = ?`,
-      ).run(input.projectId, input.projectVersionId);
+      if (externalPublication) {
+        // Keep the currently accepted generation queryable until sync flips
+        // its generation fence. Rows from older, already-superseded pulls are
+        // safe to prune before staging the new generation.
+        const cleanup = (table: "sbom_components" | "sbom_vuln_rollup") =>
+          deps.db.prepare(
+            `DELETE FROM ${table}
+              WHERE project_id = ? AND project_version_id = ?
+                AND generation_id <> ?
+                AND generation_id <> COALESCE((
+                  SELECT accepted_generation_id FROM sync_state
+                   WHERE project_id = ? AND project_version_id = ?
+                     AND entity_kind = ?
+                ), '')`,
+          ).run(
+            input.projectId,
+            input.projectVersionId,
+            generationId,
+            input.projectId,
+            input.projectVersionId,
+            ENTITY_KIND,
+          );
+        cleanup("sbom_vuln_rollup");
+        cleanup("sbom_components");
+      } else {
+        deps.db.prepare(
+          `UPDATE pull_generation
+              SET status = 'superseded'
+            WHERE project_id = ? AND project_version_id = ?
+              AND status = 'accepted' AND generation_id <> ?
+              AND generation_id = (
+                SELECT accepted_generation_id FROM sync_state
+                 WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?
+              )`,
+        ).run(
+          input.projectId,
+          input.projectVersionId,
+          generationId,
+          input.projectId,
+          input.projectVersionId,
+          ENTITY_KIND,
+        );
+        deps.db.prepare(
+          `DELETE FROM sbom_vuln_rollup
+            WHERE project_id = ? AND project_version_id = ?`,
+        ).run(input.projectId, input.projectVersionId);
+        deps.db.prepare(
+          `DELETE FROM sbom_components
+            WHERE project_id = ? AND project_version_id = ?`,
+        ).run(input.projectId, input.projectVersionId);
+      }
       deps.db.prepare(
         `INSERT INTO sbom_components (
            project_id, project_version_id, generation_id, component_id,
@@ -466,27 +493,29 @@ function publishStage(
         computedAt: pulledAt,
         warn: deps.warn,
       });
-      deps.db.prepare(
-        `UPDATE sync_state
-            SET accepted_generation_id = ?, staging_generation_id = NULL,
-                base_revision = base_revision + 1,
-                staging_continuation = NULL, staged_pages = 0, staged_rows = 0,
-                last_pull = ?, error = NULL
-          WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?
-            AND staging_generation_id = ?`,
-      ).run(
-        generationId,
-        pulledAt,
-        input.projectId,
-        input.projectVersionId,
-        ENTITY_KIND,
-        generationId,
-      );
-      deps.db.prepare(
-        `UPDATE pull_generation
-            SET status = 'accepted', completed_at = ?, accepted_at = ?, error = NULL
-          WHERE project_id = ? AND project_version_id = ? AND generation_id = ?`,
-      ).run(pulledAt, pulledAt, input.projectId, input.projectVersionId, generationId);
+      if (!externalPublication) {
+        deps.db.prepare(
+          `UPDATE sync_state
+              SET accepted_generation_id = ?, staging_generation_id = NULL,
+                  base_revision = base_revision + 1,
+                  staging_continuation = NULL, staged_pages = 0, staged_rows = 0,
+                  last_pull = ?, error = NULL
+            WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?
+              AND staging_generation_id = ?`,
+        ).run(
+          generationId,
+          pulledAt,
+          input.projectId,
+          input.projectVersionId,
+          ENTITY_KIND,
+          generationId,
+        );
+        deps.db.prepare(
+          `UPDATE pull_generation
+              SET status = 'accepted', completed_at = ?, accepted_at = ?, error = NULL
+            WHERE project_id = ? AND project_version_id = ? AND generation_id = ?`,
+        ).run(pulledAt, pulledAt, input.projectId, input.projectVersionId, generationId);
+      }
       return rollups;
     })();
   } finally {
@@ -510,6 +539,16 @@ export async function pullSbom(
   let generationId: string;
   let stage: Database.Database;
   const current = syncRow(deps.db, input);
+  const externalGenerationId = deps.externalGenerationId;
+  if (
+    externalGenerationId !== undefined &&
+    current?.staging_generation_id !== externalGenerationId
+  ) {
+    throw new SbomPullError(
+      "SBOM_GENERATION_FENCE_MISMATCH",
+      "The sync generation no longer owns this SBOM staging scope",
+    );
+  }
 
   if (input.resume && current?.staging_generation_id && existsSync(path)) {
     stage = openStage(path);
@@ -540,9 +579,11 @@ export async function pullSbom(
   } else {
     removeStage(path);
     stage = openStage(path);
-    generationId = deps.generationId?.() ?? randomUUID();
+    generationId = externalGenerationId ?? deps.generationId?.() ?? randomUUID();
     initializeStage(stage, input, generationId);
-    startGeneration(deps.db, input, generationId, (deps.now?.() ?? new Date()).toISOString());
+    if (externalGenerationId === undefined) {
+      startGeneration(deps.db, input, generationId, (deps.now?.() ?? new Date()).toISOString());
+    }
   }
 
   try {
@@ -584,7 +625,15 @@ export async function pullSbom(
     }
     stage.close();
     const pulledAt = (deps.now?.() ?? new Date()).toISOString();
-    const rollups = publishStage(deps, input, path, generationId, state, pulledAt);
+    const rollups = publishStage(
+      deps,
+      input,
+      path,
+      generationId,
+      state,
+      pulledAt,
+      externalGenerationId !== undefined,
+    );
     removeStage(path);
     deps.publishChanged?.({ projectVersionId: input.projectVersionId });
     return {
