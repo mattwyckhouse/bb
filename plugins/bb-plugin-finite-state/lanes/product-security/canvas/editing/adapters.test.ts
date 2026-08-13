@@ -8,11 +8,6 @@ import {
   ASSURANCE_STUDIO_MAX_PAGE_SIZE,
   AssuranceStudioClient,
 } from "../../../../lib/remote/assurance-studio/client.js";
-import type {
-  AsEntity,
-  AsEntityKind,
-  Json,
-} from "../../../../lib/remote/types.js";
 import {
   registerMockAssuranceStudio,
 } from "../../../../test/mock-remote/assurance-studio/register.js";
@@ -56,77 +51,6 @@ afterEach(async () => {
   host = null;
 });
 
-function stringField(entity: AsEntity, ...names: string[]): string | undefined {
-  for (const name of names) {
-    const value = entity.fields[name];
-    if (typeof value === "string" && value.length > 0) return value;
-  }
-  return undefined;
-}
-
-function canvasFields(kind: (typeof TARA_KINDS)[number], entity: AsEntity): Record<string, Json> {
-  const common = {
-    slug: entity.id,
-    name: stringField(entity, "name", "title") ?? entity.id,
-  };
-  switch (kind) {
-    case "component": {
-      const zoneId = stringField(entity, "zoneId");
-      return {
-        ...common,
-        component_type: "software",
-        criticality: "medium",
-        interfaces: [],
-        technologies: [],
-        is_entry_point: false,
-        stores_data: false,
-        ...(zoneId === undefined ? {} : { zone_id: zoneId }),
-      };
-    }
-    case "zone":
-      return { ...common, trust_level: "untrusted" };
-    case "asset":
-      return { ...common, asset_type: "data", criticality: "medium" };
-    case "dataflow":
-      return {
-        ...common,
-        source_component_id: stringField(entity, "sourceId") ?? "as-component-01",
-        target_component_id: stringField(entity, "targetId") ?? "as-component-02",
-        data_types: ["telemetry"],
-        is_encrypted: true,
-        is_authenticated: true,
-        is_bidirectional: false,
-      };
-    case "threat": {
-      const componentId = stringField(entity, "componentId");
-      const assetId = stringField(entity, "assetId");
-      return {
-        ...common,
-        category: stringField(entity, "stride") ?? "spoofing",
-        threat_source: "stride_analysis",
-        severity: "medium",
-        affected_component_ids: componentId === undefined ? [] : [componentId],
-        affected_asset_ids: assetId === undefined ? [] : [assetId],
-        affected_dataflow_ids: [],
-        mitigation_ids: [],
-        assumptions: [],
-      };
-    }
-  }
-}
-
-async function listAll(
-  client: AssuranceStudioClient,
-  kind: AsEntityKind,
-): Promise<AsEntity[]> {
-  const entities: AsEntity[] = [];
-  for await (const page of client.listEntities(kind, {
-    projectId: PROJECT_ID,
-    page: { pageSize: 50 },
-  })) entities.push(...page.items);
-  return entities;
-}
-
 describe("canvas remote adapters", () => {
   it("pulls all five TARA kinds through the real AS client within its page cap", async () => {
     const requestedPageSizes: number[] = [];
@@ -153,21 +77,10 @@ describe("canvas remote adapters", () => {
       },
     });
 
-    for (const kind of TARA_KINDS) {
-      for (const entity of await listAll(client, kind)) {
-        await client.updateEntity(kind, {
-          projectId: PROJECT_ID,
-          id: entity.id,
-          fields: canvasFields(kind, entity),
-          force: true,
-        });
-      }
-    }
-
     requestedPageSizes.length = 0;
     const resolver: AdapterSlugResolver = {
-      remoteToSlug: (_scope, _kind, remoteId) => remoteId,
-      slugToRemote: (_scope, _kind, slug) => slug,
+      remoteToSlug: () => null,
+      slugToRemote: () => null,
     };
     const scope = { projectId: PROJECT_ID, projectVersionId: null };
     const adapters = createCanvasEntityAdapters(client, resolver);
@@ -189,9 +102,13 @@ describe("canvas remote adapters", () => {
     ));
     const snapshots = new BaseSnapshotStore(db);
     for (const kind of TARA_KINDS) {
-      expect(snapshots.listAccepted(PROJECT_ID, "@project", kind)).toHaveLength(
-        expectedCounts[kind],
-      );
+      const accepted = snapshots.listAccepted(PROJECT_ID, "@project", kind);
+      expect(accepted).toHaveLength(expectedCounts[kind]);
+      for (const row of accepted) {
+        expect(row.payload).toMatchObject({
+          slug: expect.stringMatching(new RegExp(`^${kind}-[0-9a-f]{20}$`, "u")),
+        });
+      }
     }
     expect(requestedPageSizes).toEqual(
       TARA_KINDS.map(() => ASSURANCE_STUDIO_MAX_PAGE_SIZE),

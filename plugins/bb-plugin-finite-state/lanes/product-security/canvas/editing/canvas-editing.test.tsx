@@ -731,7 +731,7 @@ describe("WP-35 plan ordering and adapter projections", () => {
     }
   });
 
-  it("rejects missing remote semantics and slug-shaped identifiers absent from id_map", () => {
+  it("defaults optional remote semantics and derives fresh reference slugs", () => {
     const fields = projectCreateFields(
       component("gateway", "Gateway"),
       scope,
@@ -747,22 +747,22 @@ describe("WP-35 plan ordering and adapter projections", () => {
       fields: { ...fields, ...overrides },
     });
     const { criticality: _criticality, ...missingCriticality } = fields;
-    expect(() =>
+    expect(
       projectRemoteEntity(
         "component",
         { ...remote({}), fields: missingCriticality },
         scope,
         projectionResolver,
-      ),
-    ).toThrow(/REMOTE_FIELD_MISSING.*criticality/iu);
-    expect(() =>
+      ).payload["fields"],
+    ).toMatchObject({ criticality: "medium" });
+    expect(
       projectRemoteEntity(
         "component",
         remote({ zone_id: "edge-zone" }),
         scope,
         projectionResolver,
-      ),
-    ).toThrow(/UNRESOLVED_REMOTE_ID.*edge-zone.*id_map/iu);
+      ).payload["fields"],
+    ).toMatchObject({ zone: expect.stringMatching(/^zone-[0-9a-f]{20}$/u) });
   });
 });
 
