@@ -13,6 +13,7 @@ import {
   useRealtimeConnectionState,
   useRpc,
   type PluginNavPanelProps,
+  type PluginPendingInteractionProps,
 } from "@bb/plugin-sdk/app";
 import { Alert, AlertDescription } from "@bb/shared-ui/alert";
 import { Badge } from "@bb/shared-ui/badge";
@@ -62,6 +63,45 @@ interface DevicePanelProps extends PluginNavPanelProps {
     projectVersionId: string | null;
     devices: readonly BenchDeviceRecord[];
   }) => ReactNode);
+}
+
+export function DestructiveConfirmationInteraction({
+  interaction,
+  submit,
+  cancel,
+}: PluginPendingInteractionProps): React.JSX.Element {
+  const payload = typeof interaction.payload === "object" && interaction.payload !== null &&
+    !Array.isArray(interaction.payload) ? interaction.payload : null;
+  const detail = payload && "detail" in payload && typeof payload.detail === "string"
+    ? payload.detail
+    : "Review this destructive operation before continuing.";
+  const command = payload && "command" in payload && typeof payload.command === "string"
+    ? payload.command
+    : null;
+  return (
+    <section className="space-y-3 rounded-lg border border-destructive/40 bg-card p-4">
+      <div>
+        <h2 className="text-sm font-semibold text-foreground">{interaction.title}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{detail}</p>
+      </div>
+      {command ? (
+        <code className="block overflow-x-auto rounded bg-muted px-2 py-1.5 text-xs text-foreground">
+          {command}
+        </code>
+      ) : null}
+      <p className="text-xs text-muted-foreground">
+        Confirmation is single-use and expires with this interaction.
+      </p>
+      <div className="flex gap-2">
+        <Button onClick={() => { void submit({ confirmed: true }); }} size="sm">
+          Confirm operation
+        </Button>
+        <Button onClick={() => { void cancel(); }} size="sm" variant="outline">
+          Cancel
+        </Button>
+      </div>
+    </section>
+  );
 }
 
 interface ProjectPickerProps {
@@ -246,6 +286,7 @@ function FamilyUnavailableRow({
   busy,
   propose,
   confirm,
+  confirmationAvailable,
 }: {
   family: FamilyStatus;
   proposal: {
@@ -257,6 +298,7 @@ function FamilyUnavailableRow({
   busy: boolean;
   propose(): void;
   confirm(): void;
+  confirmationAvailable: boolean;
 }): React.JSX.Element {
   return (
     <div className="border-t border-border bg-muted/20 px-4 py-3 first:border-t-0">
@@ -280,13 +322,18 @@ function FamilyUnavailableRow({
           <p className="mt-1 text-xs leading-5 text-muted-foreground">{proposal.why}</p>
           <code className="mt-2 block overflow-x-auto rounded bg-muted px-2 py-1.5 text-xs text-foreground">{proposal.command}</code>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button disabled={busy} onClick={confirm} size="sm">
+            <Button disabled={busy || !confirmationAvailable} onClick={confirm} size="sm">
               Confirm and install
             </Button>
             <a className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground" href={proposal.source} rel="noreferrer" target="_blank">
               Helper source
             </a>
           </div>
+          {!confirmationAvailable ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Open Firmware Bench from a thread to confirm helper installation.
+            </p>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -489,14 +536,13 @@ export function DevicePanel({ consoleSlot }: DevicePanelProps): React.JSX.Elemen
                     <FamilyUnavailableRow
                       busy={busyKey === family.familyId}
                       confirm={() => void perform(family.familyId, async () => {
-                        if (!scope) return;
+                        if (!scope || !threadId) return;
                         const proposal = proposals[family.familyId];
                         if (!proposal) return;
                         await registryRpc.call("benchDevHelperInstall", {
                           ...scope,
                           proposalToken: proposal.proposalToken,
-                          confirmed: true,
-                          confirmedBy: holder,
+                          threadId,
                         });
                         setProposals((current) => {
                           const next = { ...current };
@@ -504,6 +550,7 @@ export function DevicePanel({ consoleSlot }: DevicePanelProps): React.JSX.Elemen
                           return next;
                         });
                       })}
+                      confirmationAvailable={threadId !== null}
                       family={family}
                       key={family.familyId}
                       proposal={proposals[family.familyId] ?? null}

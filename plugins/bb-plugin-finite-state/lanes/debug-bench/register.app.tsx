@@ -1,6 +1,6 @@
 import type { PluginAppBuilder, PluginNavPanelProps } from "@bb/plugin-sdk/app";
 import type { AppContext } from "../../lib/app-context.js";
-import { DevicePanel } from "./app/device-panel.js";
+import { DestructiveConfirmationInteraction, DevicePanel } from "./app/device-panel.js";
 import { SerialConsole } from "./app/serial-console.js";
 
 function FirmwareBenchPanel(props: PluginNavPanelProps): React.JSX.Element {
@@ -16,6 +16,7 @@ export function registerDebugBenchApp(
   app: PluginAppBuilder,
   _ctx: AppContext,
 ): void {
+  app.slots.pendingInteraction({ id: "finite-state-destructive-confirmation", component: DestructiveConfirmationInteraction });
   app.slots.navPanel({
     id: "firmware-bench",
     title: "Firmware Bench",

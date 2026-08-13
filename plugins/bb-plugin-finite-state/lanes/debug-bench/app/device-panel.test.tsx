@@ -69,6 +69,38 @@ function stringField(input: unknown, key: string): string {
 }
 
 describe("firmware device panel", () => {
+  it("renders and submits the server-issued destructive confirmation interaction", async () => {
+    const app = await loadPluginApp(() => import("../../../app.js"));
+    const interaction = app.pendingInteractions.find(
+      (registration) => registration.id === "finite-state-destructive-confirmation",
+    );
+    if (!interaction) throw new Error("destructive confirmation renderer not registered");
+    const submit = vi.fn(async () => undefined);
+    const slot = renderSlot(interaction, {
+      interaction: {
+        id: "interaction-1",
+        threadId: "thread-1",
+        title: "Install fixture helper",
+        payload: {
+          operation: "benchDevHelperInstall",
+          deviceId: "helper:fixture",
+          detail: "Install the reviewed helper.",
+          command: "python3 -m pip install fixture",
+        },
+        createdAt: 0,
+        expiresAt: 60_000,
+      },
+      submit,
+      cancel: async () => undefined,
+    });
+
+    expect(slot.getByText("Install the reviewed helper.")).toBeTruthy();
+    expect(slot.getByText("python3 -m pip install fixture")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Confirm operation" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith({ confirmed: true }));
+    slot.lifecycle.unmount();
+  });
+
   it("selects a project when plugin navigation has no project context", async () => {
     const panel = await firmwareBenchSlot();
     let resolveScan: ((value: ReturnType<typeof registryResult>) => void) | undefined;
@@ -124,12 +156,12 @@ describe("firmware device panel", () => {
   it("groups devices, renders stale/setup states, confirms installs, and claims/releases", async () => {
     const panel = await firmwareBenchSlot();
     const mutableDevice = { ...device };
-    const install = vi.fn((input: unknown) => ({
+    const install = vi.fn(() => ({
       proposalToken: "proposal-1",
       familyId: "saleae-logic",
       helperId: "logic2-automation",
       state: "installed" as const,
-      confirmedBy: stringField(input, "confirmedBy"),
+      confirmedBy: "human-response:thread-1",
       message: "installed",
       completedAt: "2026-08-13T10:01:00.000Z",
     }));
@@ -172,7 +204,9 @@ describe("firmware device panel", () => {
     expect(await slot.findByText("Explicit confirmation required")).toBeTruthy();
     expect(install).not.toHaveBeenCalled();
     fireEvent.click(slot.getByRole("button", { name: "Confirm and install" }));
-    await waitFor(() => expect(install).toHaveBeenCalledWith(expect.objectContaining({ confirmed: true })));
+    await waitFor(() => expect(install).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-1",
+    })));
     slot.lifecycle.unmount();
   });
 
