@@ -20,6 +20,7 @@ function FirmwareBenchPanel(props: PluginNavPanelProps): React.JSX.Element {
 function FirmwareBenchThreadPanel({ threadId }: PluginThreadPanelProps): React.JSX.Element {
   return (
     <DevicePanel
+      compact
       consoleSlot={(serialProps) => <SerialConsole {...serialProps} />}
       helperInstallThreadId={threadId}
       subPath=""

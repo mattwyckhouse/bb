@@ -204,6 +204,7 @@ describe("firmware device panel", () => {
       },
     });
     expect(await slot.findByText("Debug probes")).toBeTruthy();
+    expect(slot.container.querySelector('[data-layout="compact"]')).toBeTruthy();
     expect(slot.getAllByText("Stale").length).toBeGreaterThan(0);
     expect(slot.getByText("Logic analyzers unavailable")).toBeTruthy();
     expect(slot.getByRole("button", { name: "Claim" }).hasAttribute("disabled")).toBe(true);
@@ -211,6 +212,7 @@ describe("firmware device panel", () => {
 
     fireEvent.click(slot.getByRole("button", { name: "Review helper install" }));
     expect(await slot.findByText("Explicit confirmation required")).toBeTruthy();
+    expect(slot.getByRole("button", { name: "Confirm and install" }).className).toContain("w-full");
     expect(install).not.toHaveBeenCalled();
     fireEvent.click(slot.getByRole("button", { name: "Confirm and install" }));
     await waitFor(() => expect(install).toHaveBeenCalledWith(expect.objectContaining({

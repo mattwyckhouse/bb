@@ -1,10 +1,14 @@
 import type { BbPluginApi, PluginAgentToolContext } from "@bb/plugin-sdk";
 
-type AssertFalse<Value extends false> = Value;
 type AssertTrue<Value extends true> = Value;
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2)
+    ? true
+    : false;
 
-export type PluginAgentToolTurnIdentityAbsent = AssertFalse<
-  "turnId" extends keyof PluginAgentToolContext ? true : false
+export type PluginAgentToolContextKeyset = AssertTrue<
+  Equal<keyof PluginAgentToolContext, "projectId" | "signal" | "threadId">
 >;
 export type InteractionResponseIsSdkCallable = AssertTrue<
   "respond" extends keyof BbPluginApi["sdk"]["threads"]["interactions"]

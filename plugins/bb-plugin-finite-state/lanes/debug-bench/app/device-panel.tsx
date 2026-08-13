@@ -58,6 +58,7 @@ type PanelState =
   | RegistryReadyState;
 
 interface DevicePanelProps extends PluginNavPanelProps {
+  compact?: boolean;
   consoleSlot?: ReactNode | ((props: {
     projectId: string;
     projectVersionId: string | null;
@@ -114,10 +115,10 @@ interface ProjectPickerProps {
 
 function ProjectPicker({ disabled, projectId, projects, select }: ProjectPickerProps) {
   return (
-    <div className="flex items-center gap-2">
-      <label className="text-xs font-medium text-muted-foreground" htmlFor="firmware-bench-project">Project</label>
+    <div className="flex min-w-0 items-center gap-2">
+      <label className="shrink-0 text-xs font-medium text-muted-foreground" htmlFor="firmware-bench-project">Project</label>
       <select
-        className="h-8 max-w-52 rounded-md border border-input bg-background px-2 text-xs"
+        className="h-8 min-w-0 max-w-52 rounded-md border border-input bg-background px-2 text-xs"
         disabled={disabled}
         id="firmware-bench-project"
         onChange={(event) => select(event.target.value || null)}
@@ -231,18 +232,22 @@ function DeviceRow({
   device,
   holder,
   busy,
+  compact,
   claim,
   release,
 }: {
   device: BenchDeviceRecord;
   holder: string;
   busy: boolean;
+  compact: boolean;
   claim(): void;
   release(): void;
 }): React.JSX.Element {
   const heldHere = device.claimedBy === holder;
   return (
-    <article className="grid gap-3 border-t border-border px-4 py-3 first:border-t-0 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+    <article className={compact
+      ? "grid gap-3 border-t border-border px-3 py-3 first:border-t-0"
+      : "grid gap-3 border-t border-border px-4 py-3 first:border-t-0 md:grid-cols-[minmax(0,1fr)_auto] md:items-center"}>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <p className="truncate text-sm font-medium text-foreground">
@@ -258,7 +263,7 @@ function DeviceRow({
           Last seen {formatLastSeen(device.lastSeen)} · scope {device.claimScope}
         </p>
       </div>
-      <div className="flex items-center gap-2 md:justify-end">
+      <div className={compact ? "flex flex-wrap items-center gap-2" : "flex items-center gap-2 md:justify-end"}>
         {device.claimedBy ? (
           <Badge variant={heldHere ? "secondary" : "outline"}>
             <Icon name="Lock" />
@@ -285,6 +290,7 @@ function FamilyUnavailableRow({
   family,
   proposal,
   busy,
+  compact,
   propose,
   confirm,
   helperInstallAvailable,
@@ -297,13 +303,16 @@ function FamilyUnavailableRow({
     why: string;
   } | null;
   busy: boolean;
+  compact: boolean;
   propose(): void;
   confirm(): void;
   helperInstallAvailable: boolean;
 }): React.JSX.Element {
   return (
     <div className="border-t border-border bg-muted/20 px-4 py-3 first:border-t-0">
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+      <div className={compact
+        ? "flex flex-col gap-3"
+        : "flex flex-col gap-3 md:flex-row md:items-start md:justify-between"}>
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
             <Icon className="size-4 text-muted-foreground" name="AlertCircle" />
@@ -312,7 +321,7 @@ function FamilyUnavailableRow({
           <p className="mt-1 text-xs leading-5 text-muted-foreground">{family.reason}</p>
         </div>
         {family.needsConfiguration && proposal === null && helperInstallAvailable ? (
-          <Button disabled={busy} onClick={propose} size="sm" variant="outline">
+          <Button className={compact ? "w-full whitespace-normal" : undefined} disabled={busy} onClick={propose} size="sm" variant="outline">
             Review helper install
           </Button>
         ) : null}
@@ -327,8 +336,8 @@ function FamilyUnavailableRow({
           <p className="text-xs font-medium text-foreground">Explicit confirmation required</p>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">{proposal.why}</p>
           <code className="mt-2 block overflow-x-auto rounded bg-muted px-2 py-1.5 text-xs text-foreground">{proposal.command}</code>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button disabled={busy} onClick={confirm} size="sm">
+          <div className={compact ? "mt-3 grid gap-2" : "mt-3 flex flex-wrap items-center gap-2"}>
+            <Button className={compact ? "w-full whitespace-normal" : undefined} disabled={busy} onClick={confirm} size="sm">
               Confirm and install
             </Button>
             <a className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground" href={proposal.source} rel="noreferrer" target="_blank">
@@ -342,6 +351,7 @@ function FamilyUnavailableRow({
 }
 
 export function DevicePanel({
+  compact = false,
   consoleSlot,
   helperInstallThreadId,
 }: DevicePanelProps): React.JSX.Element {
@@ -455,16 +465,22 @@ export function DevicePanel({
   const stale = state.devices.filter((device) => device.stale).length;
 
   return (
-    <div className="h-full overflow-y-auto bg-background text-foreground" data-state="ready">
-      <div className="mx-auto w-full max-w-6xl space-y-4 p-4 md:p-5">
+    <div
+      className="h-full overflow-x-hidden overflow-y-auto bg-background text-foreground"
+      data-layout={compact ? "compact" : "wide"}
+      data-state="ready"
+    >
+      <div className={compact ? "w-full space-y-3 p-3" : "mx-auto w-full max-w-6xl space-y-4 p-4 md:p-5"}>
         <section className="overflow-hidden rounded-lg border border-border bg-card">
-          <div className="flex flex-col gap-4 border-b border-border bg-muted/20 px-4 py-3 md:flex-row md:items-center">
+          <div className={compact
+            ? "flex flex-col gap-3 border-b border-border bg-muted/20 px-3 py-3"
+            : "flex flex-col gap-4 border-b border-border bg-muted/20 px-4 py-3 md:flex-row md:items-center"}>
             <div>
               <p className="font-mono text-xs uppercase tracking-wider text-muted-foreground">Machine arbitration · diagnostic only</p>
               <p className="mt-1 text-sm text-foreground">Live registry for local instruments and serial endpoints.</p>
             </div>
-            <div className="md:ml-auto"><ProjectPicker {...projectPicker} /></div>
-            <Button disabled={busyKey === "rescan"} onClick={() => void perform("rescan", async () => {
+            <div className={compact ? "min-w-0" : "md:ml-auto"}><ProjectPicker {...projectPicker} /></div>
+            <Button className={compact ? "w-full" : undefined} disabled={busyKey === "rescan"} onClick={() => void perform("rescan", async () => {
               if (!scope) return;
               await registryRpc.call("benchDevRegistryRescan", scope);
             })} size="sm" variant="outline">
@@ -472,7 +488,7 @@ export function DevicePanel({
               Rescan
             </Button>
           </div>
-          <div className="grid grid-cols-2 gap-px bg-border md:grid-cols-4">
+          <div className={compact ? "grid grid-cols-2 gap-px bg-border" : "grid grid-cols-2 gap-px bg-border md:grid-cols-4"}>
             {[
               ["Visible", state.devices.length - stale],
               ["Claimed", claimed],
@@ -500,7 +516,7 @@ export function DevicePanel({
             await registryRpc.call("benchDevRegistryRescan", scope);
           })} />
         ) : (
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+          <div className={compact ? "grid min-w-0 gap-3" : "grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]"}>
             <div className="space-y-3">
               {groups.map((group) => (
                 <section className="overflow-hidden rounded-lg border border-border bg-card" key={group.kind}>
@@ -514,6 +530,7 @@ export function DevicePanel({
                   {group.devices.map((device) => (
                     <DeviceRow
                       busy={busyKey === device.deviceId}
+                      compact={compact}
                       claim={() => void perform(device.deviceId, async () => {
                         if (!scope) return;
                         await rpc.call("benchDevDeviceClaim", {
@@ -539,6 +556,7 @@ export function DevicePanel({
                   {group.families.map((family) => (
                     <FamilyUnavailableRow
                       busy={busyKey === family.familyId}
+                      compact={compact}
                       confirm={() => void perform(family.familyId, async () => {
                         if (!scope || !helperInstallThreadId) return;
                         const proposal = proposals[family.familyId];
