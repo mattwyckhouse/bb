@@ -114,11 +114,27 @@ function engine(adapter: EntityAdapter, extras: Partial<EngineDeps> = {}): Engin
   };
 }
 
+function stateComponentIdentities(state: MockPlatformState) {
+  return new Map([...state.components.values()].map((component) => [
+    String(component["id"]),
+    {
+      name: String(component["name"]),
+      group: typeof component["group"] === "string" ? component["group"] : null,
+      version: typeof component["version"] === "string" ? component["version"] : null,
+      purl: typeof component["purl"] === "string" ? component["purl"] : null,
+      fallbackIdentity: typeof component["fallbackIdentity"] === "string"
+        ? component["fallbackIdentity"]
+        : null,
+    },
+  ]));
+}
+
 function expectedVexRows(state: MockPlatformState, projectVersionId: string): ServerEntity[] {
+  const identities = stateComponentIdentities(state);
   const rows = new Map<string, ServerEntity>();
   for (const value of state.findings.values()) {
     if (value["projectVersionId"] !== projectVersionId) continue;
-    const projected = projectVexDecision(value as Record<string, Json>);
+    const projected = projectVexDecision(value as Record<string, Json>, identities);
     if (projected !== null) rows.set(projected.key, projected);
   }
   return [...rows.values()];
@@ -185,7 +201,10 @@ describe("sync pull", () => {
       && row["vexReason"] === undefined,
     );
     if (undecided === undefined) throw new Error("fixture has no undecided finding");
-    const key = projectVexDecisionKey(undecided as Record<string, Json>);
+    const key = projectVexDecisionKey(
+      undecided as Record<string, Json>,
+      stateComponentIdentities(fixture.state),
+    );
     const resolver = createVexDecisionResolver(fixture.client);
     await expect(resolver(key, fixture.scope)).resolves.toEqual({
       resolved: true,

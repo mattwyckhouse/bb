@@ -22,6 +22,10 @@ import {
 } from "./vex-decision.js";
 
 const FIXTURE = resolve(import.meta.dirname, "../../../test/mock-remote/fixtures/platform/findings.jsonl");
+const COMPONENT_FIXTURE = resolve(
+  import.meta.dirname,
+  "../../../test/mock-remote/fixtures/platform/components.jsonl",
+);
 const roots: string[] = [];
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
@@ -37,12 +41,40 @@ async function worktree(): Promise<string> {
   return root;
 }
 
+async function firstFixtureIdentity(): Promise<{
+  finding: Record<string, Json>;
+  identities: Map<string, {
+    name: string;
+    group: string | null;
+    version: string | null;
+    purl: string | null;
+    fallbackIdentity: string | null;
+  }>;
+}> {
+  const findingLine = (await readFile(FIXTURE, "utf8")).split("\n", 1)[0];
+  const componentLine = (await readFile(COMPONENT_FIXTURE, "utf8")).split("\n", 1)[0];
+  if (findingLine === undefined || componentLine === undefined) throw new Error("fixture is empty");
+  const finding = JSON.parse(findingLine) as Record<string, Json>;
+  const component = JSON.parse(componentLine) as Record<string, Json>;
+  const id = String(component["id"]);
+  return {
+    finding,
+    identities: new Map([[id, {
+      name: String(component["name"]),
+      group: typeof component["group"] === "string" ? component["group"] : null,
+      version: typeof component["version"] === "string" ? component["version"] : null,
+      purl: typeof component["purl"] === "string" ? component["purl"] : null,
+      fallbackIdentity: typeof component["fallbackIdentity"] === "string"
+        ? component["fallbackIdentity"]
+        : null,
+    }]]),
+  };
+}
+
 describe("vexDecision adapter", () => {
   it("projects frozen Platform fixture bytes to the canonical tuple and stable key", async () => {
-    const first = (await readFile(FIXTURE, "utf8")).split("\n", 1)[0];
-    if (first === undefined) throw new Error("fixture is empty");
-    const row = JSON.parse(first) as Record<string, Json>;
-    const projected = projectVexDecision(row);
+    const { finding, identities } = await firstFixtureIdentity();
+    const projected = projectVexDecision(finding, identities);
     expect(projected).toEqual({
       key: ENTITIES.vexDecision.key({
         cve: "CVE-2020-10000",
@@ -59,6 +91,16 @@ describe("vexDecision adapter", () => {
         reason: null,
       },
     });
+    const identity = identities.values().next().value;
+    if (identity === undefined) throw new Error("component fixture is empty");
+    const flat = projectVexDecision({
+      ...finding,
+      component: null,
+      componentId: "component-0001",
+      componentPurl: identity.purl,
+      componentFallbackIdentity: identity.fallbackIdentity,
+    });
+    expect(projected?.key).toBe(flat?.key);
   });
 
   it("parses aggregate .fs/triage YAML into one working entity per decision", async () => {
@@ -203,9 +245,8 @@ decisions:
     response: null
     reason: local evidence
 `, "utf8");
-    const remote = projectVexDecision(JSON.parse(
-      (await readFile(FIXTURE, "utf8")).split("\n", 1)[0] ?? "{}",
-    ) as Record<string, Json>);
+    const { finding, identities } = await firstFixtureIdentity();
+    const remote = projectVexDecision(finding, identities);
     if (remote === null) throw new Error("fixture has no VEX tuple");
     const adapter: EntityAdapter = {
       kind: "vexDecision",

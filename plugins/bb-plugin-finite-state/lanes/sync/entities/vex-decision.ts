@@ -20,8 +20,20 @@ import { emitYaml } from "../serialize/yaml.js";
 const VEX_FIELDS = ["status", "justification", "response", "reason"] as const;
 const PAGE_SIZE = 1_000;
 
+interface RemoteComponentIdentity {
+  name: string;
+  group: string | null;
+  version: string | null;
+  purl: string | null;
+  fallbackIdentity: string | null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isJsonRecord(value: Json | undefined): value is Record<string, Json> {
+  return value !== null && value !== undefined && typeof value === "object" && !Array.isArray(value);
 }
 
 function requiredString(
@@ -43,6 +55,38 @@ function optionalString(
   if (value === undefined || value === null) return null;
   if (typeof value !== "string") throw new TypeError(`Platform finding ${field} must be a string or null`);
   return value;
+}
+
+function nestedComponent(row: Readonly<Record<string, Json>>): Readonly<Record<string, Json>> | null {
+  const value = row["component"];
+  return isJsonRecord(value) ? value : null;
+}
+
+function componentIdentityFromRow(row: Readonly<Record<string, Json>>): {
+  id: string;
+  identity: RemoteComponentIdentity;
+} {
+  return {
+    id: requiredString(row, "id"),
+    identity: {
+      name: requiredString(row, "name"),
+      group: optionalString(row, "group"),
+      version: optionalString(row, "version"),
+      purl: optionalString(row, "purl"),
+      fallbackIdentity: optionalString(row, "fallbackIdentity"),
+    },
+  };
+}
+
+async function componentIdentities(client: PlatformClient): Promise<Map<string, RemoteComponentIdentity>> {
+  const identities = new Map<string, RemoteComponentIdentity>();
+  for await (const page of client.listComponents({ page: { pageSize: PAGE_SIZE } })) {
+    for (const row of page.items) {
+      const component = componentIdentityFromRow(row);
+      identities.set(component.id, component.identity);
+    }
+  }
+  return identities;
 }
 
 function purlIdentity(purl: string | null): {
@@ -83,33 +127,57 @@ function vexPayload(row: Readonly<Record<string, Json>>): Record<string, unknown
   return Object.values(tuple).every((value) => value === null) ? null : tuple;
 }
 
-function findingIdentity(row: Readonly<Record<string, Json>>) {
-  const purl = optionalString(row, "componentPurl");
+function findingIdentity(
+  row: Readonly<Record<string, Json>>,
+  identities: ReadonlyMap<string, RemoteComponentIdentity> = new Map(),
+) {
+  const component = nestedComponent(row);
+  const componentId = optionalString(row, "componentId")
+    ?? (component === null ? null : optionalString(component, "id"));
+  if (componentId === null) throw new TypeError("Platform finding is missing component identity id");
+  const joined = identities.get(componentId);
+  const purl = optionalString(row, "componentPurl")
+    ?? (component === null ? null : optionalString(component, "purl"))
+    ?? joined?.purl
+    ?? null;
   const parsed = purlIdentity(purl);
   const fallback = optionalString(row, "componentFallbackIdentity")
-    ?? requiredString(row, "componentId");
+    ?? joined?.fallbackIdentity
+    ?? (component === null ? null : optionalString(component, "name"))
+    ?? joined?.name
+    ?? componentId;
   return {
     cve: requiredString(row, "cve"),
     purl,
     name: parsed?.name ?? fallback,
-    group: parsed?.group ?? null,
-    version: parsed?.version ?? null,
+    group: parsed?.group
+      ?? (component === null ? null : optionalString(component, "group"))
+      ?? joined?.group
+      ?? null,
+    version: parsed?.version
+      ?? (component === null ? null : optionalString(component, "version"))
+      ?? joined?.version
+      ?? null,
   };
 }
 
 /** Computes the frozen exact canonical key for any normalized Platform finding. */
-export function projectVexDecisionKey(row: Readonly<Record<string, Json>>): string {
-  return ENTITIES.vexDecision.key(findingIdentity(row));
+export function projectVexDecisionKey(
+  row: Readonly<Record<string, Json>>,
+  identities?: ReadonlyMap<string, RemoteComponentIdentity>,
+): string {
+  return ENTITIES.vexDecision.key(findingIdentity(row, identities));
 }
 
 /** Projects one normalized Platform finding into the frozen VEX overlay shape. */
 export function projectVexDecision(
   row: Readonly<Record<string, Json>>,
+  identities?: ReadonlyMap<string, RemoteComponentIdentity>,
 ): ServerEntity | null {
   const payload = vexPayload(row);
   if (payload === null) return null;
   return {
-    key: projectVexDecisionKey(row),
+    key: projectVexDecisionKey(row, identities),
     remoteId: requiredString(row, "id"),
     payload,
   };
@@ -127,11 +195,12 @@ export function createVexDecisionResolver(client: PlatformClient): KeyResolver {
     if (current !== undefined) return current;
     const next = (async () => {
       const keys = new Set<string>();
+      const identities = await componentIdentities(client);
       for await (const page of client.getFindings({
         projectVersionId,
         page: { pageSize: PAGE_SIZE },
       })) {
-        for (const row of page.items) keys.add(projectVexDecisionKey(row));
+        for (const row of page.items) keys.add(projectVexDecisionKey(row, identities));
       }
       return keys;
     })();
@@ -379,6 +448,7 @@ export function createVexDecisionAdapter(client: PlatformClient): EntityAdapter 
         throw new TypeError("vexDecision requires a project version");
       }
       let pageNumber = 0;
+      const identities = await componentIdentities(client);
       const pages = client.getFindings({
         projectVersionId: scope.projectVersionId,
         page: { pageSize: PAGE_SIZE },
@@ -390,7 +460,7 @@ export function createVexDecisionAdapter(client: PlatformClient): EntityAdapter 
           of: page.total === null ? null : Math.ceil(page.total / PAGE_SIZE),
         });
         yield page.items.flatMap((row) => {
-          const projected = projectVexDecision(row);
+          const projected = projectVexDecision(row, identities);
           return projected === null ? [] : [projected];
         });
       }

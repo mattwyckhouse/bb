@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { PlatformClient } from "../../../lib/remote/platform/client.js";
+import { normalizeFinding } from "../../../lanes/findings/cache/pull.js";
 import {
   VEX_JUSTIFICATIONS,
   VEX_RESPONSES,
@@ -95,6 +96,56 @@ describe("mock-direct-platform-data", () => {
     expect(Array.isArray(raw)).toBe(true);
     expect(response.headers.get("x-offset")).toBe("0");
     expect(JSON.stringify(raw)).not.toMatch(/file_path|preview|saved_to|continuation/u);
+  });
+
+  it("drives the production client and finding normalizer against the real nested component wire", async () => {
+    const { client, state } = setup();
+    const projectVersionId = String(
+      [...state.versions.values()].find((version) => version.priorVersionId !== null)?.id,
+    );
+    const [finding] = await collect(client.getFindings({
+      projectVersionId,
+      page: { pageSize: 1 },
+    }));
+    const components = await collect(client.listComponents({ page: { pageSize: 1_000 } }));
+    const identities = new Map(components.map((component) => [
+      String(component.id),
+      {
+        name: String(component.name),
+        group: typeof component.group === "string" ? component.group : null,
+        version: typeof component.version === "string" ? component.version : null,
+        purl: typeof component.purl === "string" ? component.purl : null,
+      },
+    ]));
+    expect(finding).toBeDefined();
+    if (finding === undefined) throw new Error("Mock Platform returned no finding");
+    expect(finding.component).toEqual(expect.objectContaining({
+      appId: expect.any(String),
+      id: expect.any(String),
+      name: expect.any(String),
+      vcId: expect.any(String),
+      version: expect.any(String),
+    }));
+    expect(finding).not.toHaveProperty("componentId");
+    expect(finding).not.toHaveProperty("componentPurl");
+
+    const nested = normalizeFinding(finding, identities);
+    const component = finding.component;
+    if (component === null || Array.isArray(component) || typeof component !== "object") {
+      throw new Error("Mock Platform finding component is not an object");
+    }
+    const joined = identities.get(String(component.id));
+    if (joined === undefined) throw new Error("Mock Platform finding component did not join");
+    const flat = normalizeFinding({
+      ...finding,
+      component: null,
+      componentId: String(component.id),
+      componentName: joined.name,
+      componentGroup: joined.group,
+      componentVersion: joined.version,
+      componentPurl: joined.purl,
+    }, identities);
+    expect(nested.stableKey).toBe(flat.stableKey);
   });
 
   it("binds all four reviewed findings-summary routes through PlatformClient", async () => {
