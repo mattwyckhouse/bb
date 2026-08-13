@@ -96,3 +96,24 @@ documentation only and are never approval evidence.
 - Merge commit: `1062b0c799a8a538da8131d298175a9e47ed2a38`
 - Broadcast commit: `1062b0c799a8a538da8131d298175a9e47ed2a38`
 - Result: the plugin resolves the repo-pinned Zod 4.3.6 runtime directly, while the lockfile retains every pre-existing importer and package resolution unchanged.
+
+### AMD-0002 — Preserve physical finding occurrences and authorize comment mutations
+
+- Status: proposed
+- Artifacts:
+  - `plugins/bb-plugin-finite-state/lib/store/schema.ts`
+  - `plugins/bb-plugin-finite-state/lib/remote/types.ts`
+  - `plugins/bb-plugin-finite-state/shared/contract.ts`
+- Contract version: 2
+- Prior artifact hashes:
+  - `lib/store/schema.ts`: `0494b18f8258ffbf6e66dd8c44bbfef99d6fe7f1c8d7853221d8ad0346e7cbef`
+  - `lib/remote/types.ts`: `933bf1672ff816879cd246d1e3e9a562c9e1da7bedf16e326d5f75fd12f8ba08`
+  - `shared/contract.ts`: `84bee6cab373316b2c4e47707c1c80b7a54a007d9ae2bf46862faad9cba8e905`
+- New artifact hashes: pending an approved implementation
+- Reason: WP-22 must retain every physical Platform finding row, but the verified WP-11 corpus returns 4,001 rows with finding id `8000000000000000027` occurring twice and the frozen `findings` primary key permits only one row per `(project_id, project_version_id, generation_id, finding_id)`. Deduplicating, replacing, or suffixing the Platform id would violate the cache and downstream duplicate-resolution contracts. WP-22 also requires confirmed create/update/delete comment passthrough followed by cache refresh, but the frozen `PlatformClient` exposes only `listFindingComments`, while the frozen RPC authorization policy requires all three comment mutation handlers to return `authorization-unavailable` until an actor-authenticated, single-use capability mint exists.
+- Migration: append a store migration that gives each physical finding occurrence a cache-local row identity while retaining the exact Platform finding id in a separately queryable column; update dependent `finding_cwes` and `finding_activity` foreign keys and indexes without imposing uniqueness on Platform or stable business identity. Add verified narrow Platform comment create/update/delete methods with explicit non-retry semantics for ambiguous failures. Define and implement the actor-authenticated, single-use capability mint/validation path before enabling the existing human-only RPC handlers; retain `authorization-unavailable` until that path is complete. Update focused contract, store, remote-client, and WP-22 tests, then increment the RPC contract version and frozen baselines through the amendment accept flow.
+- Affected WPs and gates: WP-22–WP-30, WP-58, WP-61–WP-65; findings cache, stable-key resolution, comment detail/actions, agent read surfaces, shared store/remote/RPC frozen guards; G3–G6
+- Contract owner: pending
+- Affected-lane reviewer: pending
+- Broadcast and merge commits: pending
+- Evidence: `test/mock-remote/fixtures/platform/findings.jsonl` lines 28 and 4001 are identical and share the same `id`; `test/mock-remote/platform/state.ts` deliberately retains both occurrence rows; `lib/store/schema.ts` defines the conflicting findings primary key; `lib/remote/types.ts` has no comment mutation methods; `shared/contract.ts` classifies the three mutation RPCs as human-only and fixes their current disposition to `authorization-unavailable`.
