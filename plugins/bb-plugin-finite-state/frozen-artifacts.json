@@ -45,6 +45,7 @@
       "amendment": null,
       "active": false,
       "retired": "Owner ruling 2026-08-13 (18:07 ET): WP-08 fixture freeze retired; governed by the AGENTS.md fixture-fidelity rule instead. Entry retained because check-frozen-artifacts.mjs pins the artifact key set; removing it entirely requires the guard-script change tracked in the FS-160 docs/guard cleanup."
+    }
   },
   "dependencyBaseline": {
     "amendment": "AMD-0014",
