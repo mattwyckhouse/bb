@@ -145,7 +145,6 @@ describe("manual triage flow", () => {
     fireEvent.change(within(editor).getByLabelText("Evidence reviewed"), { target: { value: "Reviewed cached evidence for each selected row" } });
     fireEvent.click(within(editor).getByRole("checkbox"));
     fireEvent.click(within(editor).getByRole("button", { name: /Write YAML/u }));
-    fireEvent.click(await slot.findByRole("button", { name: "Confirm local writes" }));
     expect(await slot.findByText(/1 decision failed; successful YAML changes were kept/u)).toBeTruthy();
     expect(slot.getByText(/stable-1: Externally edited/u)).toBeTruthy();
     fireEvent.click(slot.getByRole("button", { name: "Retry failed" }));
@@ -155,6 +154,19 @@ describe("manual triage flow", () => {
     const calls = slot.inspection.rpcCalls;
     const targetReadIndexes = calls.flatMap((call, index) => call.method === "triageTargetsRead" ? [index] : []);
     expect(calls.findIndex(call => call === retry)).toBeGreaterThan(targetReadIndexes.at(-1) ?? -1);
+  });
+
+  it("submits a valid bulk draft from command-enter without a second confirmation", async () => {
+    const slot = await renderFlow();
+    fireEvent.click(slot.getByRole("button", { name: "Select all 3" }));
+    fireEvent.keyDown(window, { key: "b" });
+    fireEvent.click(slot.getByRole("button", { name: /eEXPLOITABLE/u }));
+    const editor = await slot.findByRole("form", { name: /3 local overlay identities/u });
+    confirmEditor(editor, "Reviewed every selected finding");
+    fireEvent.keyDown(within(editor).getByLabelText("Reason"), { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(slot.inspection.rpcCalls.filter(call => call.method === "triageDecisionsWrite")).toHaveLength(1));
+    expect(slot.getByText("3 local YAML decisions written; 0 failed.")).toBeTruthy();
   });
 
   it("refreshes the CAS base across a 20-item chunk boundary", async () => {
@@ -182,7 +194,6 @@ describe("manual triage flow", () => {
     fireEvent.change(within(editor).getByLabelText("Evidence reviewed"), { target: { value: "Reviewed the evidence for every selected row" } });
     fireEvent.click(within(editor).getByRole("checkbox"));
     fireEvent.click(within(editor).getByRole("button", { name: /Write YAML/u }));
-    fireEvent.click(await slot.findByRole("button", { name: "Confirm local writes" }));
     await waitFor(() => expect(slot.inspection.rpcCalls.filter(call => call.method === "triageDecisionsWrite")).toHaveLength(2));
     expect(slot.getByText(/27 succeeded, 0 failed/u)).toBeTruthy();
   });
@@ -206,7 +217,6 @@ describe("manual triage flow", () => {
     fireEvent.change(within(editor).getByLabelText("Evidence reviewed"), { target: { value: "Reviewed the evidence for every selected row" } });
     fireEvent.click(within(editor).getByRole("checkbox"));
     fireEvent.click(within(editor).getByRole("button", { name: /Write YAML/u }));
-    fireEvent.click(await slot.findByRole("button", { name: "Confirm local writes" }));
 
     await waitFor(() => expect(slot.inspection.rpcCalls.filter(call => call.method === "triageDecisionsWrite")).toHaveLength(2));
     const writes = slot.inspection.rpcCalls.filter(call => call.method === "triageDecisionsWrite");
@@ -266,7 +276,6 @@ describe("manual triage flow", () => {
     const editor = await slot.findByRole("form", { name: /1 local overlay identity/u });
     confirmEditor(editor);
     fireEvent.click(within(editor).getByRole("button", { name: /Write YAML/u }));
-    fireEvent.click(await slot.findByRole("button", { name: "Confirm local writes" }));
     await waitFor(() => expect(slot.inspection.rpcCalls.filter(call => call.method === "triageDecisionsWrite")).toHaveLength(1));
     const write = slot.inspection.rpcCalls.find(call => call.method === "triageDecisionsWrite");
     expect(write?.input).toMatchObject({ decisions: [{ findingId: "finding-0", stableKey: "shared-stable" }] });
