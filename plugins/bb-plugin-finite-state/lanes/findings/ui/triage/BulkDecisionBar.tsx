@@ -12,18 +12,20 @@ export interface BulkFailure {
 
 const STATUS_BUTTONS = Object.entries(VEX_SHORTCUTS) as Array<[keyof typeof VEX_SHORTCUTS, VexStatus]>;
 
-export function BulkDecisionBar({ count, predicate, sharedCollisionRows, existingDecisionCount, open, pending, status, failures, outcome, onOpen, onStatus, onRetry, onCancel }: {
+export function BulkDecisionBar({ count, predicate, sharedCollisionRows, existingDecisionCount, open, confirming, pending, status, failures, outcome, onOpen, onStatus, onConfirm, onRetry, onCancel }: {
   count: number;
   predicate: boolean;
   sharedCollisionRows: number;
   existingDecisionCount: number;
   open: boolean;
+  confirming: boolean;
   pending: boolean;
   status: VexStatus | null;
   failures: readonly BulkFailure[];
   outcome: string | null;
   onOpen(): void;
   onStatus(status: VexStatus): void;
+  onConfirm(): void;
   onRetry(): void;
   onCancel(): void;
 }): React.JSX.Element | null {
@@ -37,7 +39,7 @@ export function BulkDecisionBar({ count, predicate, sharedCollisionRows, existin
             {STATUS_BUTTONS.map(([key, value]) => <Button aria-keyshortcuts={key === "R" ? "Shift+R" : key} aria-pressed={status === value} key={key} onClick={() => onStatus(value)} size="sm" variant={status === value ? "secondary" : "outline"}><kbd className="mr-1 font-mono">{key}</kbd>{value.replaceAll("_", " ")}</Button>)}
           </div>
         )}
-        {status ? <div className="ml-auto flex items-center gap-2"><span className="text-xs text-muted-foreground">Ready to write {status.replaceAll("_", " ")} to {count.toLocaleString()} local decision{count === 1 ? "" : "s"}.</span><Button disabled={pending} onClick={onCancel} size="sm" variant="ghost">Cancel</Button></div> : null}
+        {confirming && status ? <div className="ml-auto flex items-center gap-2"><span className="text-xs text-muted-foreground">Preview: write {status.replaceAll("_", " ")} to {count.toLocaleString()} local decision{count === 1 ? "" : "s"}?</span><Button aria-keyshortcuts="Control+Enter Meta+Enter" disabled={pending} onClick={onConfirm} size="sm">{pending ? "Writing…" : "Confirm local writes"}</Button><Button disabled={pending} onClick={onCancel} size="sm" variant="ghost">Cancel</Button></div> : null}
       </div>
       {sharedCollisionRows > 0 ? <p className="mt-2 text-xs text-muted-foreground">{sharedCollisionRows.toLocaleString()} additional rendered collision {sharedCollisionRows === 1 ? "row shares" : "rows share"} the selected local overlay identity. One YAML entry is written per shared identity, using one exact finding row.</p> : null}
       {existingDecisionCount > 0 ? <p className="mt-2 text-xs text-warning">{existingDecisionCount.toLocaleString()} existing local {existingDecisionCount === 1 ? "decision will" : "decisions will"} be replaced by this confirmed bulk write.</p> : null}

@@ -57,10 +57,28 @@ export function TriageEditor({
 }): React.JSX.Element {
   const validation = validateTriageDraft(draft);
   const [showCompare, setShowCompare] = useState(false);
+  const [submitFeedback, setSubmitFeedback] = useState<string | null>(null);
   const exactPin = draft.justification === "CODE_NOT_REACHABLE";
 
   const justification = (value: VexJustification) => {
     onChange({ ...draft, justification: value, ...(value === "CODE_NOT_REACHABLE" ? { pin: "exact_version" as const } : {}) });
+  };
+
+  const attemptCommit = () => {
+    if (pending) {
+      setSubmitFeedback("A local write is already in progress.");
+      return;
+    }
+    if (!validation.ok) {
+      setSubmitFeedback(validation.message);
+      return;
+    }
+    if (!reasonConfirmed) {
+      setSubmitFeedback("Confirm that you reviewed the reason and evidence before writing YAML.");
+      return;
+    }
+    setSubmitFeedback(null);
+    onCommit();
   };
 
   return (
@@ -71,9 +89,9 @@ export function TriageEditor({
       onKeyDown={event => {
         if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) return;
         event.preventDefault();
-        onCommit();
+        attemptCommit();
       }}
-      onSubmit={event => { event.preventDefault(); onCommit(); }}
+      onSubmit={event => { event.preventDefault(); attemptCommit(); }}
     >
       <div className="flex items-start gap-4 px-4 py-3">
         <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-primary/30 bg-primary/10 text-primary">
@@ -151,6 +169,8 @@ export function TriageEditor({
           </div>
 
           {!validation.ok ? <p className="mt-3 text-xs text-destructive" role="alert">{validation.message}</p> : null}
+          {!reasonConfirmed && validation.ok ? <p className="mt-3 text-xs text-muted-foreground">Confirm that you reviewed the reason and evidence to enable Write YAML.</p> : null}
+          {submitFeedback && (pending || !reasonConfirmed || !validation.ok) ? <p className="mt-3 text-xs text-destructive" role="alert">{submitFeedback}</p> : null}
           {error ? (
             <div className="mt-3 rounded-md border border-destructive/40 bg-muted p-3 text-xs" role="alert">
               <div className="flex items-start gap-2"><Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-destructive" name="AlertTriangle" /><div className="min-w-0 flex-1"><p className="font-medium">{error.kind === "conflict" ? "A newer YAML file was preserved" : "This decision was not written"}</p><p className="mt-1 break-words text-muted-foreground">{error.message}</p></div></div>

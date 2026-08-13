@@ -99,12 +99,14 @@ export function FindingsTriage({
   const [writeError, setWriteError] = useState<TriageWriteError | null>(null);
   const [announcement, setAnnouncement] = useState("Findings shortcuts ready. Press question mark for the keyboard map.");
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkConfirming, setBulkConfirming] = useState(false);
   const [bulkFailures, setBulkFailures] = useState<BulkFailure[]>([]);
   const [bulkOutcome, setBulkOutcome] = useState<string | null>(null);
   const [failedTargets, setFailedTargets] = useState<TriageTarget[]>([]);
   const [preparedBulk, setPreparedBulk] = useState<{ selection: FindingSelection; targets: TriageTarget[] } | null>(null);
   const undoStack = useRef(new SessionUndoStack());
   const undoEntries = useRef(new Map<UndoToken, UndoEntry>());
+  const bulkWriteInFlight = useRef(false);
   const anchorFindingId = useRef<string | null>(null);
   const count = selectedCount(selection);
   const scopeReady = Boolean(workspaceProjectId && platformProjectId && projectVersionId);
@@ -302,6 +304,7 @@ export function FindingsTriage({
     const row = currentRow(rows, cursorKey);
     if (!row) { setAnnouncement("Choose a finding before setting a bulk status."); return; }
     setBulkOpen(true);
+    setBulkConfirming(false);
     setPending(true);
     setBulkFailures([]);
     setBulkOutcome(null);
@@ -377,7 +380,8 @@ export function FindingsTriage({
     targets: readonly TriageTarget[],
     preservedFailures: readonly BulkFailure[] = [],
   ) => {
-    if (!draft || !workspaceProjectId || !platformProjectId || !projectVersionId) return;
+    if (!draft) throw new Error("Bulk triage draft is no longer available.");
+    if (!workspaceProjectId || !platformProjectId || !projectVersionId) throw new Error("Choose a findings scope before bulk triage.");
     const failures: BulkFailure[] = [...preservedFailures];
     const retryTargets: TriageTarget[] = [];
     let successes = 0;
@@ -425,29 +429,59 @@ export function FindingsTriage({
     setAnnouncement(outcome);
     setBulkOutcome(`${successes} local YAML ${successes === 1 ? "decision" : "decisions"} written; ${failures.length} failed.`);
     if (successes > 0) onCommitted();
+    return { successes, failures: failures.length };
   }, [draft, onCommitted, platformProjectId, projectVersionId, refreshTargets, rememberUndo, rpc, workspaceProjectId]);
 
+  const previewTargets = preparedBulk?.selection === selection ? preparedBulk.targets : null;
+  const previewCount = previewTargets?.length ?? count;
+  const previewSharedRows = Math.max(sharedCollisionRows, previewTargets ? count - previewTargets.length : 0);
+  const previewExisting = previewTargets?.filter(exact => exact.prior !== null).length ?? 0;
+
   const confirmBulk = useCallback(async (retry = false) => {
-    if (!draft || !reasonConfirmed || !validateTriageDraft(draft).ok) return;
+    if (pending || bulkWriteInFlight.current) {
+      setAnnouncement("A bulk local write is already in progress.");
+      return;
+    }
+    if (!draft || !reasonConfirmed || !validateTriageDraft(draft).ok) {
+      setBulkOutcome("Bulk local writes were not started. Review the draft and confirm its reason and evidence.");
+      return;
+    }
+    bulkWriteInFlight.current = true;
     setPending(true);
+    setBulkOutcome(null);
     try {
-      await writeBulkTargets(
+      const result = await writeBulkTargets(
         retry ? failedTargets : preparedBulk?.selection === selection ? preparedBulk.targets : await loadBulkTargets(),
         retry ? bulkFailures.filter(failure => !failure.retryable) : [],
       );
+      setBulkConfirming(false);
+      if (result.failures === 0) {
+        setDraft(null);
+        setTarget(null);
+        setPreparedBulk(null);
+        setReasonConfirmed(false);
+      }
     }
     catch (error) {
       const message = error instanceof Error ? error.message : "Bulk target loading failed.";
       setBulkFailures([{ findingId: "selection", stableKey: "selection", message, retryable: false }]);
       setBulkOutcome(`Bulk local writes failed: ${message}`);
     }
-    finally { setPending(false); }
-  }, [bulkFailures, draft, failedTargets, loadBulkTargets, preparedBulk, reasonConfirmed, selection, writeBulkTargets]);
+    finally {
+      bulkWriteInFlight.current = false;
+      setPending(false);
+    }
+  }, [bulkFailures, draft, failedTargets, loadBulkTargets, pending, preparedBulk, reasonConfirmed, selection, writeBulkTargets]);
 
-  const previewTargets = preparedBulk?.selection === selection ? preparedBulk.targets : null;
-  const previewCount = previewTargets?.length ?? count;
-  const previewSharedRows = Math.max(sharedCollisionRows, previewTargets ? count - previewTargets.length : 0);
-  const previewExisting = previewTargets?.filter(exact => exact.prior !== null).length ?? 0;
+  const requestBulkConfirmation = useCallback(() => {
+    if (!draft || !reasonConfirmed || !validateTriageDraft(draft).ok) {
+      setBulkOutcome("Bulk local writes were not started. Review the draft and confirm its reason and evidence.");
+      return;
+    }
+    setBulkOutcome(null);
+    setBulkConfirming(true);
+    setAnnouncement(`Bulk confirmation ready: review the ${previewCount.toLocaleString()}-decision blast radius, then confirm local writes.`);
+  }, [draft, previewCount, reasonConfirmed]);
 
   const readiness = pending
     ? "Local triage write or target load in progress…"
@@ -470,8 +504,8 @@ export function FindingsTriage({
         <span>{readiness}</span>
         <Button aria-description="Open the complete keyboard shortcut reference" onClick={() => setSheet(true)} size="sm" variant="ghost"><Icon aria-hidden="true" className="size-3.5" name="CircleQuestion" />Shortcuts <kbd className="font-mono">?</kbd></Button>
       </div>
-      {draft && target ? <TriageEditor draft={draft} error={writeError} onCancel={() => { setDraft(null); setTarget(null); setWriteError(null); }} onChange={next => setDraft(next.status === "NOT_AFFECTED" ? next : { ...next, justification: null })} onCommit={count > 0 ? () => { void confirmBulk(false); } : commitSingle} onReasonConfirmed={setReasonConfirmed} onReload={reloadTarget} pending={pending} prior={count > 0 ? null : target.prior} reasonConfirmed={reasonConfirmed} seededReason={!target.prior && draft.reason === target.reasonSeed && target.reasonSeed.length > 0} targetLabel={count > 0 ? `${previewCount.toLocaleString()} local overlay ${previewCount === 1 ? "identity" : "identities"}` : target.label} /> : null}
-      <BulkDecisionBar count={previewCount} existingDecisionCount={previewExisting} failures={bulkFailures} onCancel={() => { setDraft(null); setTarget(null); setBulkOpen(false); setBulkOutcome(null); }} onOpen={() => setBulkOpen(true)} onRetry={() => void confirmBulk(true)} onStatus={status => void prepareBulk(status)} open={bulkOpen} outcome={bulkOutcome} pending={pending} predicate={selection.mode === "predicate"} sharedCollisionRows={previewSharedRows} status={draft?.status ?? null} />
+      {draft && target ? <TriageEditor draft={draft} error={writeError} onCancel={() => { setDraft(null); setTarget(null); setWriteError(null); }} onChange={next => { setBulkConfirming(false); setBulkOutcome(null); setDraft(next.status === "NOT_AFFECTED" ? next : { ...next, justification: null }); }} onCommit={count > 0 ? bulkConfirming ? () => { void confirmBulk(false); } : requestBulkConfirmation : commitSingle} onReasonConfirmed={confirmed => { setBulkConfirming(false); setBulkOutcome(null); setReasonConfirmed(confirmed); }} onReload={reloadTarget} pending={pending} prior={count > 0 ? null : target.prior} reasonConfirmed={reasonConfirmed} seededReason={!target.prior && draft.reason === target.reasonSeed && target.reasonSeed.length > 0} targetLabel={count > 0 ? `${previewCount.toLocaleString()} local overlay ${previewCount === 1 ? "identity" : "identities"}` : target.label} /> : null}
+      <BulkDecisionBar confirming={bulkConfirming} count={previewCount} existingDecisionCount={previewExisting} failures={bulkFailures} onCancel={() => { setDraft(null); setTarget(null); setBulkConfirming(false); setBulkOpen(false); setBulkOutcome(null); }} onConfirm={() => void confirmBulk(false)} onOpen={() => setBulkOpen(true)} onRetry={() => void confirmBulk(true)} onStatus={status => void prepareBulk(status)} open={bulkOpen} outcome={bulkOutcome} pending={pending} predicate={selection.mode === "predicate"} sharedCollisionRows={previewSharedRows} status={draft?.status ?? null} />
       {sheet ? <ShortcutSheet onOpenChange={setSheet} open /> : null}
     </>
   );

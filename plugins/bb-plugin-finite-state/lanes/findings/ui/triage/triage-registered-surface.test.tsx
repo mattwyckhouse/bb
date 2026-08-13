@@ -111,14 +111,14 @@ describe("bulk triage registered surface", () => {
     fireEvent.change(within(editor).getByLabelText("Reason"), { target: { value: "Reviewed both exact cached findings" } });
     fireEvent.click(within(editor).getByRole("checkbox"));
     fireEvent.click(within(editor).getByRole("button", { name: /Write YAML/u }));
+    fireEvent.click(await slot.findByRole("button", { name: "Confirm local writes" }));
 
+    await waitFor(() => expect(writtenFiles.length).toBeGreaterThan(0));
+    const yamls = await Promise.all([...new Set(writtenFiles)].map(file => readFile(join(root, file), "utf8")));
+    const writtenYaml = yamls.join("\n");
+    expect(writtenYaml).toContain("CVE-2026-0168");
+    expect(writtenYaml).toContain("CVE-2026-0169");
+    expect(writtenYaml.match(/status: EXPLOITABLE/gu)).toHaveLength(2);
     expect(await slot.findByText("2 local YAML decisions written; 0 failed.")).toBeTruthy();
-    const writtenFile = writtenFiles[0];
-    expect(writtenFile).toBeDefined();
-    if (!writtenFile) throw new Error("registered bulk RPC returned no written file");
-    const yaml = await readFile(join(root, writtenFile), "utf8");
-    expect(yaml).toContain("CVE-2026-0168");
-    expect(yaml).toContain("CVE-2026-0169");
-    expect(yaml.match(/status: EXPLOITABLE/gu)).toHaveLength(2);
   });
 });
