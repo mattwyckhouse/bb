@@ -137,14 +137,13 @@ function platformScope() {
   return { projectId: project["id"], projectVersionId: finding["projectVersionId"] };
 }
 
-function findingComponentPurl(finding: Record<string, unknown>): string | null {
+function findingComponentId(finding: Record<string, unknown>): string | null {
   const component = finding["component"];
   if (
     component === null || Array.isArray(component) || typeof component !== "object" ||
     !("id" in component) || typeof component.id !== "string"
   ) return null;
-  const value = state.components.get(component.id)?.["purl"];
-  return typeof value === "string" ? value : null;
+  return component.id;
 }
 
 describe("sync registration", () => {
@@ -266,31 +265,27 @@ describe("sync registration", () => {
     };
     await pull(deps, scope, ["vexDecision"]);
     const findings = [...state.findings.values()].flatMap((row) => {
-      const purl = findingComponentPurl(row);
+      const componentId = findingComponentId(row);
       return row["projectVersionId"] === scope.projectVersionId
         && typeof row["vexStatus"] === "string"
-        && purl !== null
-        ? [{ row, purl }]
+        && componentId !== null
+        ? [{ row, componentId }]
         : [];
     }).slice(0, 3);
     if (findings.length !== 3) throw new Error("fixture has fewer than three VEX findings");
     const directory = join(root, ".fs", "triage", scope.projectId);
     await mkdir(directory, { recursive: true });
     for (const [index, finding] of findings.entries()) {
-      const { row, purl } = finding;
-      const tail = purl.slice(purl.lastIndexOf("/") + 1);
-      const at = tail.lastIndexOf("@");
-      const name = decodeURIComponent(at < 0 ? tail : tail.slice(0, at));
-      const version = at < 0 ? null : decodeURIComponent(tail.slice(at + 1));
+      const { row, componentId } = finding;
       const localStatus = index === 0 ? "NOT_AFFECTED" : index === 2 ? "FALSE_POSITIVE" : row["vexStatus"];
       const localReason = index === 0 || index === 2 ? `local edit ${index}` : null;
       await writeFile(join(directory, `${index}.yaml`), `schema: fs-triage/v1
 project: ${JSON.stringify(scope.projectId)}
 component:
-  purl: ${JSON.stringify(purl)}
-  name: ${JSON.stringify(name)}
+  purl: null
+  name: ${JSON.stringify(componentId)}
   group: null
-  version: ${JSON.stringify(version)}
+  version: null
 decisions:
   ${String(row["cve"])}:
     status: ${JSON.stringify(localStatus)}

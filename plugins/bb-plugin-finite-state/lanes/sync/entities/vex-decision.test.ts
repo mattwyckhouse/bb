@@ -22,10 +22,6 @@ import {
 } from "./vex-decision.js";
 
 const FIXTURE = resolve(import.meta.dirname, "../../../test/mock-remote/fixtures/platform/findings.jsonl");
-const COMPONENT_FIXTURE = resolve(
-  import.meta.dirname,
-  "../../../test/mock-remote/fixtures/platform/components.jsonl",
-);
 const roots: string[] = [];
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
@@ -41,47 +37,23 @@ async function worktree(): Promise<string> {
   return root;
 }
 
-async function firstFixtureIdentity(): Promise<{
-  finding: Record<string, Json>;
-  identities: Map<string, {
-    name: string;
-    group: string | null;
-    version: string | null;
-    purl: string | null;
-    fallbackIdentity: string | null;
-  }>;
-}> {
+async function firstFixtureFinding(): Promise<Record<string, Json>> {
   const findingLine = (await readFile(FIXTURE, "utf8")).split("\n", 1)[0];
-  const componentLine = (await readFile(COMPONENT_FIXTURE, "utf8")).split("\n", 1)[0];
-  if (findingLine === undefined || componentLine === undefined) throw new Error("fixture is empty");
-  const finding = JSON.parse(findingLine) as Record<string, Json>;
-  const component = JSON.parse(componentLine) as Record<string, Json>;
-  const id = String(component["id"]);
-  return {
-    finding,
-    identities: new Map([[id, {
-      name: String(component["name"]),
-      group: typeof component["group"] === "string" ? component["group"] : null,
-      version: typeof component["version"] === "string" ? component["version"] : null,
-      purl: typeof component["purl"] === "string" ? component["purl"] : null,
-      fallbackIdentity: typeof component["fallbackIdentity"] === "string"
-        ? component["fallbackIdentity"]
-        : null,
-    }]]),
-  };
+  if (findingLine === undefined) throw new Error("fixture is empty");
+  return JSON.parse(findingLine) as Record<string, Json>;
 }
 
 describe("vexDecision adapter", () => {
   it("projects frozen Platform fixture bytes to the canonical tuple and stable key", async () => {
-    const { finding, identities } = await firstFixtureIdentity();
-    const projected = projectVexDecision(finding, identities);
+    const finding = await firstFixtureFinding();
+    const projected = projectVexDecision(finding);
     expect(projected).toEqual({
       key: ENTITIES.vexDecision.key({
         cve: "CVE-2020-10000",
-        purl: "pkg:generic/eagle-component-001@1.0.0",
-        name: "eagle-component-001",
+        purl: null,
+        name: "component-0001",
         group: null,
-        version: "1.0.0",
+        version: null,
       }),
       remoteId: "8000000000000000000",
       payload: {
@@ -91,14 +63,14 @@ describe("vexDecision adapter", () => {
         reason: null,
       },
     });
-    const identity = identities.values().next().value;
-    if (identity === undefined) throw new Error("component fixture is empty");
+    const component = finding["component"];
+    if (component === null || Array.isArray(component) || typeof component !== "object") {
+      throw new Error("finding fixture has no nested component");
+    }
     const flat = projectVexDecision({
       ...finding,
       component: null,
-      componentId: "component-0001",
-      componentPurl: identity.purl,
-      componentFallbackIdentity: identity.fallbackIdentity,
+      componentId: String(component["id"]),
     });
     expect(projected?.key).toBe(flat?.key);
   });
@@ -235,9 +207,9 @@ reason: null
     await writeFile(validFile, `schema: fs-triage/v1
 project: project
 component:
-  purl: pkg:generic/eagle-component-001@1.0.0
-  name: eagle-component-001
-  version: 1.0.0
+  purl: null
+  name: component-0001
+  version: null
 decisions:
   CVE-2020-10000:
     status: NOT_AFFECTED
@@ -245,8 +217,7 @@ decisions:
     response: null
     reason: local evidence
 `, "utf8");
-    const { finding, identities } = await firstFixtureIdentity();
-    const remote = projectVexDecision(finding, identities);
+    const remote = projectVexDecision(await firstFixtureFinding());
     if (remote === null) throw new Error("fixture has no VEX tuple");
     const adapter: EntityAdapter = {
       kind: "vexDecision",
