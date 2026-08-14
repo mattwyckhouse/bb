@@ -1,5 +1,6 @@
 import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
 import type Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
 import type { JsonValue } from "../../shared/contract.js";
@@ -22,8 +23,8 @@ import { getCachedFinding, queryFindings } from "./cache/query.js";
 import { findingsCacheState } from "./cache/query.js";
 import type { CachedFinding, FindingsFilter } from "./cache/types.js";
 import type { FindingsDriftService } from "./drift/index.js";
+import type { VendorImportResult } from "./drift/vendor/import.js";
 import { DRIFT_REPORT_MAX_LIMIT, type DriftState } from "./drift/report.js";
-import { MAX_VENDOR_VEX_BYTES } from "./drift/vendor/parse.js";
 import {
   decisionFromInput,
   OverlayCasConflictError,
@@ -50,6 +51,9 @@ const findingsRpcContract = {
   findingsCommentsUpdate: rpcContract.findingsCommentsUpdate,
   findingsCommentsDelete: rpcContract.findingsCommentsDelete,
   findingsFacets: rpcContract.findingsFacets,
+  triageVendorVexPreview: rpcContract.triageVendorVexPreview,
+  triageVendorVexApply: rpcContract.triageVendorVexApply,
+  triageOrphansPrune: rpcContract.triageOrphansPrune,
 } as const;
 
 const savedFilterSchema = z
@@ -284,68 +288,11 @@ const driftScopeSchema = z
     projectVersionId: z.string().min(1).max(512),
   })
   .strict();
-const vendorImportResultSchema = z
-  .object({
-    source: z
-      .object({
-        format: z.enum(["cyclonedx", "csaf", "openvex"]),
-        digest: z.string().length(64),
-        vendor: z.string().min(1).max(500),
-      })
-      .strict(),
-    matched: z.number().int().nonnegative(),
-    unmatched: z.number().int().nonnegative(),
-    needsCompletion: z.number().int().nonnegative(),
-    keptLocal: z.number().int().nonnegative(),
-    written: z.number().int().nonnegative(),
-    proposals: z.array(
-      z
-        .object({
-          stableKey: z.string().max(2_048).optional(),
-          state: z.string().min(1).max(128),
-          sourceRef: z.string().min(1).max(4_096),
-        })
-        .strict(),
-    ),
-    errors: z.array(
-      z
-        .object({
-          sourceRef: z.string().max(4_096).optional(),
-          code: z.string().min(1).max(128),
-          message: z.string().min(1).max(2_000),
-        })
-        .strict(),
-    ),
-  })
-  .strict();
-const driftPruneInputSchema = driftScopeSchema
-  .extend({
-    stableKeys: z.array(z.string().min(1).max(2_048)).min(1).max(500),
-    dryRun: z.boolean(),
-    confirmed: z.boolean(),
-    expectedBaseStateSha256: z.string().length(64),
-  })
-  .superRefine((input, context) => {
-    if (!input.dryRun && !input.confirmed) {
-      context.addIssue({
-        code: "custom",
-        path: ["confirmed"],
-        message: "Orphan prune requires explicit confirmation",
-      });
-    }
-    if (input.dryRun && input.confirmed) {
-      context.addIssue({
-        code: "custom",
-        path: ["confirmed"],
-        message: "Dry-run preview cannot carry confirmation",
-      });
-    }
-  });
-
 export const findingsUiRpcContract = defineRpcContract({
   findingsDriftReport: {
     input: z
       .object({
+        workspaceProjectId: z.string().min(1).max(512),
         platformProjectId: z.string().min(1).max(512),
         projectVersionId: z.string().min(1).max(512),
         cursor: z.string().min(1).max(2_048).nullable(),
@@ -361,6 +308,7 @@ export const findingsUiRpcContract = defineRpcContract({
   findingsDriftOrphanState: {
     input: z
       .object({
+        workspaceProjectId: z.string().min(1).max(512),
         platformProjectId: z.string().min(1).max(512),
         projectVersionId: z.string().min(1).max(512),
       })
@@ -371,27 +319,6 @@ export const findingsUiRpcContract = defineRpcContract({
         total: z.number().int().nonnegative(),
       })
       .strict(),
-  },
-  findingsDriftPrune: {
-    input: driftPruneInputSchema,
-    output: z
-      .object({
-        baseStateSha256: z.string().length(64),
-        selected: z.number().int().nonnegative(),
-        pruned: z.number().int().nonnegative(),
-        files: z.array(z.string().min(1).max(4_096)),
-      })
-      .strict(),
-  },
-  findingsDriftImportVendorVex: {
-    input: driftScopeSchema.extend({
-      fileName: z.string().min(1).max(1_024),
-      document: z.string().min(1).max(MAX_VENDOR_VEX_BYTES),
-      vendor: z.string().trim().min(1).max(500),
-      overwrite: z.boolean(),
-      dryRun: z.boolean(),
-    }),
-    output: vendorImportResultSchema,
   },
   findingsPullAdvisories: {
     input: z
@@ -1126,6 +1053,87 @@ function findingsListResult(
   };
 }
 
+function acceptedPlatformProjectId(
+  db: Database.Database,
+  workspaceProjectId: string,
+  projectVersionId: string,
+): string {
+  const rows = db
+    .prepare<[string, string], { platform_project_id: string }>(
+      `SELECT DISTINCT binding.platform_project_id
+         FROM workspace_platform_project_binding binding
+         JOIN sync_state s
+           ON s.project_id = binding.platform_project_id
+          AND s.project_version_id = ?
+          AND s.entity_kind = 'finding'
+          AND s.accepted_generation_id IS NOT NULL
+        WHERE binding.workspace_project_id = ?
+        ORDER BY binding.platform_project_id ASC
+        LIMIT 2`,
+    )
+    .all(projectVersionId, workspaceProjectId);
+  if (rows.length !== 1) throw new Error("FINDINGS_ACCEPTED_SCOPE_REQUIRED");
+  return rows[0]!.platform_project_id;
+}
+
+function continuationOffset(value: string | null): number {
+  if (value === null) return 0;
+  const offset = Number(value);
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new Error("VENDOR_IMPORT_CONTINUATION_INVALID");
+  }
+  return offset;
+}
+
+function vendorVexReport(
+  db: Database.Database,
+  input: {
+    projectId: string;
+    projectVersionId: string | null;
+    pageSize: number;
+    continuation: string | null;
+  },
+  result: VendorImportResult & { importId: string },
+  platformProjectId: string,
+) {
+  const projectVersionId = requireVersion(input.projectVersionId);
+  const offset = continuationOffset(input.continuation);
+  const page = result.proposals.slice(offset, offset + input.pageSize);
+  const nextOffset = offset + page.length;
+  return {
+    projectId: input.projectId,
+    projectVersionId,
+    importId: result.importId,
+    format: result.source.format,
+    documentSha256: result.source.digest,
+    items: page.map((proposal) => {
+      const sourceKey = proposal.stableKey ?? proposal.sourceRef;
+      return {
+        projectId: input.projectId,
+        projectVersionId,
+        kind: "vendorVexProposal",
+        key:
+          sourceKey.length <= 512
+            ? sourceKey
+            : `vendor-proposal-${createHash("sha256").update(sourceKey).digest("hex")}`,
+        label: proposal.sourceRef.slice(0, 1_000),
+        fields: {
+          state: proposal.state,
+          stableKey: proposal.stableKey ?? null,
+          sourceRef: proposal.sourceRef,
+        },
+      };
+    }),
+    total: result.proposals.length,
+    next: nextOffset < result.proposals.length ? String(nextOffset) : null,
+    matched: result.matched,
+    unmatched: result.unmatched,
+    written: result.written,
+    errors: result.errors.length,
+    cache: findingsCacheState(db, platformProjectId, projectVersionId),
+  };
+}
+
 export function registerFindingsRpc(
   bb: BbPluginApi,
   db: Database.Database,
@@ -1254,10 +1262,91 @@ export function registerFindingsRpc(
         cache: page.cache,
       };
     },
+    async triageVendorVexPreview(input) {
+      if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
+      const projectVersionId = requireVersion(input.projectVersionId);
+      const extended = input as typeof input & {
+        documentSha256: string;
+        vendor: string;
+      };
+      const platformProjectId = acceptedPlatformProjectId(
+        db,
+        input.projectId,
+        projectVersionId,
+      );
+      const source = await projectSource(bb, input.projectId);
+      const result = await deps.drift.previewVendorVex({
+        root: source.path,
+        projectId: platformProjectId,
+        pvId: projectVersionId,
+        documentSha256: extended.documentSha256,
+        vendor: extended.vendor,
+      });
+      return vendorVexReport(db, input, result, platformProjectId);
+    },
+    async triageVendorVexApply(input) {
+      if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
+      const projectVersionId = requireVersion(input.projectVersionId);
+      const extended = input as typeof input & {
+        importId: string;
+        expectedDocumentSha256: string;
+        overwrite: boolean;
+      };
+      const platformProjectId = acceptedPlatformProjectId(
+        db,
+        input.projectId,
+        projectVersionId,
+      );
+      const source = await projectSource(bb, input.projectId);
+      const result = await deps.drift.applyVendorVex({
+        root: source.path,
+        projectId: platformProjectId,
+        pvId: projectVersionId,
+        importId: extended.importId,
+        expectedDocumentSha256: extended.expectedDocumentSha256,
+        overwrite: extended.overwrite,
+      });
+      return vendorVexReport(db, input, result, platformProjectId);
+    },
+    async triageOrphansPrune(input) {
+      if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
+      const projectVersionId = requireVersion(input.projectVersionId);
+      const extended = input as typeof input & {
+        stableKeys: string[];
+        expectedBaseStateSha256: string;
+      };
+      const platformProjectId = acceptedPlatformProjectId(
+        db,
+        input.projectId,
+        projectVersionId,
+      );
+      const source = await projectSource(bb, input.projectId);
+      const result = await deps.drift.pruneOrphans({
+        root: source.path,
+        projectId: platformProjectId,
+        pvId: projectVersionId,
+        stableKeys: extended.stableKeys,
+        expectedBaseStateSha256: extended.expectedBaseStateSha256,
+      });
+      return {
+        projectId: input.projectId,
+        projectVersionId,
+        runId: `orphan-prune-${result.baseStateSha256.slice(0, 24)}`,
+        total: result.selected,
+        applied: result.pruned,
+        failed: 0,
+        results: extended.stableKeys.map((stableKey) => ({
+          stableKey,
+          success: true,
+          error: null,
+        })),
+      };
+    },
   });
   bb.rpc.register(findingsUiRpcContract, {
     findingsDriftReport(input) {
       if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
+      assertAcceptedFindingsScope(db, input);
       return deps.drift.report({
         projectId: input.platformProjectId,
         pvId: input.projectVersionId,
@@ -1277,38 +1366,10 @@ export function registerFindingsRpc(
     },
     findingsDriftOrphanState(input) {
       if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
+      assertAcceptedFindingsScope(db, input);
       return deps.drift.orphanState({
         projectId: input.platformProjectId,
         pvId: input.projectVersionId,
-      });
-    },
-    async findingsDriftPrune(input) {
-      if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
-      assertAcceptedFindingsScope(db, input);
-      const source = await projectSource(bb, input.workspaceProjectId);
-      return deps.drift.pruneOrphans({
-        root: source.path,
-        projectId: input.platformProjectId,
-        pvId: input.projectVersionId,
-        stableKeys: input.stableKeys,
-        dryRun: input.dryRun,
-        confirmed: input.confirmed,
-        expectedBaseStateSha256: input.expectedBaseStateSha256,
-      });
-    },
-    async findingsDriftImportVendorVex(input) {
-      if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
-      assertAcceptedFindingsScope(db, input);
-      const source = await projectSource(bb, input.workspaceProjectId);
-      return deps.drift.importVendorVex({
-        root: source.path,
-        projectId: input.platformProjectId,
-        pvId: input.projectVersionId,
-        file: input.fileName,
-        bytes: Buffer.from(input.document, "utf8"),
-        vendor: input.vendor,
-        overwrite: input.overwrite,
-        dryRun: input.dryRun,
       });
     },
     async findingsPullAdvisories(input) {

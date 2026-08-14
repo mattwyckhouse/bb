@@ -9,11 +9,20 @@ import type { NamespacedCliRunner } from "../sync/cli.js";
 import type { FindingsDriftService } from "./drift/index.js";
 import { MAX_VENDOR_VEX_BYTES } from "./drift/vendor/parse.js";
 
+const TRIAGE_USAGE = `usage:
+  bb finite-state triage --help
+  bb finite-state triage drift report --project ID --version ID [--cursor CURSOR] [--limit N] [--json]
+  bb finite-state triage drift refresh --project ID --version ID [--limit N] [--json]
+  bb finite-state triage import-vex preview <file> --vendor NAME --project ID --version ID [--json]
+  bb finite-state triage import-vex apply --import-id ID --expected-document-sha256 SHA256 --project ID --version ID [--json]
+  bb finite-state triage orphans list --project ID --version ID [--json]
+  bb finite-state triage orphans prune --stable-key KEY [--stable-key KEY ...] --expected-base SHA256 --project ID --version ID [--json]`;
+
 type DriftCliVerb = "drift" | "import-vex" | "orphans";
 
 interface ParsedArgs {
   verb: DriftCliVerb;
-  action: "report" | "refresh" | null;
+  action: "report" | "refresh" | "preview" | "apply" | "list" | "prune";
   projectId: string;
   projectVersionId: string;
   cursor: string | null;
@@ -21,13 +30,13 @@ interface ParsedArgs {
   json: boolean;
   file: string | null;
   vendor: string | null;
-  overwrite: boolean;
-  dryRun: boolean;
-  prune: boolean;
-  confirmed: boolean;
+  importId: string | null;
+  expectedDocumentSha256: string | null;
   expectedBaseStateSha256: string | null;
   stableKeys: string[];
 }
+
+type ParseResult = { help: true } | { help: false; input: ParsedArgs };
 
 interface WorkspaceExecution {
   hostId: string;
@@ -68,34 +77,44 @@ function positiveInteger(value: string, option: string): number {
   return parsed;
 }
 
-function parseArgs(argv: readonly string[]): ParsedArgs {
+export function parseArgs(argv: readonly string[]): ParseResult {
   const args = [...argv];
+  if (args.includes("--help")) return { help: true };
   const rawVerb = args.shift();
   if (
     rawVerb !== "drift" &&
     rawVerb !== "import-vex" &&
     rawVerb !== "orphans"
   ) {
-    throw new Error(
-      "usage: bb finite-state triage <drift|import-vex|orphans> ... --project ID --version ID",
-    );
+    throw new Error(TRIAGE_USAGE);
   }
-  let action: ParsedArgs["action"] = null;
+  let action: ParsedArgs["action"];
   let file: string | null = null;
   if (rawVerb === "drift") {
-    const candidate = args[0];
-    if (candidate === "report" || candidate === "refresh") {
-      action = candidate;
-      args.shift();
-    } else {
-      action = "report";
+    const candidate = args.shift();
+    if (candidate !== "report" && candidate !== "refresh") {
+      throw new Error("drift requires report or refresh\n" + TRIAGE_USAGE);
     }
+    action = candidate;
   } else if (rawVerb === "import-vex") {
-    const candidate = args[0];
-    if (candidate && !candidate.startsWith("--")) {
-      file = candidate;
-      args.shift();
+    const candidate = args.shift();
+    if (candidate !== "preview" && candidate !== "apply") {
+      throw new Error("import-vex requires preview or apply\n" + TRIAGE_USAGE);
     }
+    action = candidate;
+    if (action === "preview") {
+      const candidateFile = args.shift();
+      if (!candidateFile || candidateFile.startsWith("--")) {
+        throw new Error("import-vex preview requires <file>");
+      }
+      file = candidateFile;
+    }
+  } else {
+    const candidate = args.shift();
+    if (candidate !== "list" && candidate !== "prune") {
+      throw new Error("orphans requires list or prune\n" + TRIAGE_USAGE);
+    }
+    action = candidate;
   }
 
   let projectId: string | null = null;
@@ -105,28 +124,14 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   let limitSpecified = false;
   let json = false;
   let vendor: string | null = null;
-  let overwrite = false;
-  let dryRun = false;
-  let prune = false;
-  let confirmed = false;
+  let importId: string | null = null;
+  let expectedDocumentSha256: string | null = null;
   let expectedBaseStateSha256: string | null = null;
   const stableKeys: string[] = [];
   for (let index = 0; index < args.length; ) {
     const arg = args[index] ?? "";
     if (arg === "--json") {
       json = true;
-      index += 1;
-    } else if (arg === "--overwrite") {
-      overwrite = true;
-      index += 1;
-    } else if (arg === "--dry-run") {
-      dryRun = true;
-      index += 1;
-    } else if (arg === "--prune") {
-      prune = true;
-      index += 1;
-    } else if (arg === "--confirm") {
-      confirmed = true;
       index += 1;
     } else if (arg === "--project" || arg.startsWith("--project=")) {
       const option = optionValue(args, index, "--project");
@@ -149,6 +154,17 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       const option = optionValue(args, index, "--vendor");
       vendor = option.value;
       index += option.consumed;
+    } else if (arg === "--import-id" || arg.startsWith("--import-id=")) {
+      const option = optionValue(args, index, "--import-id");
+      importId = option.value;
+      index += option.consumed;
+    } else if (
+      arg === "--expected-document-sha256" ||
+      arg.startsWith("--expected-document-sha256=")
+    ) {
+      const option = optionValue(args, index, "--expected-document-sha256");
+      expectedDocumentSha256 = option.value;
+      index += option.consumed;
     } else if (
       arg === "--expected-base" ||
       arg.startsWith("--expected-base=")
@@ -168,46 +184,50 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   if (!projectId || !projectVersionId) {
     throw new Error("--project and --version are required");
   }
-  if (rawVerb === "import-vex" && (!file || !vendor)) {
-    throw new Error("import-vex requires <file> and --vendor NAME");
+  if (rawVerb === "import-vex" && action === "preview" && (!file || !vendor)) {
+    throw new Error("import-vex preview requires <file> and --vendor NAME");
   }
-  if (rawVerb !== "import-vex" && (overwrite || vendor !== null || file)) {
-    throw new Error("--vendor and --overwrite are valid only for import-vex");
-  }
-  if (rawVerb !== "orphans" && (prune || confirmed || stableKeys.length > 0)) {
+  if (
+    rawVerb === "import-vex" &&
+    action === "apply" &&
+    (!importId || !expectedDocumentSha256)
+  ) {
     throw new Error(
-      "--prune, --confirm, and --stable-key are valid only for orphans",
+      "import-vex apply requires --import-id and --expected-document-sha256 from preview",
     );
   }
-  if (rawVerb === "orphans" && prune) {
+  if (
+    rawVerb === "import-vex" &&
+    action === "preview" &&
+    (importId !== null || expectedDocumentSha256 !== null)
+  ) {
+    throw new Error("import-vex preview does not accept apply inputs");
+  }
+  if (rawVerb === "import-vex" && action === "apply" && vendor !== null) {
+    throw new Error("import-vex apply does not accept --vendor");
+  }
+  if (
+    rawVerb !== "import-vex" &&
+    (vendor !== null || file || importId || expectedDocumentSha256 !== null)
+  ) {
+    throw new Error("vendor import options are valid only for import-vex");
+  }
+  if (rawVerb !== "orphans" && stableKeys.length > 0) {
+    throw new Error("--stable-key is valid only for orphan prune");
+  }
+  if (rawVerb === "orphans" && action === "prune") {
     if (stableKeys.length === 0 || !expectedBaseStateSha256) {
       throw new Error(
         "orphan prune requires --stable-key and --expected-base from a fresh orphan listing",
       );
     }
-    if (!dryRun && !confirmed) {
-      throw new Error(
-        "orphan prune requires --confirm unless --dry-run is set",
-      );
-    }
-    if (dryRun && confirmed) {
-      throw new Error("orphan prune --dry-run cannot also use --confirm");
-    }
   }
   if (
     rawVerb === "orphans" &&
-    !prune &&
-    (dryRun ||
-      confirmed ||
-      stableKeys.length > 0 ||
-      expectedBaseStateSha256 !== null)
+    action === "list" &&
+    (stableKeys.length > 0 || expectedBaseStateSha256 !== null)
   ) {
-    throw new Error(
-      "--dry-run, --confirm, --stable-key, and --expected-base require --prune",
-    );
-  }
-  if (rawVerb === "drift" && dryRun) {
-    throw new Error("drift report and refresh do not accept --dry-run");
+    throw new Error("--stable-key and --expected-base require orphans prune");
   }
   if (rawVerb === "drift" && action === "refresh" && cursor !== null) {
     throw new Error("drift refresh does not accept --cursor");
@@ -224,22 +244,31 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   ) {
     throw new Error("--expected-base must be a lowercase SHA-256 digest");
   }
+  if (
+    expectedDocumentSha256 &&
+    !/^[a-f0-9]{64}$/u.test(expectedDocumentSha256)
+  ) {
+    throw new Error(
+      "--expected-document-sha256 must be a lowercase SHA-256 digest",
+    );
+  }
   return {
-    verb: rawVerb,
-    action,
-    projectId,
-    projectVersionId,
-    cursor,
-    limit,
-    json,
-    file,
-    vendor,
-    overwrite,
-    dryRun,
-    prune,
-    confirmed,
-    expectedBaseStateSha256,
-    stableKeys,
+    help: false,
+    input: {
+      verb: rawVerb,
+      action,
+      projectId,
+      projectVersionId,
+      cursor,
+      limit,
+      json,
+      file,
+      vendor,
+      importId,
+      expectedDocumentSha256,
+      expectedBaseStateSha256,
+      stableKeys,
+    },
   };
 }
 
@@ -300,13 +329,27 @@ function output(value: unknown, json: boolean): PluginCliResult {
   };
 }
 
+const helpResult = (): PluginCliResult => ({
+  exitCode: 0,
+  stdout: `${TRIAGE_USAGE}\n`,
+  stderr: "",
+});
+
 export function createFindingsCliRunner(
   bb: BbPluginApi,
   drift: FindingsDriftService,
   assertScope: ScopeAssertion,
 ): NamespacedCliRunner {
   return async (argv, context) => {
-    const input = parseArgs(argv);
+    const parsed = parseArgs(argv);
+    if (parsed.help) return helpResult();
+    const input = parsed.input;
+    const execution = await workspaceExecution(bb, context);
+    assertScope({
+      workspaceProjectId: execution.workspaceProjectId,
+      platformProjectId: input.projectId,
+      projectVersionId: input.projectVersionId,
+    });
     if (input.verb === "drift") {
       if (input.action === "report") {
         return output(
@@ -319,12 +362,6 @@ export function createFindingsCliRunner(
           input.json,
         );
       }
-      const execution = await workspaceExecution(bb, context);
-      assertScope({
-        workspaceProjectId: execution.workspaceProjectId,
-        platformProjectId: input.projectId,
-        projectVersionId: input.projectVersionId,
-      });
       return output(
         drift.refresh({
           root: execution.root,
@@ -336,7 +373,7 @@ export function createFindingsCliRunner(
       );
     }
     if (input.verb === "orphans") {
-      if (!input.prune) {
+      if (input.action === "list") {
         return output(
           drift.orphanState({
             projectId: input.projectId,
@@ -345,33 +382,54 @@ export function createFindingsCliRunner(
           input.json,
         );
       }
-      const execution = await workspaceExecution(bb, context);
-      assertScope({
-        workspaceProjectId: execution.workspaceProjectId,
-        platformProjectId: input.projectId,
-        projectVersionId: input.projectVersionId,
-      });
-      return output(
-        await drift.pruneOrphans({
+      let expectedBaseStateSha256 = input.expectedBaseStateSha256!;
+      let selected = 0;
+      let pruned = 0;
+      const files = new Set<string>();
+      for (let offset = 0; offset < input.stableKeys.length; offset += 500) {
+        const stableKeys = input.stableKeys.slice(offset, offset + 500);
+        const result = await drift.pruneOrphans({
           root: execution.root,
           projectId: input.projectId,
           pvId: input.projectVersionId,
-          stableKeys: input.stableKeys,
-          dryRun: input.dryRun,
-          confirmed: input.confirmed,
-          expectedBaseStateSha256: input.expectedBaseStateSha256!,
-        }),
+          stableKeys,
+          expectedBaseStateSha256,
+        });
+        selected += result.selected;
+        pruned += result.pruned;
+        result.files.forEach((file) => files.add(file));
+        if (offset + 500 < input.stableKeys.length) {
+          expectedBaseStateSha256 = drift.orphanState({
+            projectId: input.projectId,
+            pvId: input.projectVersionId,
+          }).baseStateSha256;
+        }
+      }
+      return output(
+        {
+          selected,
+          pruned,
+          files: [...files].sort(),
+          chunks: Math.ceil(input.stableKeys.length / 500),
+          message: `Pruned ${pruned} of ${selected} selected orphaned decisions in ${Math.ceil(input.stableKeys.length / 500)} CAS-guarded chunk(s).`,
+        },
         input.json,
       );
     }
 
-    const execution = await workspaceExecution(bb, context);
-    assertScope({
-      workspaceProjectId: execution.workspaceProjectId,
-      platformProjectId: input.projectId,
-      projectVersionId: input.projectVersionId,
-    });
+    if (input.action === "apply") {
+      const result = await drift.applyVendorVex({
+        root: execution.root,
+        projectId: input.projectId,
+        pvId: input.projectVersionId,
+        importId: input.importId!,
+        expectedDocumentSha256: input.expectedDocumentSha256!,
+        overwrite: false,
+      });
+      return output(result, input.json);
+    }
     const path = confinedPath(execution.root, input.file!);
+    // rootPath is resolved on the owning host and rejects symlink escapes.
     const file = await bb.sdk.files.read({
       hostId: execution.hostId,
       path,
@@ -386,16 +444,14 @@ export function createFindingsCliRunner(
       file.contentEncoding === "utf8"
         ? Buffer.from(file.content, "utf8")
         : Buffer.from(file.content, "base64");
+    const staged = drift.stageVendorDocument({ file: input.file!, bytes });
     return output(
-      await drift.importVendorVex({
+      await drift.previewVendorVex({
         root: execution.root,
         projectId: input.projectId,
         pvId: input.projectVersionId,
-        file: input.file!,
-        bytes,
+        documentSha256: staged.documentSha256,
         vendor: input.vendor!,
-        overwrite: input.overwrite,
-        dryRun: input.dryRun,
       }),
       input.json,
     );

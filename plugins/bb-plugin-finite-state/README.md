@@ -9,12 +9,13 @@ The plugin's single agent-discoverable command tree includes local findings drif
 ```text
 bb finite-state triage drift report  --project <platform-id> --version <pv-id> [--cursor <key>] [--limit 100] [--json]
 bb finite-state triage drift refresh --project <platform-id> --version <pv-id> [--limit 100] [--json]
-bb finite-state triage import-vex <worktree-relative.json> --vendor <name> --project <platform-id> --version <pv-id> [--dry-run] [--overwrite] [--json]
-bb finite-state triage orphans --project <platform-id> --version <pv-id> [--json]
-bb finite-state triage orphans --prune --stable-key <key> --expected-base <sha256> --confirm --project <platform-id> --version <pv-id> [--dry-run] [--json]
+bb finite-state triage import-vex preview <worktree-relative.json> --vendor <name> --project <platform-id> --version <pv-id> [--json]
+bb finite-state triage import-vex apply --import-id <id> --expected-document-sha256 <sha256> --project <platform-id> --version <pv-id> [--json]
+bb finite-state triage orphans list --project <platform-id> --version <pv-id> [--json]
+bb finite-state triage orphans prune --stable-key <key> --expected-base <sha256> --project <platform-id> --version <pv-id> [--json]
 ```
 
-`drift report` is a zero-write persisted-index read. Refresh and import update local projections or local proposal YAML only. `--overwrite` is a human CLI/panel affordance and is absent from agent tools. Orphan deletion additionally requires an explicit selection, the digest from a fresh `orphans` read, and `--confirm`; preview it with `--dry-run` first.
+`drift report` is a zero-write persisted-index read. Vendor import is a two-phase preview/apply operation fenced by the returned import id and document digest. CLI apply always preserves existing local decisions; only the panel exposes overwrite mode. Orphan deletion requires explicit stable keys and the digest from a fresh `orphans list`; selections above 500 are applied as sequential CAS-guarded chunks. Neither mutation is registered as an agent tool.
 
 Implementation is governed by the approved corpus in `docs/`. Start with `docs/Implementation/HANDOFF — Product & Architecture.md`, then the Master Plan, this directory's `AGENTS.md`, RECON, the work-package index, and Product Specs 00–06.
 

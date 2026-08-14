@@ -17,6 +17,7 @@ import { registerFindingsStableKeyStub } from "./stable-key/index.js";
 import { registerFindingsRpc } from "./rpc.js";
 import { createFindingsCliRunner } from "./cli.js";
 import { assertAcceptedFindingsScope } from "./scope.js";
+import { MAX_VENDOR_VEX_BYTES } from "./drift/vendor/parse.js";
 
 interface PersistedPullAdvisories {
   generationId: string;
@@ -158,6 +159,35 @@ export function registerFindings(bb: BbPluginApi, ctx: PluginContext): void {
   const drift = ctx.service<FindingsDriftService>("findings.drift", () => {
     throw new Error("Findings drift services are unavailable");
   });
+  bb.http.route(
+    "POST",
+    "/findings/vendor-vex/document",
+    async (http) => {
+      const declaredLength = Number(http.req.header("content-length") ?? "0");
+      if (
+        !Number.isSafeInteger(declaredLength) ||
+        declaredLength < 1 ||
+        declaredLength > MAX_VENDOR_VEX_BYTES
+      ) {
+        return http.json({ error: "VENDOR_FILE_OVERSIZED" }, 413);
+      }
+      const bytes = new Uint8Array(await http.req.arrayBuffer());
+      if (bytes.byteLength < 1 || bytes.byteLength > MAX_VENDOR_VEX_BYTES) {
+        return http.json({ error: "VENDOR_FILE_OVERSIZED" }, 413);
+      }
+      let file = "vendor-vex.json";
+      try {
+        file = decodeURIComponent(http.req.header("x-fs-vendor-file") ?? file);
+      } catch {
+        return http.json({ error: "VENDOR_FILE_INVALID" }, 400);
+      }
+      if (file.length > 1_024) {
+        return http.json({ error: "VENDOR_FILE_INVALID" }, 400);
+      }
+      return http.json(drift.stageVendorDocument({ file, bytes }));
+    },
+    { auth: "local" },
+  );
   ctx.service<{ run: NamespacedCliRunner }>("findings.cli", () => ({
     run: createFindingsCliRunner(bb, drift, (input) =>
       assertAcceptedFindingsScope(db, input),

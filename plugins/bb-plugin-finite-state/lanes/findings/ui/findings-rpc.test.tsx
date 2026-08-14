@@ -2,6 +2,8 @@ import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPluginContext } from "../../../lib/context.js";
 import { findingStableKey } from "../../../lib/sync/registry.js";
+import { AGENT_TOOL_NAMES } from "../../../lib/agentic/registry.js";
+import { registerAgentic } from "../../agentic/register.js";
 import { findingsUiRpcContract, registerFindingsRpc } from "../rpc.js";
 
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
@@ -464,7 +466,24 @@ describe("findings UI RPC seams", () => {
         baseStateSha256: "a".repeat(64),
         total: 0,
       })),
-      importVendorVex: vi.fn(async () => ({
+      stageVendorDocument: vi.fn(() => ({ documentSha256: "b".repeat(64) })),
+      previewVendorVex: vi.fn(async () => ({
+        importId: "vendor-import-1",
+        source: {
+          format: "openvex" as const,
+          digest: "b".repeat(64),
+          vendor: "Supplier",
+        },
+        matched: 0,
+        unmatched: 0,
+        needsCompletion: 0,
+        keptLocal: 0,
+        written: 0,
+        proposals: [],
+        errors: [],
+      })),
+      applyVendorVex: vi.fn(async () => ({
+        importId: "vendor-import-1",
         source: {
           format: "openvex" as const,
           digest: "b".repeat(64),
@@ -490,6 +509,7 @@ describe("findings UI RPC seams", () => {
     const changes = db.prepare("SELECT total_changes()").pluck().get();
     await expect(
       host.harness.behavior.callRpc("findingsDriftReport", {
+        workspaceProjectId: "workspace-1",
         platformProjectId: "platform-1",
         projectVersionId: "version-1",
         cursor: null,
@@ -504,52 +524,42 @@ describe("findings UI RPC seams", () => {
       limit: 100,
     });
 
-    await host.harness.behavior.callRpc("findingsDriftImportVendorVex", {
-      workspaceProjectId: "workspace-1",
-      platformProjectId: "platform-1",
+    await host.harness.behavior.callRpc("triageVendorVexPreview", {
+      projectId: "workspace-1",
       projectVersionId: "version-1",
-      fileName: "vendor/openvex.json",
-      document: '{"@context":"https://openvex.dev/ns/v0.2.0","statements":[]}',
+      pageSize: 100,
+      continuation: null,
+      documentSha256: "b".repeat(64),
       vendor: "Supplier",
-      overwrite: true,
-      dryRun: true,
     });
-    expect(drift.importVendorVex).toHaveBeenCalledWith(
+    expect(drift.previewVendorVex).toHaveBeenCalledWith(
       expect.objectContaining({
         root: "/workspace",
-        overwrite: true,
-        dryRun: true,
-        bytes: expect.any(Uint8Array),
+        documentSha256: "b".repeat(64),
       }),
     );
-    await expect(
-      host.harness.behavior.callRpc("findingsDriftImportVendorVex", {
-        workspaceProjectId: "foreign-workspace",
-        platformProjectId: "platform-1",
-        projectVersionId: "version-1",
-        fileName: "vendor/openvex.json",
-        document:
-          '{"@context":"https://openvex.dev/ns/v0.2.0","statements":[]}',
-        vendor: "Supplier",
-        overwrite: true,
-        dryRun: true,
-      }),
-    ).rejects.toThrow("FINDINGS_ACCEPTED_SCOPE_REQUIRED");
-    expect(drift.importVendorVex).toHaveBeenCalledTimes(1);
-    await expect(
-      host.harness.behavior.callRpc("findingsDriftPrune", {
-        workspaceProjectId: "workspace-1",
-        platformProjectId: "platform-1",
-        projectVersionId: "version-1",
-        stableKeys: ["stable-key-1"],
-        dryRun: false,
-        confirmed: false,
-        expectedBaseStateSha256: "a".repeat(64),
-      }),
-    ).rejects.toThrow(/input validation failed/iu);
-    expect(drift.pruneOrphans).not.toHaveBeenCalled();
-    expect(
-      host.harness.inspection.registrations.agentTools.map((tool) => tool.name),
-    ).not.toContain(expect.stringMatching(/drift|orphan|vendor/iu));
+    await host.harness.behavior.callRpc("triageVendorVexApply", {
+      projectId: "workspace-1",
+      projectVersionId: "version-1",
+      pageSize: 100,
+      continuation: null,
+      importId: "vendor-import-1",
+      expectedDocumentSha256: "b".repeat(64),
+      overwrite: true,
+    });
+    expect(drift.applyVendorVex).toHaveBeenCalledWith(
+      expect.objectContaining({ overwrite: true }),
+    );
+
+    registerAgentic(host.bb, createPluginContext(host.bb));
+    const registeredNames =
+      host.harness.inspection.registrations.agentTools.map((tool) => tool.name);
+    expect(registeredNames.length).toBeGreaterThan(0);
+    expect(registeredNames).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/drift|orphan|vendor/iu)]),
+    );
+    expect(AGENT_TOOL_NAMES).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/drift|orphan|vendor/iu)]),
+    );
   });
 });

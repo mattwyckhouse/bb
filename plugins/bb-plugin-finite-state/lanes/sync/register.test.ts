@@ -1495,6 +1495,72 @@ decisions:
       unclassifiedCount: 0,
     });
 
+    const vendorDocument = JSON.stringify({
+      "@context": "https://openvex.dev/ns/v0.2.0",
+      "@id": "https://vendor.test/vex/fs-147",
+      statements: [],
+    });
+    const uploaded = await host.harness.behavior.fetchHttp(
+      "POST",
+      "/findings/vendor-vex/document",
+      {
+        headers: {
+          "content-length": String(Buffer.byteLength(vendorDocument)),
+          "x-fs-vendor-file": encodeURIComponent("vendor/openvex.json"),
+        },
+        body: vendorDocument,
+      },
+    );
+    expect(uploaded.status).toBe(200);
+    const staged = (await uploaded.json()) as { documentSha256: string };
+    const preview = (await host.harness.behavior.callRpc(
+      "triageVendorVexPreview",
+      {
+        projectId: "bb-project-sync",
+        projectVersionId: scope.projectVersionId,
+        pageSize: 100,
+        continuation: null,
+        documentSha256: staged.documentSha256,
+        vendor: "Supplier",
+      },
+    )) as {
+      importId: string;
+      documentSha256: string;
+      written: number;
+    };
+    expect(preview).toMatchObject({
+      projectId: "bb-project-sync",
+      projectVersionId: scope.projectVersionId,
+      documentSha256: staged.documentSha256,
+      written: 0,
+    });
+    await expect(
+      host.harness.behavior.callRpc("triageVendorVexApply", {
+        projectId: "bb-project-sync",
+        projectVersionId: scope.projectVersionId,
+        pageSize: 100,
+        continuation: null,
+        importId: preview.importId,
+        expectedDocumentSha256: "f".repeat(64),
+        overwrite: false,
+      }),
+    ).rejects.toThrow("VENDOR_DOCUMENT_CHANGED");
+    await expect(
+      host.harness.behavior.callRpc("triageVendorVexApply", {
+        projectId: "bb-project-sync",
+        projectVersionId: scope.projectVersionId,
+        pageSize: 100,
+        continuation: null,
+        importId: preview.importId,
+        expectedDocumentSha256: staged.documentSha256,
+        overwrite: false,
+      }),
+    ).resolves.toMatchObject({
+      importId: preview.importId,
+      documentSha256: staged.documentSha256,
+      written: 0,
+    });
+
     const read = await host.harness.behavior.runCli(
       [
         "triage",
@@ -1506,7 +1572,7 @@ decisions:
         scope.projectVersionId,
         "--json",
       ],
-      {},
+      { threadId: "thread-sync-cli", projectId: "bb-project-sync" },
     );
     expect(JSON.parse(read.stdout)).toMatchObject({
       runId: refreshReport.runId,
@@ -1517,7 +1583,7 @@ decisions:
       [
         "triage",
         "orphans",
-        "--prune",
+        "prune",
         "--stable-key",
         "stable-1",
         "--expected-base",
@@ -1531,8 +1597,63 @@ decisions:
     );
     expect(refused).toMatchObject({
       exitCode: 1,
-      stderr: expect.stringContaining("requires --confirm"),
+      stderr: expect.stringContaining("ORPHAN_BASE_STATE_CHANGED"),
     });
+    const callerBoolean = await host.harness.behavior.runCli(
+      ["triage", "orphans", "prune", "--confirm"],
+      { threadId: "thread-sync-cli", projectId: "bb-project-sync" },
+    );
+    expect(callerBoolean).toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining("unknown option"),
+    });
+    const overwriteFlag = await host.harness.behavior.runCli(
+      [
+        "triage",
+        "import-vex",
+        "apply",
+        "--import-id",
+        preview.importId,
+        "--expected-document-sha256",
+        staged.documentSha256,
+        "--overwrite",
+        "--project",
+        scope.projectId,
+        "--version",
+        scope.projectVersionId,
+      ],
+      { threadId: "thread-sync-cli", projectId: "bb-project-sync" },
+    );
+    expect(overwriteFlag).toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining("unknown option"),
+    });
+    const help = await host.harness.behavior.runCli(["triage", "--help"], {
+      threadId: "thread-sync-cli",
+      projectId: "bb-project-sync",
+    });
+    expect(help).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(help.stdout).not.toContain("--confirm");
+    expect(help.stdout).not.toContain("--overwrite");
+    const registeredUsage = host.harness.registrations.cli?.commands.find(
+      (command) => command.name === "triage",
+    )?.usage;
+    expect(registeredUsage).toEqual(expect.any(String));
+    for (const flag of [
+      "--cursor",
+      "--limit",
+      "--json",
+      "--vendor",
+      "--import-id",
+      "--expected-document-sha256",
+      "--stable-key",
+      "--expected-base",
+      "--help",
+    ]) {
+      expect(registeredUsage).toContain(flag);
+    }
+    expect(registeredUsage).not.toContain("--confirm");
+    expect(registeredUsage).not.toContain("--overwrite");
     expect(
       host.harness.inspection.registrations.agentTools.some((tool) =>
         /drift|orphan|vendor/iu.test(tool.name),

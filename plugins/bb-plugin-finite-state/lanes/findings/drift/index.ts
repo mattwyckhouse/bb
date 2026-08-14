@@ -5,7 +5,8 @@ import {
 } from "../../sync/engine/adapter.js";
 import { classifyDrift, readDriftReport } from "./classify.js";
 import { orphanBaseState, pruneOrphans } from "./orphans.js";
-import { importVendorVexBytes } from "./vendor/import.js";
+import { importVendorVexBytes, vendorImportId } from "./vendor/import.js";
+import { parseVendorVexBytes } from "./vendor/parse.js";
 import { FINDINGS_DRIFT_CHANGED_CHANNEL, type DriftReport } from "./report.js";
 import type { VendorImportResult } from "./vendor/import.js";
 
@@ -33,23 +34,29 @@ export interface FindingsDriftService {
     baseStateSha256: string;
     total: number;
   };
-  importVendorVex(input: {
+  stageVendorDocument(input: { file: string; bytes: Uint8Array }): {
+    documentSha256: string;
+  };
+  previewVendorVex(input: {
     root: string;
     projectId: string;
     pvId: string;
-    file: string;
-    bytes: Uint8Array;
+    documentSha256: string;
     vendor: string;
+  }): Promise<VendorImportResult & { importId: string }>;
+  applyVendorVex(input: {
+    root: string;
+    projectId: string;
+    pvId: string;
+    importId: string;
+    expectedDocumentSha256: string;
     overwrite: boolean;
-    dryRun: boolean;
-  }): Promise<VendorImportResult>;
+  }): Promise<VendorImportResult & { importId: string }>;
   pruneOrphans(input: {
     root: string;
     projectId: string;
     pvId: string;
     stableKeys: string[];
-    dryRun: boolean;
-    confirmed: boolean;
     expectedBaseStateSha256: string;
   }): Promise<{
     baseStateSha256: string;
@@ -62,6 +69,25 @@ export interface FindingsDriftService {
 /** Installs local drift/import services and one post-publication refetch hint. */
 export function registerFindingsDrift(ctx: PluginContext): void {
   const db = ctx.db();
+  const documents = new Map<string, { file: string; bytes: Uint8Array }>();
+  const imports = new Map<
+    string,
+    {
+      documentSha256: string;
+      vendor: string;
+      projectId: string;
+      pvId: string;
+    }
+  >();
+  const importKey = (projectId: string, pvId: string, id: string) =>
+    JSON.stringify([projectId, pvId, id]);
+  const setBounded = <K, V>(map: Map<K, V>, key: K, value: V): void => {
+    map.delete(key);
+    map.set(key, value);
+    if (map.size <= 16) return;
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  };
   const findingPuller = registeredCachePullers().find(
     (candidate) => candidate.kind === "finding",
   );
@@ -106,14 +132,53 @@ export function registerFindingsDrift(ctx: PluginContext): void {
       const state = orphanBaseState(db, input.projectId, input.pvId);
       return { baseStateSha256: state.sha256, total: state.rows.length };
     },
-    async importVendorVex(input) {
+    stageVendorDocument(input) {
+      const parsed = parseVendorVexBytes(input.file, input.bytes);
+      setBounded(documents, parsed.digest, {
+        file: input.file,
+        bytes: Uint8Array.from(input.bytes),
+      });
+      return { documentSha256: parsed.digest };
+    },
+    async previewVendorVex(input) {
+      const document = documents.get(input.documentSha256);
+      if (!document) throw new Error("VENDOR_DOCUMENT_NOT_STAGED");
       const result = await importVendorVexBytes(
         { db, root: input.root, projectId: input.projectId, pvId: input.pvId },
-        input.file,
-        input.bytes,
-        input,
+        document.file,
+        document.bytes,
+        { vendor: input.vendor, overwrite: false, dryRun: true },
       );
-      if (!input.dryRun && result.written > 0) {
+      const id = vendorImportId(result.source.digest, input.vendor);
+      setBounded(imports, importKey(input.projectId, input.pvId, id), {
+        documentSha256: result.source.digest,
+        vendor: input.vendor,
+        projectId: input.projectId,
+        pvId: input.pvId,
+      });
+      return { ...result, importId: id };
+    },
+    async applyVendorVex(input) {
+      const staged = imports.get(
+        importKey(input.projectId, input.pvId, input.importId),
+      );
+      if (!staged) throw new Error("VENDOR_IMPORT_NOT_PREVIEWED");
+      if (staged.documentSha256 !== input.expectedDocumentSha256) {
+        throw new Error("VENDOR_DOCUMENT_CHANGED");
+      }
+      const document = documents.get(staged.documentSha256);
+      if (!document) throw new Error("VENDOR_DOCUMENT_NOT_STAGED");
+      const result = await importVendorVexBytes(
+        { db, root: input.root, projectId: input.projectId, pvId: input.pvId },
+        document.file,
+        document.bytes,
+        {
+          vendor: staged.vendor,
+          overwrite: input.overwrite,
+          dryRun: false,
+        },
+      );
+      if (result.written > 0) {
         classifyDrift(
           { db, root: input.root, projectId: input.projectId },
           input.pvId,
@@ -122,14 +187,14 @@ export function registerFindingsDrift(ctx: PluginContext): void {
           pvId: input.pvId,
         });
       }
-      return result;
+      return { ...result, importId: input.importId };
     },
     async pruneOrphans(input) {
       const result = await pruneOrphans(
         { db, root: input.root, projectId: input.projectId, pvId: input.pvId },
         input,
       );
-      if (!input.dryRun && result.pruned > 0) {
+      if (result.pruned > 0) {
         ctx.bb.realtime.publish(FINDINGS_DRIFT_CHANGED_CHANNEL, {
           pvId: input.pvId,
         });

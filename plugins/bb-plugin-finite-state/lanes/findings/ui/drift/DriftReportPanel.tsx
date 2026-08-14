@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@bb/plugin-sdk/app";
 
 import {
@@ -6,6 +6,7 @@ import {
   type DriftReport,
 } from "../../drift/report.js";
 import type { findingsUiRpcContract } from "../../rpc.js";
+import type { rpcContract } from "../../../../shared/contract.js";
 
 interface DriftReportPanelProps {
   workspaceProjectId: string | null;
@@ -18,6 +19,17 @@ interface PrunePreview {
   stableKeys: string[];
   selected: number;
 }
+
+interface VendorPreview {
+  importId: string;
+  documentSha256: string;
+}
+
+type DriftPanelRpcContract = typeof findingsUiRpcContract &
+  Pick<
+    typeof rpcContract,
+    "triageVendorVexPreview" | "triageVendorVexApply" | "triageOrphansPrune"
+  >;
 
 const DRIFT_LABELS: Record<keyof DriftReport["totals"], string> = {
   reattached_noop: "Reattached",
@@ -37,7 +49,8 @@ export function DriftReportPanel({
   platformProjectId,
   projectVersionId,
 }: DriftReportPanelProps): React.JSX.Element {
-  const rpc = useRpc<typeof findingsUiRpcContract>();
+  const rpc = useRpc<DriftPanelRpcContract>();
+  const requestGeneration = useRef(0);
   const [report, setReport] = useState<DriftReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -48,6 +61,9 @@ export function DriftReportPanel({
   const [file, setFile] = useState<File | null>(null);
   const [overwrite, setOverwrite] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [vendorPreview, setVendorPreview] = useState<VendorPreview | null>(
+    null,
+  );
   const [prunePreview, setPrunePreview] = useState<PrunePreview | null>(null);
   const scopeReady = Boolean(
     workspaceProjectId && platformProjectId && projectVersionId,
@@ -55,19 +71,23 @@ export function DriftReportPanel({
 
   const loadReport = useCallback(
     async (cursor: string | null = null) => {
-      if (!platformProjectId || !projectVersionId) return;
+      if (!workspaceProjectId || !platformProjectId || !projectVersionId)
+        return;
+      const generation = ++requestGeneration.current;
       cursor ? setLoadingMore(true) : setLoading(true);
       setError(null);
       try {
         const next = await rpc.call("findingsDriftReport", {
+          workspaceProjectId,
           platformProjectId,
           projectVersionId,
           cursor,
           limit: 100,
         });
+        if (generation !== requestGeneration.current) return;
         setRefreshRequired(false);
         setReport((current) =>
-          cursor && current
+          cursor && current && current.runId === next.runId
             ? {
                 ...next,
                 items: [...current.items, ...next.items],
@@ -75,6 +95,7 @@ export function DriftReportPanel({
             : next,
         );
       } catch (cause) {
+        if (generation !== requestGeneration.current) return;
         const detail = message(cause);
         if (detail.includes("DRIFT_REFRESH_REQUIRED")) {
           setRefreshRequired(true);
@@ -83,16 +104,20 @@ export function DriftReportPanel({
           setError(detail);
         }
       } finally {
-        setLoading(false);
-        setLoadingMore(false);
+        if (generation === requestGeneration.current) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       }
     },
-    [platformProjectId, projectVersionId, rpc],
+    [platformProjectId, projectVersionId, rpc, workspaceProjectId],
   );
 
   useEffect(() => {
+    requestGeneration.current += 1;
     setReport(null);
     setPrunePreview(null);
+    setVendorPreview(null);
     setAction(null);
     if (scopeReady) void loadReport();
   }, [loadReport, scopeReady]);
@@ -119,6 +144,7 @@ export function DriftReportPanel({
   const refresh = useCallback(async () => {
     if (!workspaceProjectId || !platformProjectId || !projectVersionId) return;
     setLoading(true);
+    const generation = ++requestGeneration.current;
     setError(null);
     setAction(null);
     try {
@@ -127,6 +153,7 @@ export function DriftReportPanel({
         platformProjectId,
         projectVersionId,
       });
+      if (generation !== requestGeneration.current) return;
       setReport(next);
       setRefreshRequired(false);
       setPrunePreview(null);
@@ -134,58 +161,116 @@ export function DriftReportPanel({
         `Drift refreshed · ${next.items.length.toLocaleString()} items loaded`,
       );
     } catch (cause) {
+      if (generation !== requestGeneration.current) return;
       setError(message(cause));
     } finally {
-      setLoading(false);
+      if (generation === requestGeneration.current) setLoading(false);
     }
   }, [platformProjectId, projectVersionId, rpc, workspaceProjectId]);
 
-  const importVex = useCallback(
-    async (dryRun: boolean) => {
+  const previewImport = useCallback(async () => {
+    if (
+      !workspaceProjectId ||
+      !platformProjectId ||
+      !projectVersionId ||
+      !file ||
+      !vendor.trim()
+    ) {
+      return;
+    }
+    setImporting(true);
+    setError(null);
+    setAction(null);
+    try {
+      const upload = await fetch(
+        "/api/v1/plugins/finite-state/http/findings/vendor-vex/document",
+        {
+          method: "POST",
+          headers: { "x-fs-vendor-file": encodeURIComponent(file.name) },
+          body: file,
+        },
+      );
+      if (!upload.ok)
+        throw new Error(`Vendor upload failed (${upload.status})`);
+      const raw: unknown = await upload.json();
       if (
-        !workspaceProjectId ||
-        !platformProjectId ||
-        !projectVersionId ||
-        !file ||
-        !vendor.trim()
+        typeof raw !== "object" ||
+        raw === null ||
+        !("documentSha256" in raw) ||
+        typeof raw.documentSha256 !== "string"
       ) {
-        return;
+        throw new Error("Vendor upload returned an invalid digest");
       }
-      setImporting(true);
-      setError(null);
-      setAction(null);
-      try {
-        const result = await rpc.call("findingsDriftImportVendorVex", {
-          workspaceProjectId,
-          platformProjectId,
-          projectVersionId,
-          fileName: file.name,
-          document: await file.text(),
-          vendor: vendor.trim(),
-          overwrite,
-          dryRun,
-        });
-        setAction(
-          `${dryRun ? "Import preview" : "Vendor VEX imported"} · ${result.matched.toLocaleString()} matched · ${result.unmatched.toLocaleString()} unmatched · ${result.written.toLocaleString()} written`,
-        );
-        if (!dryRun && result.written > 0) await loadReport();
-      } catch (cause) {
-        setError(message(cause));
-      } finally {
-        setImporting(false);
-      }
-    },
-    [
-      file,
-      loadReport,
-      overwrite,
-      platformProjectId,
-      projectVersionId,
-      rpc,
-      vendor,
-      workspaceProjectId,
-    ],
-  );
+      const previewInput = {
+        projectId: workspaceProjectId,
+        projectVersionId,
+        pageSize: 200,
+        continuation: null,
+        documentSha256: raw.documentSha256,
+        vendor: vendor.trim(),
+      };
+      const result = await rpc.call("triageVendorVexPreview", previewInput);
+      setVendorPreview({
+        importId: result.importId,
+        documentSha256: result.documentSha256,
+      });
+      setAction(
+        `Import preview · ${result.matched.toLocaleString()} matched · ${result.unmatched.toLocaleString()} unmatched · digest ${result.documentSha256.slice(0, 12)}`,
+      );
+    } catch (cause) {
+      setError(message(cause));
+    } finally {
+      setImporting(false);
+    }
+  }, [
+    file,
+    platformProjectId,
+    projectVersionId,
+    rpc,
+    vendor,
+    workspaceProjectId,
+  ]);
+
+  const applyImport = useCallback(async () => {
+    if (
+      !workspaceProjectId ||
+      !platformProjectId ||
+      !projectVersionId ||
+      !vendorPreview
+    )
+      return;
+    setImporting(true);
+    setError(null);
+    setAction(null);
+    try {
+      const applyInput = {
+        projectId: workspaceProjectId,
+        projectVersionId,
+        pageSize: 200,
+        continuation: null,
+        importId: vendorPreview.importId,
+        expectedDocumentSha256: vendorPreview.documentSha256,
+        overwrite,
+      };
+      const result = await rpc.call("triageVendorVexApply", applyInput);
+      setAction(
+        `Vendor VEX imported · ${result.matched.toLocaleString()} matched · ${result.unmatched.toLocaleString()} unmatched · ${result.written.toLocaleString()} written`,
+      );
+      if (result.written > 0) await loadReport();
+    } catch (cause) {
+      setError(message(cause));
+    } finally {
+      setImporting(false);
+    }
+  }, [
+    loadReport,
+    overwrite,
+    platformProjectId,
+    projectVersionId,
+    rpc,
+    vendorPreview,
+    workspaceProjectId,
+  ]);
 
   const previewPrune = useCallback(async () => {
     if (
@@ -200,22 +285,14 @@ export function DriftReportPanel({
     setAction(null);
     try {
       const state = await rpc.call("findingsDriftOrphanState", {
-        platformProjectId,
-        projectVersionId,
-      });
-      const preview = await rpc.call("findingsDriftPrune", {
         workspaceProjectId,
         platformProjectId,
         projectVersionId,
-        stableKeys: orphanKeys,
-        dryRun: true,
-        confirmed: false,
-        expectedBaseStateSha256: state.baseStateSha256,
       });
       setPrunePreview({
         baseStateSha256: state.baseStateSha256,
         stableKeys: orphanKeys,
-        selected: preview.selected,
+        selected: orphanKeys.length,
       });
     } catch (cause) {
       setError(message(cause));
@@ -239,17 +316,34 @@ export function DriftReportPanel({
     }
     setError(null);
     try {
-      const result = await rpc.call("findingsDriftPrune", {
-        workspaceProjectId,
-        platformProjectId,
-        projectVersionId,
-        stableKeys: prunePreview.stableKeys,
-        dryRun: false,
-        confirmed: true,
-        expectedBaseStateSha256: prunePreview.baseStateSha256,
-      });
+      let expectedBaseStateSha256 = prunePreview.baseStateSha256;
+      let pruned = 0;
+      const chunks = Math.ceil(prunePreview.stableKeys.length / 500);
+      for (
+        let offset = 0;
+        offset < prunePreview.stableKeys.length;
+        offset += 500
+      ) {
+        const result = await rpc.call("triageOrphansPrune", {
+          projectId: workspaceProjectId,
+          projectVersionId,
+          stableKeys: prunePreview.stableKeys.slice(offset, offset + 500),
+          expectedBaseStateSha256,
+        });
+        pruned += result.applied;
+        if (offset + 500 < prunePreview.stableKeys.length) {
+          const state = await rpc.call("findingsDriftOrphanState", {
+            workspaceProjectId,
+            platformProjectId,
+            projectVersionId,
+          });
+          expectedBaseStateSha256 = state.baseStateSha256;
+        }
+      }
       setPrunePreview(null);
-      setAction(`Pruned ${result.pruned.toLocaleString()} orphaned decisions`);
+      setAction(
+        `Pruned ${pruned.toLocaleString()} orphaned decisions in ${chunks.toLocaleString()} CAS-guarded chunk(s)`,
+      );
       await loadReport();
     } catch (cause) {
       setError(message(cause));
@@ -389,7 +483,10 @@ export function DriftReportPanel({
             <input
               aria-label="Vendor name"
               className="w-full rounded border border-border bg-background px-2 py-1"
-              onChange={(event) => setVendor(event.target.value)}
+              onChange={(event) => {
+                setVendor(event.target.value);
+                setVendorPreview(null);
+              }}
               placeholder="Vendor name"
               value={vendor}
             />
@@ -397,7 +494,10 @@ export function DriftReportPanel({
               accept="application/json,.json"
               aria-label="Vendor VEX file"
               className="w-full text-xs"
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              onChange={(event) => {
+                setFile(event.target.files?.[0] ?? null);
+                setVendorPreview(null);
+              }}
               type="file"
             />
             <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -412,15 +512,15 @@ export function DriftReportPanel({
               <button
                 className="rounded border border-border px-2 py-1"
                 disabled={importing || !file || !vendor.trim()}
-                onClick={() => void importVex(true)}
+                onClick={() => void previewImport()}
                 type="button"
               >
                 Preview import
               </button>
               <button
                 className="rounded border border-border px-2 py-1"
-                disabled={importing || !file || !vendor.trim()}
-                onClick={() => void importVex(false)}
+                disabled={importing || !vendorPreview}
+                onClick={() => void applyImport()}
                 type="button"
               >
                 Import VEX

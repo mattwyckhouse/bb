@@ -17,7 +17,6 @@ import {
 } from "../../stable-key/index.js";
 import { mapVendorVex, type NormalizedVendorStatement } from "./map.js";
 import {
-  parseVendorVex,
   parseVendorVexBytes,
   type ParsedVendorVex,
   type VendorVexBytes,
@@ -66,7 +65,7 @@ function proposalId(digest: string, vendor: string, sourceRef: string): string {
   return `vendor-${createHash("sha256").update(`${digest}\0${vendor}\0${sourceRef}`).digest("hex")}`;
 }
 
-function importId(digest: string, vendor: string): string {
+export function vendorImportId(digest: string, vendor: string): string {
   return `vendor-${digest.slice(0, 24)}-${createHash("sha256").update(vendor).digest("hex").slice(0, 12)}`;
 }
 
@@ -148,7 +147,7 @@ function localDecisionExists(
 
 function prepare(
   deps: ImportDeps,
-  parsed: Awaited<ReturnType<typeof parseVendorVex>>,
+  parsed: ParsedVendorVex,
   statement: NormalizedVendorStatement,
   options: VendorImportOptions,
   authoredComponents: ReadonlyMap<string, VendorProposalInput["component"]>,
@@ -177,7 +176,7 @@ function prepare(
       by: `vendor:${options.vendor}`,
       at: null,
       evidence: statement.sourceRef,
-      import_id: importId(parsed.digest, options.vendor),
+      import_id: vendorImportId(parsed.digest, options.vendor),
     },
     source: {
       format: parsed.format,
@@ -312,20 +311,11 @@ async function importParsedVendorVex(
 }
 
 /** Imports bytes already read through a host-confined bb file boundary. */
-export function importVendorVexBytes(
+export async function importVendorVexBytes(
   deps: ImportDeps,
   file: string,
   bytes: VendorVexBytes,
   options: VendorImportOptions,
 ): Promise<VendorImportResult> {
   return importParsedVendorVex(deps, parseVendorVexBytes(file, bytes), options);
-}
-
-/** Parses and writes only local supplier proposals. It has no remote-service dependency. */
-export async function importVendorVex(
-  deps: ImportDeps,
-  file: string,
-  options: VendorImportOptions,
-): Promise<VendorImportResult> {
-  return importParsedVendorVex(deps, await parseVendorVex(file), options);
 }

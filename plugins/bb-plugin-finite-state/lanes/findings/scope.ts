@@ -1,11 +1,8 @@
 import type Database from "better-sqlite3";
 
-import {
-  backfillUnambiguousWorkspaceProjectBinding,
-  WORKSPACE_PLATFORM_PROJECT_PREDICATE,
-} from "../../lib/store/project-scope.js";
+import { WORKSPACE_PLATFORM_PROJECT_PREDICATE } from "../../lib/store/project-scope.js";
 
-/** Refuses local mutations unless the workspace owns the accepted findings scope. */
+/** Pure scope check shared by reads and writes; it never backfills bindings. */
 export function assertAcceptedFindingsScope(
   db: Database.Database,
   input: {
@@ -14,7 +11,6 @@ export function assertAcceptedFindingsScope(
     projectVersionId: string;
   },
 ): void {
-  backfillUnambiguousWorkspaceProjectBinding(db, input.workspaceProjectId);
   const row = db
     .prepare(
       `SELECT 1

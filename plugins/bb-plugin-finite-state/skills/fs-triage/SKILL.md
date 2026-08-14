@@ -26,6 +26,6 @@ Report `runId`, `createdAt`, and `unclassifiedCount` with conclusions so the use
 
 Supplier VEX is proposal data, not a decision. Never fill an omitted justification, response, reason, scope, or evidence. Incomplete `NOT_AFFECTED` proposals remain `needs_completion`; unmatched proposals remain `match:none` for a later pull.
 
-Do not request or invent an agent tool for vendor overwrite or orphan pruning. `--overwrite` exists only on the human CLI/panel import affordance. Pruning is a local YAML deletion that requires a fresh base-state digest, an explicit selection, and human confirmation in the panel or CLI; the human surface also supports a dry-run preview. When the user asks an agent to perform either operation, read and explain the report, then direct the user to the corresponding human surface.
+Do not request or invent an agent tool for vendor overwrite or orphan pruning. Vendor import uses a digest-fenced preview/apply flow: CLI apply always preserves existing decisions, while only the panel exposes overwrite mode. Pruning is a local YAML deletion fenced by a fresh base-state digest and explicit stable keys; the CLI and panel chunk selections above 500. When the user asks an agent to overwrite vendor decisions, read and explain the preview, then direct the user to the panel.
 
 Normal agent-assisted triage writes still use the registered triage tools and strict decision validation. They never push upstream; review and push remain human-controlled surfaces.

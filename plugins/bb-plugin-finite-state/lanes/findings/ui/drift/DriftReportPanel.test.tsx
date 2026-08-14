@@ -45,8 +45,15 @@ function driftReport(runId: string) {
         reason: "Canonical resolver found no match",
       },
     ],
-    nextCursor: null,
+    nextCursor: null as string | null,
   };
+}
+
+type TestDriftReport = ReturnType<typeof driftReport>;
+
+function reportItem(runId: string, stableKey: string): TestDriftReport {
+  const report = driftReport(runId);
+  return { ...report, items: [{ ...report.items[0]!, stableKey }] };
 }
 
 describe("findings drift panel", () => {
@@ -57,6 +64,7 @@ describe("findings drift panel", () => {
     );
     if (!panel) throw new Error("Findings panel is not registered");
     let report = driftReport("drift-run-1");
+    let reportResponse: TestDriftReport | Promise<TestDriftReport> = report;
     let reportReads = 0;
     const pruneInputs: unknown[] = [];
     const slot = renderSlot(
@@ -97,23 +105,28 @@ describe("findings drift panel", () => {
           }),
           findingsDriftReport: () => {
             reportReads += 1;
-            return report;
+            return reportResponse;
           },
           findingsDriftOrphanState: () => ({
             baseStateSha256: "a".repeat(64),
             total: 1,
           }),
-          findingsDriftPrune: (input) => {
+          triageOrphansPrune: (input) => {
             pruneInputs.push(input);
-            const confirmed =
-              typeof input === "object" &&
-              input !== null &&
-              Reflect.get(input, "confirmed") === true;
             return {
-              baseStateSha256: "a".repeat(64),
-              selected: 1,
-              pruned: confirmed ? 1 : 0,
-              files: confirmed ? [".fs/triage/component.yaml"] : [],
+              projectId: "platform-1",
+              projectVersionId: "version-1",
+              runId: "orphan-prune-a",
+              total: 1,
+              applied: 1,
+              failed: 0,
+              results: [
+                {
+                  stableKey: "project|component|CVE-2026-147",
+                  success: true,
+                  error: null,
+                },
+              ],
             };
           },
         },
@@ -129,12 +142,50 @@ describe("findings drift panel", () => {
       slot.getByLabelText(/Overwrite existing local decisions/u),
     ).toBeTruthy();
 
-    report = driftReport("drift-run-2");
+    report = { ...driftReport("drift-run-2"), nextCursor: "cursor-2" };
+    reportResponse = report;
     await slot.behavior.emitRealtime(FINDINGS_DRIFT_CHANGED_CHANNEL, {
       pvId: "version-1",
     });
     expect(await slot.findByText("drift-run-2")).toBeTruthy();
     expect(reportReads).toBe(2);
+
+    reportResponse = reportItem(
+      "drift-run-3",
+      "project|component|CVE-2026-300",
+    );
+    fireEvent.click(slot.getByRole("button", { name: "Load more drift" }));
+    expect(await slot.findByText("drift-run-3")).toBeTruthy();
+    expect(slot.queryByText("project|component|CVE-2026-147")).toBeNull();
+
+    reportResponse = {
+      ...reportItem("drift-run-3", "project|component|CVE-2026-300"),
+      nextCursor: "cursor-3",
+    };
+    await slot.behavior.emitRealtime(FINDINGS_DRIFT_CHANGED_CHANNEL, {
+      pvId: "version-1",
+    });
+    expect(await slot.findByText("drift-run-3")).toBeTruthy();
+
+    let resolveLatePage: (value: TestDriftReport) => void = () => undefined;
+    reportResponse = new Promise<TestDriftReport>((resolve) => {
+      resolveLatePage = resolve;
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Load more drift" }));
+    reportResponse = reportItem(
+      "drift-run-4",
+      "project|component|CVE-2026-400",
+    );
+    await slot.behavior.emitRealtime(FINDINGS_DRIFT_CHANGED_CHANNEL, {
+      pvId: "version-1",
+    });
+    expect(await slot.findByText("drift-run-4")).toBeTruthy();
+    resolveLatePage(
+      reportItem("drift-run-3", "project|component|CVE-2026-LATE"),
+    );
+    await waitFor(() =>
+      expect(slot.queryByText("project|component|CVE-2026-LATE")).toBeNull(),
+    );
 
     fireEvent.click(
       slot.getByRole("button", { name: "Preview prune loaded orphans (1)" }),
@@ -142,11 +193,21 @@ describe("findings drift panel", () => {
     expect(
       await slot.findByText("Remove 1 proven orphaned decisions?"),
     ).toBeTruthy();
-    expect(pruneInputs[0]).toMatchObject({ dryRun: true, confirmed: false });
+    expect(pruneInputs).toHaveLength(0);
 
     fireEvent.click(slot.getByRole("button", { name: "Confirm prune" }));
-    await waitFor(() => expect(pruneInputs).toHaveLength(2));
-    expect(pruneInputs[1]).toMatchObject({ dryRun: false, confirmed: true });
-    expect(await slot.findByText("Pruned 1 orphaned decisions")).toBeTruthy();
+    await waitFor(() => expect(pruneInputs).toHaveLength(1));
+    expect(pruneInputs[0]).toMatchObject({
+      stableKeys: ["project|component|CVE-2026-400"],
+      expectedBaseStateSha256: "a".repeat(64),
+    });
+    expect(pruneInputs[0]).not.toEqual(
+      expect.objectContaining({ confirmed: expect.anything() }),
+    );
+    expect(
+      await slot.findByText(
+        "Pruned 1 orphaned decisions in 1 CAS-guarded chunk(s)",
+      ),
+    ).toBeTruthy();
   });
 });

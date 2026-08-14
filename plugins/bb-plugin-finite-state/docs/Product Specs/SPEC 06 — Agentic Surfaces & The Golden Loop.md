@@ -108,9 +108,10 @@ bb finite-state
   triage                                    # SPEC 02 §6.6
     list [--filter …] | set <stableKey> --status … | apply-policy [--dry-run]
     drift report|refresh --project <id> --version <pv> [--cursor …] [--limit …]
-    import-vex <file> --vendor <name> --project <id> --version <pv> [--dry-run] [--overwrite]
-    orphans --project <id> --version <pv>
-    orphans --prune --stable-key <key> --expected-base <sha256> --confirm --project <id> --version <pv> [--dry-run]
+    import-vex preview <file> --vendor <name> --project <id> --version <pv> [--json]
+    import-vex apply --import-id <id> --expected-document-sha256 <sha256> --project <id> --version <pv> [--json]
+    orphans list --project <id> --version <pv> [--json]
+    orphans prune --stable-key <key> --expected-base <sha256> --project <id> --version <pv> [--json]
     pull | status | plan | push             # aliases of the top-level verbs, scoped ⚑6
 
   tara    show <slug>                       # SPEC 03 §6.5

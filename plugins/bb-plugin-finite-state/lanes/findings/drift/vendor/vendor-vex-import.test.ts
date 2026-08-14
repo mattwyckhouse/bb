@@ -11,7 +11,7 @@ import { rebuildOverlayIndex } from "../../overlay/indexer.js";
 import { readOverlayFiles } from "../../overlay/reader.js";
 import { stableKeyFor } from "../../overlay/schema.js";
 import { setDecision } from "../../overlay/writer.js";
-import { importVendorVex, importVendorVexBytes } from "./import.js";
+import { importVendorVexBytes } from "./import.js";
 import { MAX_VENDOR_VEX_BYTES, VendorVexParseError } from "./parse.js";
 
 const PROJECT = "project-vendor";
@@ -215,11 +215,16 @@ describe("vendor VEX import", () => {
         },
       ],
     });
-    const first = await importVendorVex(deps(value), file, {
-      vendor: "Open Supplier",
-      overwrite: false,
-      dryRun: false,
-    });
+    const first = await importVendorVexBytes(
+      deps(value),
+      file,
+      await readFile(file),
+      {
+        vendor: "Open Supplier",
+        overwrite: false,
+        dryRun: false,
+      },
+    );
     expect(first).toMatchObject({
       matched: 0,
       unmatched: 1,
@@ -246,11 +251,16 @@ describe("vendor VEX import", () => {
     await expect(
       readVexWorking(value.root, { projectId: PROJECT, projectVersionId: PV }),
     ).resolves.toEqual([]);
-    const repeated = await importVendorVex(deps(value), file, {
-      vendor: "Open Supplier",
-      overwrite: false,
-      dryRun: false,
-    });
+    const repeated = await importVendorVexBytes(
+      deps(value),
+      file,
+      await readFile(file),
+      {
+        vendor: "Open Supplier",
+        overwrite: false,
+        dryRun: false,
+      },
+    );
     expect(repeated.written).toBe(0);
   });
 
@@ -288,18 +298,28 @@ describe("vendor VEX import", () => {
         },
       ],
     });
-    const preview = await importVendorVex(deps(value), file, {
-      vendor: "CSAF Supplier",
-      overwrite: false,
-      dryRun: true,
-    });
+    const preview = await importVendorVexBytes(
+      deps(value),
+      file,
+      await readFile(file),
+      {
+        vendor: "CSAF Supplier",
+        overwrite: false,
+        dryRun: true,
+      },
+    );
     expect(preview).toMatchObject({ matched: 1, written: 0 });
     expect((await readOverlayFiles(value.root)).files).toEqual([]);
-    const result = await importVendorVex(deps(value), file, {
-      vendor: "CSAF Supplier",
-      overwrite: false,
-      dryRun: false,
-    });
+    const result = await importVendorVexBytes(
+      deps(value),
+      file,
+      await readFile(file),
+      {
+        vendor: "CSAF Supplier",
+        overwrite: false,
+        dryRun: false,
+      },
+    );
     expect(result).toMatchObject({
       matched: 1,
       unmatched: 0,
@@ -357,11 +377,16 @@ describe("vendor VEX import", () => {
         { cve: "CVE-CSAF-REL", product_status: { fixed: ["RELATIONSHIP-1"] } },
       ],
     });
-    const result = await importVendorVex(deps(value), file, {
-      vendor: "CSAF Supplier",
-      overwrite: false,
-      dryRun: false,
-    });
+    const result = await importVendorVexBytes(
+      deps(value),
+      file,
+      await readFile(file),
+      {
+        vendor: "CSAF Supplier",
+        overwrite: false,
+        dryRun: false,
+      },
+    );
     expect(result).toMatchObject({
       matched: 2,
       unmatched: 0,
@@ -410,11 +435,16 @@ describe("vendor VEX import", () => {
         },
       ],
     });
-    const result = await importVendorVex(deps(value), file, {
-      vendor: "CSAF Supplier",
-      overwrite: false,
-      dryRun: false,
-    });
+    const result = await importVendorVexBytes(
+      deps(value),
+      file,
+      await readFile(file),
+      {
+        vendor: "CSAF Supplier",
+        overwrite: false,
+        dryRun: false,
+      },
+    );
     expect(result).toMatchObject({
       matched: 0,
       unmatched: 0,
@@ -459,11 +489,16 @@ describe("vendor VEX import", () => {
         },
       ],
     });
-    const result = await importVendorVex(deps(value), file, {
-      vendor: "Open Supplier",
-      overwrite: false,
-      dryRun: false,
-    });
+    const result = await importVendorVexBytes(
+      deps(value),
+      file,
+      await readFile(file),
+      {
+        vendor: "Open Supplier",
+        overwrite: false,
+        dryRun: false,
+      },
+    );
     expect(result).toMatchObject({ matched: 1, written: 1 });
     expect(result.errors).toEqual([
       expect.objectContaining({ code: "JUSTIFICATION_UNSUPPORTED" }),
@@ -506,17 +541,27 @@ describe("vendor VEX import", () => {
         },
       ],
     });
-    const kept = await importVendorVex(deps(value), file, {
-      vendor: "Supplier",
-      overwrite: false,
-      dryRun: false,
-    });
+    const kept = await importVendorVexBytes(
+      deps(value),
+      file,
+      await readFile(file),
+      {
+        vendor: "Supplier",
+        overwrite: false,
+        dryRun: false,
+      },
+    );
     expect(kept).toMatchObject({ keptLocal: 1, written: 0 });
-    const overwritten = await importVendorVex(deps(value), file, {
-      vendor: "Supplier",
-      overwrite: true,
-      dryRun: false,
-    });
+    const overwritten = await importVendorVexBytes(
+      deps(value),
+      file,
+      await readFile(file),
+      {
+        vendor: "Supplier",
+        overwrite: true,
+        dryRun: false,
+      },
+    );
     expect(overwritten).toMatchObject({ keptLocal: 0, written: 1 });
     const working = await readVexWorking(value.root, {
       projectId: PROJECT,
@@ -553,7 +598,7 @@ describe("vendor VEX import", () => {
       [oversized, "VENDOR_FILE_OVERSIZED"],
     ] as const) {
       await expect(
-        importVendorVex(deps(value), file, {
+        importVendorVexBytes(deps(value), file, await readFile(file), {
           vendor: "Supplier",
           overwrite: false,
           dryRun: false,

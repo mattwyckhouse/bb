@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
 
 export type VendorVexFormat = "cyclonedx" | "csaf" | "openvex";
 
@@ -118,29 +117,4 @@ export function parseVendorVexBytes(
     file,
     document,
   };
-}
-
-export async function parseVendorVex(file: string): Promise<ParsedVendorVex> {
-  let metadata;
-  try {
-    metadata = await lstat(file);
-  } catch (error) {
-    throw new VendorVexParseError(
-      "VENDOR_FILE_INVALID",
-      `Vendor VEX file cannot be read: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    throw new VendorVexParseError(
-      "VENDOR_FILE_INVALID",
-      "Vendor VEX input must be a regular file, not a symlink",
-    );
-  }
-  if (metadata.size > MAX_VENDOR_VEX_BYTES) {
-    throw new VendorVexParseError(
-      "VENDOR_FILE_OVERSIZED",
-      `Vendor VEX input exceeds ${MAX_VENDOR_VEX_BYTES} bytes`,
-    );
-  }
-  return parseVendorVexBytes(file, await readFile(file));
 }
