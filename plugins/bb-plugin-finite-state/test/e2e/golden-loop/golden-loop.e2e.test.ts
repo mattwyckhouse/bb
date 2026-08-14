@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { promisify } from "node:util";
 
 import type { createFakePluginHost } from "@bb/plugin-sdk/testing";
+import type { PluginNavPanelProps } from "@bb/plugin-sdk/app";
 import {
   installTestPluginRuntime,
   loadPluginApp,
@@ -17,6 +20,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { createElement } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { assertion, fileAssertion } from "./assertions.js";
@@ -28,6 +32,7 @@ const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../../../..");
 const FIXTURE_ROOT = resolve(import.meta.dirname, "../../mock-remote/fixtures");
 const WORKSPACE_PROJECT_ID = "workspace-golden-loop";
 const BENCH_VERSION = "golden-bench-version";
+const execFileAsync = promisify(execFile);
 
 interface Runtime {
   host: ReturnType<typeof createFakePluginHost>;
@@ -45,6 +50,12 @@ interface Runtime {
   failNextThreadSpawn: boolean;
   firmwareReady: Set<string>;
   benchReady: boolean;
+  panelRpcCalls: Array<Readonly<{ method: string; input: unknown }>>;
+  fs167ReviewPlanCalls: number;
+  panelPlan: Record<string, unknown> | null;
+  humanPushApproved: boolean;
+  executeHumanPush(input: unknown): Promise<unknown>;
+  refreshOverlayIndex(): Promise<void>;
   human: GoldenLoopHarness["human"] | null;
 }
 
@@ -171,6 +182,10 @@ function metadata(number: number) {
   return beat;
 }
 
+function fs167FindingId(index: number): string {
+  return String(16_700_000 + index);
+}
+
 function successfulCli(value: unknown): boolean {
   const result = object(value, "CLI result");
   return result["exitCode"] === 0 && result["stderr"] === "";
@@ -205,7 +220,11 @@ async function triageTargets(runtime: Runtime, findingIds: readonly string[]) {
   );
 }
 
-function decision(target: unknown, reason: string) {
+function decision(
+  target: unknown,
+  reason: string,
+  status: "IN_TRIAGE" | "NOT_AFFECTED" = "NOT_AFFECTED",
+) {
   const item = object(target, "triage target");
   const evidence =
     typeof item["evidence"] === "string" && item["evidence"].length > 0
@@ -216,12 +235,12 @@ function decision(target: unknown, reason: string) {
   return {
     findingId: string(item["findingId"], "finding id"),
     stableKey: string(item["stableKey"], "stable key"),
-    status: "NOT_AFFECTED",
-    justification: "CODE_NOT_REACHABLE",
+    status,
+    justification: status === "NOT_AFFECTED" ? "CODE_NOT_REACHABLE" : null,
     response: null,
     reason,
     evidence,
-    pin: "exact_version",
+    pin: status === "NOT_AFFECTED" ? "exact_version" : "any_version",
     expectedSha256:
       typeof item["expectedSha256"] === "string"
         ? item["expectedSha256"]
@@ -238,6 +257,97 @@ async function registeredPanel(path: string) {
   return panels[0];
 }
 
+async function registeredSyncPanelWithHumanApproval() {
+  const registered = await registeredPanel("sync");
+  const [panelModule, contract] = await Promise.all([
+    import("../../../lanes/sync/ui/SyncReviewPanel.js"),
+    import("../../../shared/contract.js"),
+  ]);
+  if (registered.component !== panelModule.SyncReviewPanel) {
+    throw new Error("Registered Sync panel does not use SyncReviewPanel");
+  }
+  const capability = contract.humanApprovalCapabilitySchema.parse(
+    "golden-loop-human-approval-capability",
+  );
+  return {
+    ...registered,
+    component: (props: PluginNavPanelProps) =>
+      createElement(panelModule.SyncReviewPanel, {
+        ...props,
+        humanApprovalCapability: capability,
+      }),
+  };
+}
+
+async function panelPlanPage(
+  runtime: Runtime,
+  input: unknown,
+): Promise<Record<string, unknown>> {
+  const request = object(input, "sync plan input");
+  const continuation =
+    request["continuation"] === null
+      ? null
+      : string(request["continuation"], "sync plan continuation");
+  let offset = 0;
+  if (continuation === null) {
+    const projectId = string(request["projectId"], "sync plan project");
+    const projectVersionId = string(
+      request["projectVersionId"],
+      "sync plan version",
+    );
+    const surface = array(request["kinds"], "sync plan kinds");
+    if (surface.length !== 1)
+      throw new Error("Panel plan requires one surface");
+    const result = await runtime.host.harness.behavior.runCli(
+      [
+        "finite-state",
+        "plan",
+        string(surface[0], "sync plan surface"),
+        "--project",
+        projectId,
+        "--version",
+        projectVersionId,
+        "--json",
+      ],
+      cliContext(),
+    );
+    if (!successfulCli(result)) {
+      throw new Error(
+        `Panel plan failed: ${String(object(result, "plan result")["stderr"])}`,
+      );
+    }
+    runtime.panelPlan = object(
+      JSON.parse(string(object(result, "plan result")["stdout"], "plan JSON")),
+      "panel plan",
+    );
+  } else {
+    const matched = /^fsp1:([^:]+):(\d+)$/u.exec(continuation);
+    if (!matched) throw new Error("Invalid panel plan continuation");
+    offset = Number(matched[2]);
+    if (runtime.panelPlan?.["planId"] !== matched[1]) {
+      throw new Error("Panel plan continuation is stale");
+    }
+  }
+  if (runtime.panelPlan === null) throw new Error("Panel plan is unavailable");
+  const items = array(runtime.panelPlan["items"], "panel plan items");
+  const pageSize = number(request["pageSize"], "sync plan page size");
+  const pageItems = items.slice(offset, offset + pageSize);
+  const nextOffset = offset + pageItems.length;
+  return {
+    ...runtime.panelPlan,
+    items: pageItems,
+    validationErrors: pageItems.flatMap((item) => {
+      const error = object(item, "plan item")["error"];
+      return error === null ? [] : [error];
+    }),
+    total: items.length,
+    next:
+      nextOffset < items.length
+        ? `fsp1:${string(runtime.panelPlan["planId"], "plan id")}:${nextOffset}`
+        : null,
+  };
+}
+
 function registeredRpc(
   runtime: Runtime,
 ): Record<string, (input: unknown) => Promise<unknown> | unknown> {
@@ -252,7 +362,27 @@ function registeredRpc(
       get(_target, property) {
         if (property === "connectionsStatus") return () => connected;
         if (typeof property !== "string") return undefined;
-        return (input: unknown) => {
+        return async (input: unknown) => {
+          runtime.panelRpcCalls.push({ method: property, input });
+          if (property === "syncPlan") return panelPlanPage(runtime, input);
+          if (property === "syncPush") {
+            if (!runtime.humanPushApproved) {
+              throw new Error("Golden Loop push requires explicit human.push");
+            }
+            runtime.humanPushApproved = false;
+            try {
+              const report = await runtime.executeHumanPush(input);
+              runtime.panelPlan = null;
+              runtime.evidence.set("human-push-report", report);
+              return report;
+            } catch (error) {
+              runtime.evidence.set(
+                "human-push-error",
+                error instanceof Error ? error.message : String(error),
+              );
+              throw error;
+            }
+          }
           if (
             property === "triageDecisionsWrite" &&
             runtime.failNextTriageWrite
@@ -422,15 +552,206 @@ async function ensureSbomPull(runtime: Runtime): Promise<void> {
   runtime.evidence.set("sbom-pull", result);
 }
 
+async function authorFs167Decisions(runtime: Runtime): Promise<unknown> {
+  const pull = await runtime.host.harness.behavior.callRpc("syncPull", {
+    workspaceProjectId: WORKSPACE_PROJECT_ID,
+    projectId: runtime.projectId,
+    projectVersionId: runtime.fs167Version,
+    kinds: ["finding", "vexDecision"],
+  });
+  const findingIds = Array.from({ length: 201 }, (_, index) =>
+    fs167FindingId(index + 1),
+  );
+  for (let offset = 0; offset < findingIds.length; offset += 20) {
+    const selected = findingIds.slice(offset, offset + 20);
+    const page = object(
+      await runtime.host.harness.behavior.callRpc("triageTargetsRead", {
+        workspaceProjectId: WORKSPACE_PROJECT_ID,
+        platformProjectId: runtime.projectId,
+        projectVersionId: runtime.fs167Version,
+        selection: { mode: "exact", findingIds: selected },
+        continuation: null,
+      }),
+      "FS-167 triage targets",
+    );
+    const targets = array(page["items"], "FS-167 target rows");
+    if (targets.length !== selected.length) {
+      throw new Error(
+        `FS-167 target read returned ${targets.length} of ${selected.length}`,
+      );
+    }
+    const written = object(
+      await runtime.host.harness.behavior.callRpc("triageDecisionsWrite", {
+        workspaceProjectId: WORKSPACE_PROJECT_ID,
+        platformProjectId: runtime.projectId,
+        projectVersionId: runtime.fs167Version,
+        decisions: targets.map((target) =>
+          decision(target, "Golden Loop FS-167 clean baseline", "IN_TRIAGE"),
+        ),
+      }),
+      "FS-167 triage writes",
+    );
+    const failures = array(written["results"], "FS-167 write results")
+      .map((result) => object(result, "FS-167 write result"))
+      .filter((result) => result["success"] !== true);
+    if (failures.length > 0) {
+      throw new Error(
+        `FS-167 authored writes failed: ${JSON.stringify(failures)}`,
+      );
+    }
+  }
+  await execFileAsync("git", ["add", ".fs/triage"], {
+    cwd: runtime.worktree,
+  });
+  await execFileAsync(
+    "git",
+    ["commit", "-m", "test: seed FS-167 clean triage baseline"],
+    { cwd: runtime.worktree },
+  );
+  const guardedPull = await runtime.host.harness.behavior.runCli(
+    [
+      "finite-state",
+      "pull",
+      "vexDecision",
+      "--project",
+      runtime.projectId,
+      "--version",
+      runtime.fs167Version,
+      "--json",
+    ],
+    cliContext(),
+  );
+  if (!successfulCli(guardedPull)) {
+    throw new Error(
+      `FS-167 guarded pull failed: ${String(object(guardedPull, "guarded pull")["stderr"])}`,
+    );
+  }
+  for (let offset = 0; offset < findingIds.length; offset += 20) {
+    const selected = findingIds.slice(offset, offset + 20);
+    const page = object(
+      await runtime.host.harness.behavior.callRpc("triageTargetsRead", {
+        workspaceProjectId: WORKSPACE_PROJECT_ID,
+        platformProjectId: runtime.projectId,
+        projectVersionId: runtime.fs167Version,
+        selection: { mode: "exact", findingIds: selected },
+        continuation: null,
+      }),
+      "FS-167 guarded triage targets",
+    );
+    const targets = array(page["items"], "FS-167 guarded target rows");
+    const written = object(
+      await runtime.host.harness.behavior.callRpc("triageDecisionsWrite", {
+        workspaceProjectId: WORKSPACE_PROJECT_ID,
+        platformProjectId: runtime.projectId,
+        projectVersionId: runtime.fs167Version,
+        decisions: targets.map((target) =>
+          decision(target, "Golden Loop FS-167 reviewed paging decision"),
+        ),
+      }),
+      "FS-167 guarded triage writes",
+    );
+    const failures = array(written["results"], "FS-167 guarded write results")
+      .map((result) => object(result, "FS-167 guarded write result"))
+      .filter((result) => result["success"] !== true);
+    if (failures.length > 0) {
+      throw new Error(
+        `FS-167 guarded writes failed: ${JSON.stringify(failures)}`,
+      );
+    }
+  }
+  await runtime.refreshOverlayIndex();
+  return { pull, guardedPull };
+}
+
 function beats(runtime: Runtime): GoldenLoopBeat[] {
   const list: GoldenLoopBeat[] = [
     {
       ...metadata(1),
       action: async ({ artifacts }) => {
-        const pull = await runtime.host.harness.behavior.runCli(
+        cleanup();
+        const pull = await authorFs167Decisions(runtime);
+        runtime.panelRpcCalls.length = 0;
+        const slot = renderSlot(
+          await registeredSyncPanelWithHumanApproval(),
+          {
+            subPath: `scope/${runtime.projectId}/${runtime.fs167Version}/surface/vexDecision`,
+          },
+          panelRuntime(runtime),
+        );
+        expect(
+          await slot.findByText(
+            (_content, element) =>
+              element?.tagName === "P" &&
+              element.textContent === "vexDecision · 201 proposed changes",
+          ),
+        ).toBeTruthy();
+        const updateGroup = slot.container.querySelector<HTMLElement>(
+          '[data-plan-group="update"]',
+        );
+        if (!updateGroup)
+          throw new Error("Sync panel omitted its Updates group");
+        expect(within(updateGroup).getByText("201")).toBeTruthy();
+        await waitFor(() =>
+          expect(
+            runtime.panelRpcCalls.filter(({ method }) => method === "syncPlan")
+              .length,
+          ).toBeGreaterThan(1),
+        );
+        const reviewCalls = [...runtime.panelRpcCalls];
+        runtime.fs167ReviewPlanCalls = reviewCalls.filter(
+          ({ method }) => method === "syncPlan",
+        ).length;
+        await human(runtime).reviewDiff({
+          beat: 1,
+          changes: 201,
+          surface: "vexDecision",
+        });
+        fireEvent.click(
+          slot.getByRole("checkbox", {
+            name: "Confirm reviewed blast radius",
+          }),
+        );
+        await human(runtime).push({ beat: 1, changes: 201 });
+        fireEvent.click(
+          slot.getByRole("button", { name: "Push reviewed plan" }),
+        );
+        await waitFor(() =>
+          expect(
+            runtime.evidence.has("human-push-report") ||
+              runtime.evidence.has("human-push-error"),
+          ).toBe(true),
+        );
+        if (runtime.evidence.has("human-push-error")) {
+          throw new Error(
+            `Human push failed: ${String(runtime.evidence.get("human-push-error"))}`,
+          );
+        }
+        const pushReport = object(
+          runtime.evidence.get("human-push-report"),
+          "human push report",
+        );
+        const pushSummary = object(pushReport["summary"], "human push summary");
+        if (
+          pushReport["status"] !== "completed" ||
+          pushSummary["applied"] !== 201
+        ) {
+          throw new Error(
+            `Human push was incomplete: ${JSON.stringify(pushReport)}`,
+          );
+        }
+        expect(await slot.findByText("No local changes")).toBeTruthy();
+        const rpcStatus = await runtime.host.harness.behavior.callRpc(
+          "syncStatus",
+          {
+            projectId: runtime.projectId,
+            projectVersionId: runtime.fs167Version,
+            kinds: ["vexDecision"],
+          },
+        );
+        const cliStatusResult = await runtime.host.harness.behavior.runCli(
           [
             "finite-state",
-            "pull",
+            "status",
             "vexDecision",
             "--project",
             runtime.projectId,
@@ -440,36 +761,30 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           ],
           cliContext(),
         );
-        if (!successfulCli(pull)) {
-          throw new Error(
-            `FS-167 first pull failed: ${String(object(pull, "pull")["stderr"])}`,
-          );
+        if (!successfulCli(cliStatusResult)) {
+          throw new Error("FS-167 durable status read failed");
         }
-        const slot = renderSlot(
-          await registeredPanel("sync"),
-          {
-            subPath: `scope/${runtime.projectId}/${runtime.fs167Version}/surface/vexDecision`,
-          },
-          panelRuntime(runtime),
+        const cliStatus = object(
+          JSON.parse(
+            string(
+              object(cliStatusResult, "FS-167 status result")["stdout"],
+              "FS-167 status JSON",
+            ),
+          ),
+          "FS-167 durable status",
         );
-        expect(await slot.findByText("No local changes")).toBeTruthy();
-        fireEvent.click(slot.getByRole("button", { name: "Refresh" }));
-        await waitFor(() =>
-          expect(
-            slot.getByText("vexDecision · 0 proposed changes"),
-          ).toBeTruthy(),
-        );
-        const status = await runtime.host.harness.behavior.callRpc(
-          "syncStatus",
-          {
-            projectId: runtime.projectId,
-            projectVersionId: runtime.fs167Version,
-            kinds: ["vexDecision"],
-          },
-        );
+        runtime.evidence.set("fs167-accept", {
+          rpcStatus,
+          cliStatus,
+          pushReport,
+        });
         await artifacts.writeJson("sync-panel-transcript.json", {
           pull,
-          status,
+          reviewCalls,
+          acceptedCalls: runtime.panelRpcCalls,
+          rpcStatus,
+          cliStatus,
+          pushReport,
         });
         await artifacts.writeText(
           "sync-review.dom.html",
@@ -478,36 +793,39 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
         slot.unmount();
       },
       assert: async () => {
-        const status = object(
-          await runtime.host.harness.behavior.callRpc("syncStatus", {
-            projectId: runtime.projectId,
-            projectVersionId: runtime.fs167Version,
-            kinds: ["vexDecision"],
-          }),
-          "sync status",
+        const accept = object(
+          runtime.evidence.get("fs167-accept"),
+          "FS-167 accept evidence",
         );
-        const plan = object(
-          await runtime.host.harness.behavior.callRpc("syncPlan", {
-            projectId: runtime.projectId,
-            projectVersionId: runtime.fs167Version,
-            kinds: ["vexDecision"],
-            pageSize: 200,
-            continuation: null,
-          }),
-          "sync plan",
+        const rpcStatus = object(accept["rpcStatus"], "FS-167 RPC status");
+        const cliStatus = object(accept["cliStatus"], "FS-167 CLI status");
+        const pushReport = object(accept["pushReport"], "FS-167 push report");
+        const pushSummary = object(
+          pushReport["summary"],
+          "FS-167 push summary",
+        );
+        const acceptedPushCalls = runtime.panelRpcCalls.filter(
+          ({ method }) => method === "syncPush",
         );
         return [
           assertion(
             "fresh VEX generation is durably accepted",
             typeof object(
-              status["acceptedGenerationIds"],
+              rpcStatus["acceptedGenerationIds"],
               "accepted generations",
             )["vexDecision"] === "string",
           ),
           assertion(
-            "registered panel had to drain the multi-page plan",
-            number(plan["total"], "plan total") === 201 &&
-              plan["next"] !== null,
+            "registered panel drained more than one plan page",
+            runtime.fs167ReviewPlanCalls > 1,
+          ),
+          assertion(
+            "human-reviewed panel accept completed",
+            acceptedPushCalls.length === 1 &&
+              pushReport["status"] === "completed" &&
+              pushSummary["applied"] === 201 &&
+              array(cliStatus["local"], "durable local sync changes").length ===
+                0,
           ),
         ];
       },
@@ -586,6 +904,11 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
     },
     {
       ...metadata(3),
+      expectedFailure: {
+        task: "FS-201",
+        reason: "the production Bench bootstrap path has not landed",
+        signature: "No puller is registered for verificationRun",
+      },
       setup: async () => ensureBenchReady(runtime),
       action: async ({ artifacts }) => {
         cleanup();
@@ -1211,6 +1534,11 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
     },
     {
       ...metadata(11),
+      expectedFailure: {
+        task: "FS-201",
+        reason: "the production Bench bootstrap path has not landed",
+        signature: "No puller is registered for verificationRun",
+      },
       setup: async () => ensureBenchReady(runtime),
       action: async ({ artifacts }) => {
         const digest = await mountedFirmwareDigest(runtime, BENCH_VERSION);
@@ -1273,6 +1601,11 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
     },
     {
       ...metadata(12),
+      expectedFailure: {
+        task: "FS-201",
+        reason: "the production Bench bootstrap path has not landed",
+        signature: "No puller is registered for verificationRun",
+      },
       setup: async () => ensureBenchReady(runtime),
       action: async ({ artifacts }) => {
         const slot = renderSlot(
@@ -1543,11 +1876,11 @@ async function createRun(
         platformRegisterModule,
         asRegisterModule,
         syncModule,
+        pushModule,
         findingsModule,
         bomModule,
         benchModule,
         firmwareModule,
-        adapterModule,
         productModule,
         actionsModule,
       ] = await Promise.all([
@@ -1559,11 +1892,11 @@ async function createRun(
         import("../../mock-remote/platform/register.js"),
         import("../../mock-remote/assurance-studio/register.js"),
         import("../../../lanes/sync/register.js"),
+        import("../../../lanes/sync/push/index.js"),
         import("../../../lanes/findings/register.js"),
         import("../../../lanes/bom/register.js"),
         import("../../../lanes/bench/register.js"),
         import("../../../lanes/firmware/register.js"),
-        import("../../../lanes/sync/engine/adapter.js"),
         import("../../../lanes/product-security/register.js"),
         import("../../../lanes/agentic/tools/actions.js"),
       ]);
@@ -1605,13 +1938,20 @@ async function createRun(
         });
       }
       for (let index = 1; index <= 201; index += 1) {
-        state.findings.set(`fs167-finding-${index}`, {
-          id: `fs167-finding-${index}`,
+        const findingId = fs167FindingId(index);
+        const cve = `CVE-2026-${String(167000 + index)}`;
+        const componentName = `fs167-component-${index}`;
+        state.findings.set(findingId, {
+          id: findingId,
           projectVersionId: fs167Version,
-          findingId: `CVE-2026-${String(167000 + index)}`,
+          findingId: cve,
+          cve,
+          componentName,
+          componentGroup: null,
+          componentVersion: "1.0.0",
           component: {
             id: `fs167-component-${index}`,
-            name: `fs167-component-${index}`,
+            name: componentName,
             version: "1.0.0",
           },
           severity: "medium",
@@ -1682,13 +2022,6 @@ async function createRun(
         },
       });
       host.harness.runService("firmware-materialization");
-      adapterModule.registerCachePuller(
-        "verificationRun",
-        async (_scope, _generationId, onProgress) => {
-          onProgress({ page: 1, of: 1 });
-          return { fetched: 0, baseRows: 0 };
-        },
-      );
       syncModule.registerSync(bb, ctx);
       findingsModule.registerFindings(bb, ctx);
       productModule.registerProductSecurity(bb, ctx);
@@ -1715,13 +2048,62 @@ async function createRun(
         failNextThreadSpawn: false,
         firmwareReady: new Set(),
         benchReady: false,
+        panelRpcCalls: [],
+        fs167ReviewPlanCalls: 0,
+        panelPlan: null,
+        humanPushApproved: false,
+        executeHumanPush: async (input) => {
+          const request = object(input, "human push input");
+          return pushModule.push(
+            {
+              db: ctx.db(),
+              worktreeRoot: worktree,
+              now: () => new Date("2026-08-14T12:00:00.000Z"),
+              createRunId: () => "golden-loop-human-push",
+            },
+            {
+              scope: {
+                projectId: string(request["projectId"], "push project"),
+                projectVersionId: string(
+                  request["projectVersionId"],
+                  "push version",
+                ),
+              },
+              planId: string(request["planId"], "push plan id"),
+              expectedPlanSha256: string(
+                request["expectedPlanSha256"],
+                "push plan sha",
+              ),
+              expectedBaseStateSha256: string(
+                request["expectedBaseStateSha256"],
+                "push base state sha",
+              ),
+              confirmed: true,
+              pageSize: number(request["pageSize"], "push page size"),
+              continuation: null,
+            },
+          );
+        },
+        refreshOverlayIndex: async () => {
+          await ctx
+            .service<{ rebuild(root: string): Promise<void> }>(
+              "findings.overlay",
+              () => {
+                throw new Error("Findings overlay owner is unavailable");
+              },
+            )
+            .rebuild(worktree);
+        },
         human: null,
       };
     },
     human: {
       reviewDiff: async () => {},
       resolveConflict: async () => {},
-      push: async () => {},
+      push: async () => {
+        if (!runtime) throw new Error("Golden Loop runtime is unavailable");
+        runtime.humanPushApproved = true;
+      },
     },
   });
   if (!runtime)
@@ -1743,11 +2125,14 @@ describe.sequential("Golden Loop incremental acceptance", () => {
         expect(firstResults.map(({ beat }) => beat)).toEqual(
           GOLDEN_LOOP_BEATS.map(({ number }) => number),
         );
-        expect(firstResults.find(({ beat }) => beat === 7)).toMatchObject({
-          status: "skipped",
-        });
-        const unexpected = firstResults.filter(
-          ({ beat, status }) => beat !== 7 && status !== "passed",
+        const pendingBeats = new Set([3, 7, 11, 12]);
+        expect(
+          firstResults
+            .filter(({ status }) => status === "skipped")
+            .map(({ beat }) => beat),
+        ).toEqual([...pendingBeats]);
+        const unexpected = firstResults.filter(({ beat, status }) =>
+          pendingBeats.has(beat) ? status !== "skipped" : status !== "passed",
         );
         expect(unexpected, JSON.stringify(unexpected, null, 2)).toEqual([]);
         first.harness.assertNoExternalNetwork();

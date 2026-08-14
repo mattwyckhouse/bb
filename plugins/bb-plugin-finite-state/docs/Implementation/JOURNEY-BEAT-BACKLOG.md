@@ -20,7 +20,7 @@ Entry format — one section per defect:
 
 ### FS-171 — bench panel dead surface (sweep FS-140 cluster)
 
-- **Harnessed**: `golden-loop.e2e.test.ts` — beat 3, `FS-171 bench dispatch durability`
+- **Pending — not Harnessed**: `golden-loop.e2e.test.ts` — beat 3, `FS-171 bench dispatch durability`, pinned to `No puller is registered for verificationRun` until FS-201 lands the production Bench bootstrap path
 - **Journey**: bench panel → select project/version → view runs → dispatch run → verdict renders
 - **Broke because**: queued checkpoint outside the `try`; throwing resolver recorded no run row; cross-scope version auto-select
 - **Beat asserts**: run row appears in the registered runs list; a failed dispatch still records a row with a visible failure state
@@ -55,7 +55,7 @@ Entry format — one section per defect:
 
 ### FS-201 — bench requirement puller dead-end loop (sweep #7, pending fix)
 
-- **Harnessed (pending expected failure)**: `golden-loop.e2e.test.ts` — beat 7, `FS-201 requirement-to-bench loop`
+- **Pending — not Harnessed**: `golden-loop.e2e.test.ts` — beat 7, `FS-201 requirement-to-bench loop`, pinned to `No puller is registered for requirement`
 - **Journey**: bench panel with no cached version → follow the product's own instruction ("Pull a version through Sync first") → `pull requirement` → bench enabled → run → WP-55 verdict card renders
 - **Broke because**: no puller is registered for `requirement`; the product's instruction is impossible, bench unreachable in every flow
 - **Beat asserts**: the full loop completes: sync pull → accepted version → bench run → verdict card visible
