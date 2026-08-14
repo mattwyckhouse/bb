@@ -7,6 +7,7 @@ import { rpcContract } from "../../../../shared/contract.js";
 import { registerCanvasEditingBackend } from "./backend.js";
 import {
   architectureEntityPayload,
+  canvasEditingLoadOutputSchema,
   parseArchitectureEntity,
   type ArchitectureYamlEntity,
   type CanvasEntityKind,
@@ -28,11 +29,14 @@ function hash(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-function component(slug: string): ArchitectureYamlEntity {
+function component(
+  slug: string,
+  componentType = "software",
+): ArchitectureYamlEntity {
   return parseArchitectureEntity("component", {
     slug,
     name: slug,
-    component_type: "software",
+    component_type: componentType,
     criticality: "high",
     interfaces: [],
     technologies: [],
@@ -190,5 +194,114 @@ describe("WP-35 read-classified editing RPCs", () => {
     expect(writes).not.toHaveBeenCalled();
     expect(moves).not.toHaveBeenCalled();
     expect(removes).not.toHaveBeenCalled();
+  });
+
+  it("edits a pulled firmware component through the registered RPC path and preserves its YAML type", async () => {
+    const files = new Map<string, string>();
+    const host = createFakePluginHost({
+      pluginId: "finite-state-editing-firmware",
+      sdk: {
+        projects: {
+          get: ({ projectId }) => ({
+            id: projectId,
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
+        files: {
+          list: ({ path }) => ({
+            files: [...files.keys()]
+              .filter((candidate) => candidate.startsWith(`${path}/`))
+              .map((path) => ({
+                path,
+                name: path.slice(path.lastIndexOf("/") + 1),
+              })),
+            truncated: false,
+          }),
+          read: ({ path }) => {
+            const content = files.get(path);
+            if (content === undefined) {
+              throw Object.assign(new Error(`ENOENT: ${path}`), {
+                code: "ENOENT",
+              });
+            }
+            return {
+              content,
+              contentEncoding: "utf8" as const,
+              sha256: hash(content),
+            };
+          },
+          write: ({ path, content, expectedSha256 }) => {
+            const current = files.get(path);
+            const currentSha256 = current === undefined ? null : hash(current);
+            if (currentSha256 !== expectedSha256) {
+              return { outcome: "conflict" as const, currentSha256 };
+            }
+            files.set(path, content);
+            return {
+              outcome: "written" as const,
+              sha256: hash(content),
+              sizeBytes: content.length,
+            };
+          },
+        },
+      },
+    });
+    hosts.push(host);
+    const context = createPluginContext(host.bb);
+    const pulled = component("gateway-firmware", "firmware");
+    seedAccepted(context, [pulled]);
+    registerCanvasEditingBackend(host.bb, context);
+
+    const loaded = canvasEditingLoadOutputSchema.parse(
+      await host.harness.callRpc("canvasEditingLoad", {
+        projectId: PROJECT,
+        projectVersionId: null,
+        kind: "component",
+        slug: pulled.slug,
+      }),
+    );
+    expect(loaded).toMatchObject({
+      state: "ready",
+      fields: { component_type: "firmware" },
+    });
+    if (loaded.state !== "ready") throw new Error("expected accepted entity");
+
+    await host.harness.callRpc("taraCommandApply", {
+      projectId: PROJECT,
+      projectVersionId: null,
+      operation: "update",
+      kind: "component",
+      stableKey: pulled.slug,
+      fields: { name: "Edited firmware gateway" },
+      expectedContentSha256: loaded.sha256,
+    });
+
+    const edited = canvasEditingLoadOutputSchema.parse(
+      await host.harness.callRpc("canvasEditingLoad", {
+        projectId: PROJECT,
+        projectVersionId: null,
+        kind: "component",
+        slug: pulled.slug,
+      }),
+    );
+    expect(edited).toMatchObject({
+      state: "ready",
+      fields: {
+        name: "Edited firmware gateway",
+        component_type: "firmware",
+      },
+    });
+    const authored = files.get(
+      "/workspace/product-security/architecture/components/gateway-firmware.yaml",
+    );
+    expect(authored).toContain("component_type: firmware");
+    expect(
+      parseArchitectureEntity(
+        "component",
+        edited.state === "ready" ? edited.fields : {},
+      ),
+    ).toMatchObject({ component_type: "firmware" });
   });
 });

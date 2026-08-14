@@ -47,6 +47,8 @@ const stringListSchema = z
   .default([]);
 
 export const criticalitySchema = z.enum(["low", "medium", "high", "critical"]);
+// Authoritative enum: docs/Implementation/api-reference/
+// assurance-studio-openapi-2026-05-12.json#/components/schemas/ComponentType.
 export const ASSURANCE_STUDIO_COMPONENT_TYPES = [
   "firmware",
   "software",
@@ -67,17 +69,7 @@ export const assuranceStudioComponentTypeSchema = z.enum(
   ASSURANCE_STUDIO_COMPONENT_TYPES,
 );
 
-export const componentTypeSchema = z.enum([
-  "software",
-  "hardware",
-  "sensor",
-  "actuator",
-  "ecu",
-  "hsm",
-  "tee",
-  "medical_device",
-  "network",
-]);
+export const componentTypeSchema = assuranceStudioComponentTypeSchema;
 export const strideCategorySchema = z.enum([
   "spoofing",
   "tampering",
