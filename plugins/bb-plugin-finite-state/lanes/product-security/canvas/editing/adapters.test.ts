@@ -432,7 +432,7 @@ describe("canvas real-wire adapter contract", () => {
         projectId: "bb-project-fs166",
       },
     );
-    expect(degradedStatus).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(degradedStatus).toMatchObject({ exitCode: 1, stderr: "" });
     expect(degradedStatus.stdout).not.toContain('"issues"');
     expect(JSON.parse(degradedStatus.stdout)).toMatchObject({
       unavailable: [
@@ -513,6 +513,28 @@ describe("canvas real-wire adapter contract", () => {
 
     expect(assetKeys.size).toBe(1);
     expect(componentKeys.size).toBe(1);
+  });
+
+  it("reports the actual value at a nested remote validation path", () => {
+    expect(() =>
+      projectRemoteEntity(
+        "component",
+        {
+          id: "component-invalid-interface",
+          projectId: PROJECT_ID,
+          kind: "component",
+          reviewVersion: null,
+          reviewStatus: null,
+          humanEdited: null,
+          fields: {
+            name: "Invalid interface component",
+            interfaces: [""],
+          },
+        },
+        { projectId: PROJECT_ID, projectVersionId: VERSION_ID },
+        derivedResolver,
+      ),
+    ).toThrow(/component\.interfaces\.0\.name rejected value ""/u);
   });
 
   it("pins and adversarially exercises the field reads emitted by production projection", async () => {

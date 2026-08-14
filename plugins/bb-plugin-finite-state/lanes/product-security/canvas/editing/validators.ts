@@ -11,6 +11,7 @@ import { planItemId } from "../../../sync/plan/order.js";
 import type { PlanItem, ValidationError } from "../../../sync/plan/index.js";
 import {
   CANVAS_ENTITY_KINDS,
+  assetTypeSchema,
   componentTypeSchema,
   entityReferences,
   parseArchitectureEntity,
@@ -98,6 +99,17 @@ export class UnsupportedComponentTypeValidationAdvisory extends CanvasEntityVali
   }
 }
 
+export class UnsupportedAssetTypeValidationAdvisory extends CanvasEntityValidationError {
+  constructor(readonly value: string) {
+    super(
+      "UNSUPPORTED_ASSET_TYPE",
+      `asset_type “${value}” is not recognized by the current canvas vocabulary. Choose one of: ${assetTypeSchema.options.join(", ")}.`,
+      "asset_type",
+    );
+    this.name = "UnsupportedAssetTypeValidationAdvisory";
+  }
+}
+
 function inspectAuthoredValue(value: unknown, path: string): void {
   if (typeof value === "string" && UUID.test(value)) {
     throw new CanvasEntityValidationError(
@@ -147,6 +159,13 @@ export function validateArchitecturePayload(
     ) {
       throw new UnsupportedComponentTypeValidationAdvisory(componentType);
     }
+  }
+  if (
+    kind === "asset" &&
+    typeof payload["asset_type"] === "string" &&
+    !assetTypeSchema.safeParse(payload["asset_type"]).success
+  ) {
+    throw new UnsupportedAssetTypeValidationAdvisory(payload["asset_type"]);
   }
   if (
     kind === "threat" &&

@@ -298,7 +298,11 @@ async function run(
       statusResult.unavailable.length === 0
         ? statusResult.report
         : { ...statusResult.report, unavailable: statusResult.unavailable };
-    return { exitCode: 0, stdout: output(report, input.json), stderr: "" };
+    return {
+      exitCode: statusResult.unavailable.length === 0 ? 0 : 1,
+      stdout: output(report, input.json),
+      stderr: "",
+    };
   }
   const report = await computePlan(cliDeps, scope, kinds, binding);
   return {

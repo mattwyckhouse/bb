@@ -104,27 +104,17 @@ function sortStatus(report: StatusReport): void {
 
 function unavailableStatus(
   kind: EntityKind,
-  error: unknown,
+  error: RemoteError | z.ZodError,
 ): StatusKindUnavailable {
   if (error instanceof RemoteError) {
     return { kind, code: error.code, message: error.message };
   }
-  if (error instanceof z.ZodError) {
-    const issue = error.issues[0];
-    const field = issue?.path.map(String).join(".") || "payload";
-    return {
-      kind,
-      code: "REMOTE_VALIDATION_FAILED",
-      message: `${kind}.${field} failed remote validation: ${issue?.message ?? "invalid remote data"}`,
-    };
-  }
+  const issue = error.issues[0];
+  const field = issue?.path.map(String).join(".") || "payload";
   return {
     kind,
-    code: "STATUS_KIND_UNAVAILABLE",
-    message:
-      error instanceof Error
-        ? error.message
-        : `${kind} status failed with an unrecognized error`,
+    code: "REMOTE_VALIDATION_FAILED",
+    message: `${kind}.${field} failed remote validation: ${issue?.message ?? "invalid remote data"}`,
   };
 }
 
@@ -397,6 +387,9 @@ export async function statusPerKind(
         ),
       );
     } catch (error: unknown) {
+      if (!(error instanceof RemoteError) && !(error instanceof z.ZodError)) {
+        throw error;
+      }
       unavailable.push(unavailableStatus(adapter.kind, error));
     }
   }

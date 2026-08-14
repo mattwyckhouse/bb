@@ -688,41 +688,32 @@ function canonicalRemotePayload(
   kind: CanvasEntityKind,
   payload: Record<string, unknown>,
 ): Record<string, unknown> {
+  const candidate = { kind, ...payload };
   try {
     switch (kind) {
       case "component": {
-        const { kind: _kind, ...fields } = remoteComponentEntitySchema.parse({
-          kind,
-          ...payload,
-        });
+        const { kind: _kind, ...fields } =
+          remoteComponentEntitySchema.parse(candidate);
         return fields;
       }
       case "zone": {
-        const { kind: _kind, ...fields } = remoteZoneEntitySchema.parse({
-          kind,
-          ...payload,
-        });
+        const { kind: _kind, ...fields } =
+          remoteZoneEntitySchema.parse(candidate);
         return fields;
       }
       case "asset": {
-        const { kind: _kind, ...fields } = remoteAssetEntitySchema.parse({
-          kind,
-          ...payload,
-        });
+        const { kind: _kind, ...fields } =
+          remoteAssetEntitySchema.parse(candidate);
         return fields;
       }
       case "dataflow": {
-        const { kind: _kind, ...fields } = dataflowEntitySchema.parse({
-          kind,
-          ...payload,
-        });
+        const { kind: _kind, ...fields } =
+          dataflowEntitySchema.parse(candidate);
         return fields;
       }
       case "threat": {
-        const { kind: _kind, ...fields } = remoteThreatEntitySchema.parse({
-          kind,
-          ...payload,
-        });
+        const { kind: _kind, ...fields } =
+          remoteThreatEntitySchema.parse(candidate);
         return fields;
       }
     }
@@ -730,7 +721,18 @@ function canonicalRemotePayload(
     if (!(error instanceof z.ZodError)) throw error;
     const issue = error.issues[0];
     const field = issue?.path.map(String).join(".") || "payload";
-    const value = payload[field];
+    let value: unknown = candidate;
+    for (const segment of issue?.path ?? []) {
+      if (typeof value !== "object" || value === null) {
+        value = undefined;
+        break;
+      }
+      if (!Object.hasOwn(value, segment)) {
+        value = undefined;
+        break;
+      }
+      value = Reflect.get(value, segment);
+    }
     const rendered = JSON.stringify(value) ?? String(value);
     throw new RemoteError(
       `Assurance Studio ${kind}.${field} rejected value ${rendered.slice(0, 200)}: ${issue?.message ?? "invalid remote data"}`,

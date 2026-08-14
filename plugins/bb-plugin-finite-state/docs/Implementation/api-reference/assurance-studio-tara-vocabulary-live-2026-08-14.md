@@ -8,6 +8,10 @@ Studio tenant. The connected I4700A corpus returned these wire values:
 - `component_type`: the vendored OpenAPI `ComponentType` values plus
   `external_service`
 
+The observed eight-value `asset_type` set is a compatibility floor, not a
+closed tenant-wide ceiling. Other projects or tenants may return additional
+non-empty values.
+
 The May 2026 vendored OpenAPI describes `LinkedAsset.asset_type` as an open
 string and does not include `external_service` in `ComponentType`. Remote
 projection therefore accepts any non-empty bounded string for these two
