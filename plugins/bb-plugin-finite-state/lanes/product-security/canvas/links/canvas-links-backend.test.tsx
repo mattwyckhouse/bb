@@ -267,8 +267,8 @@ describe("WP-34 production link RPC boundary", () => {
       includePreview: false,
     });
     expect(captured.requirements).toHaveBeenCalledWith({
-      projectId: PROJECT_ID,
-      projectVersionId: VERSION_ID,
+      projectId: WORKSPACE_PROJECT_ID,
+      projectVersionId: null,
       pageSize: 200,
       continuation: null,
       filters: { view: "traceability", threat: SOURCE_SLUG },

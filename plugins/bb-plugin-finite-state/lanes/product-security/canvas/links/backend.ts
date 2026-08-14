@@ -457,8 +457,8 @@ export function registerCanvasLinksBackend(
       const family = await resolveCrossSurfaceLinkFamily(
         emptyResolverInput(input.sourceSlug, {
           requirement: requirementSurface(bb, {
-            projectId: input.platformProjectId ?? input.workspaceProjectId,
-            projectVersionId: input.projectVersionId,
+            projectId: input.workspaceProjectId,
+            projectVersionId: null,
           }),
         }),
         "requirement",
