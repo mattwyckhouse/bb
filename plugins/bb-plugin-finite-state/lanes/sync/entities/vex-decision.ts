@@ -5,6 +5,14 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import type { Json, PlatformClient } from "../../../lib/remote/types.js";
 import { ENTITIES } from "../../../lib/sync/registry.js";
 import { stripVexProvenance } from "../../findings/bulk/readback.js";
+import {
+  canonicalFindingStableKey,
+  canonicalizeFindingIdentity,
+  legacyFindingStableKey,
+  selectFindingCve,
+  type CanonicalFindingIdentity,
+  type FindingIdentityInput,
+} from "../../findings/stable-key/canonical.js";
 import { createSerializer } from "../serialize/serializer.js";
 import { SerializeError } from "../serialize/yaml.js";
 import type {
@@ -92,16 +100,17 @@ function vexPayload(row: Readonly<Record<string, Json>>): Record<string, unknown
   return Object.values(tuple).every((value) => value === null) ? null : tuple;
 }
 
-function findingIdentity(row: Readonly<Record<string, Json>>) {
+function legacyVexIdentity(row: Readonly<Record<string, Json>>): FindingIdentityInput | null {
   const component = nestedComponent(row);
   const componentId = optionalString(row, "componentId")
     ?? (component === null ? null : optionalString(component, "id"));
-  if (componentId === null) throw new TypeError("Platform finding is missing component identity id");
+  const cve = optionalString(row, "cve");
+  if (componentId === null || cve === null) return null;
   const purl = optionalString(row, "componentPurl");
   const parsed = purlIdentity(purl);
   const fallback = optionalString(row, "componentFallbackIdentity") ?? componentId;
   return {
-    cve: requiredString(row, "cve"),
+    cve,
     purl,
     name: parsed?.name ?? fallback,
     group: parsed?.group ?? null,
@@ -109,9 +118,60 @@ function findingIdentity(row: Readonly<Record<string, Json>>) {
   };
 }
 
+function legacyCacheIdentity(row: Readonly<Record<string, Json>>): FindingIdentityInput | null {
+  const component = nestedComponent(row);
+  const name = optionalString(row, "componentName")
+    ?? (component === null ? null : optionalString(component, "name"));
+  const cve = optionalString(row, "cve")
+    ?? optionalString(row, "findingIdentifier")
+    ?? optionalString(row, "vulnerabilityId");
+  if (name === null || cve === null) return null;
+  return {
+    cve,
+    purl: optionalString(row, "componentPurl") ?? optionalString(row, "purl"),
+    name,
+    group: optionalString(row, "componentGroup")
+      ?? (component === null ? null : optionalString(component, "group")),
+    version: optionalString(row, "componentVersion")
+      ?? (component === null ? null : optionalString(component, "version")),
+  };
+}
+
+function findingIdentity(row: Readonly<Record<string, Json>>): CanonicalFindingIdentity {
+  const component = nestedComponent(row);
+  const cve = selectFindingCve({
+    cve: optionalString(row, "cve"),
+    findingIdentifier: optionalString(row, "findingIdentifier"),
+    findingId: optionalString(row, "findingId"),
+    vulnerabilityId: optionalString(row, "vulnerabilityId"),
+  });
+  if (cve === null) throw new TypeError("Platform finding is missing CVE identity");
+  const purl = optionalString(row, "componentPurl") ?? optionalString(row, "purl");
+  const parsed = purlIdentity(purl);
+  const componentId = optionalString(row, "componentId")
+    ?? (component === null ? null : optionalString(component, "id"));
+  const name = parsed?.name
+    ?? optionalString(row, "componentName")
+    ?? (component === null ? null : optionalString(component, "name"))
+    ?? optionalString(row, "componentFallbackIdentity")
+    ?? componentId;
+  if (name === null) throw new TypeError("Platform finding is missing component identity");
+  return canonicalizeFindingIdentity({
+    cve,
+    purl,
+    name,
+    group: parsed?.group
+      ?? optionalString(row, "componentGroup")
+      ?? (component === null ? null : optionalString(component, "group")),
+    version: parsed?.version
+      ?? optionalString(row, "componentVersion")
+      ?? (component === null ? null : optionalString(component, "version")),
+  });
+}
+
 /** Computes the frozen exact canonical key for any normalized Platform finding. */
 export function projectVexDecisionKey(row: Readonly<Record<string, Json>>): string {
-  return ENTITIES.vexDecision.key(findingIdentity(row));
+  return canonicalFindingStableKey(findingIdentity(row));
 }
 
 /** Projects one normalized Platform finding into the frozen VEX overlay shape. */
@@ -338,6 +398,120 @@ async function atomicWrite(file: string, contents: string): Promise<void> {
   }
 }
 
+export interface VexKeyMigration {
+  key: string;
+  identity: CanonicalFindingIdentity;
+}
+
+function rememberMigration(
+  migrations: Map<string, VexKeyMigration>,
+  legacyIdentity: FindingIdentityInput | null,
+  canonical: CanonicalFindingIdentity,
+): void {
+  if (legacyIdentity === null) return;
+  const legacyKey = legacyFindingStableKey(legacyIdentity);
+  const canonicalKey = canonicalFindingStableKey(canonical);
+  if (legacyKey === null || legacyKey === canonicalKey) return;
+  const prior = migrations.get(legacyKey);
+  if (prior !== undefined && prior.key !== canonicalKey) {
+    throw new TypeError(`Legacy VEX key maps to multiple canonical identities`);
+  }
+  migrations.set(legacyKey, { key: canonicalKey, identity: canonical });
+}
+
+function writeCanonicalComponent(
+  target: Record<string, unknown>,
+  identity: CanonicalFindingIdentity,
+): void {
+  target["purl"] = identity.purl;
+  target["name"] = identity.name;
+  target["group"] = identity.group;
+  target["version"] = identity.version;
+}
+
+/** Applies the FS-173 declared old-to-new map while retaining decision tuples and provenance. */
+export async function migrateVexWorkingKeys(
+  worktreeRoot: string,
+  scope: SyncScope,
+  migrations: ReadonlyMap<string, VexKeyMigration>,
+): Promise<number> {
+  if (migrations.size === 0) return 0;
+  const root = resolve(worktreeRoot);
+  const serializer = createSerializer("vexDecision");
+  let migrated = 0;
+  for (const absoluteFile of await yamlFiles(join(root, ".fs", "triage"), scope.projectId)) {
+    const file = normalizedFile(root, absoluteFile);
+    let document: Record<string, unknown>;
+    try {
+      document = serializer.fromYaml(await readFile(absoluteFile, "utf8"), file);
+    } catch (error: unknown) {
+      if (error instanceof SerializeError) continue;
+      throw error;
+    }
+    if (document["project"] !== scope.projectId) continue;
+    let changed = false;
+    if (isRecord(document["component"]) && isRecord(document["decisions"])) {
+      let component: ReturnType<typeof componentIdentity>;
+      try {
+        component = componentIdentity(document["component"], file);
+      } catch (error: unknown) {
+        if (error instanceof SerializeError) continue;
+        throw error;
+      }
+      let targetComponent: CanonicalFindingIdentity | null = null;
+      const replacements: Array<{ from: string; to: string; value: unknown }> = [];
+      for (const [cve, value] of Object.entries(document["decisions"])) {
+        const oldKey = legacyFindingStableKey({ cve, ...component });
+        const migration = oldKey === null ? undefined : migrations.get(oldKey);
+        if (migration === undefined) continue;
+        if (
+          targetComponent !== null
+          && (targetComponent.purl !== migration.identity.purl
+            || targetComponent.name !== migration.identity.name
+            || targetComponent.group !== migration.identity.group
+            || targetComponent.version !== migration.identity.version)
+        ) {
+          throw new SerializeError(file, 1, "one aggregate triage file maps to multiple canonical components");
+        }
+        targetComponent = migration.identity;
+        replacements.push({ from: cve, to: migration.identity.cve, value });
+      }
+      if (targetComponent !== null) {
+        for (const replacement of replacements) {
+          if (replacement.from !== replacement.to && document["decisions"][replacement.to] !== undefined) {
+            throw new SerializeError(file, 1, `canonical CVE ${replacement.to} is already authored`);
+          }
+        }
+        for (const replacement of replacements) {
+          if (replacement.from !== replacement.to) delete document["decisions"][replacement.from];
+          document["decisions"][replacement.to] = replacement.value;
+          migrated += 1;
+        }
+        writeCanonicalComponent(document["component"], targetComponent);
+        changed = true;
+      }
+    } else if (typeof document["cve"] === "string") {
+      let component: ReturnType<typeof componentIdentity>;
+      try {
+        component = componentIdentity(document, file);
+      } catch (error: unknown) {
+        if (error instanceof SerializeError) continue;
+        throw error;
+      }
+      const oldKey = legacyFindingStableKey({ cve: document["cve"], ...component });
+      const migration = oldKey === null ? undefined : migrations.get(oldKey);
+      if (migration !== undefined) {
+        document["cve"] = migration.identity.cve;
+        writeCanonicalComponent(document, migration.identity);
+        migrated += 1;
+        changed = true;
+      }
+    }
+    if (changed) await atomicWrite(absoluteFile, emitYaml(document));
+  }
+  return migrated;
+}
+
 /**
  * Rewrites only `sync.base` for git-clean VEX artifacts after the accepted
  * generation publishes. Authored tuple/provenance/pin fields are preserved.
@@ -381,7 +555,8 @@ export async function fastForwardVexWorking(
 }
 
 /** Creates the VEX adapter while closing over only its owning Platform client. */
-export function createVexDecisionAdapter(client: PlatformClient): EntityAdapter {
+export function createVexDecisionAdapter(client: Pick<PlatformClient, "getFindings">): EntityAdapter {
+  const migrationsByScope = new Map<string, Map<string, VexKeyMigration>>();
   return {
     kind: "vexDecision",
     klass: "OVERLAY",
@@ -391,6 +566,9 @@ export function createVexDecisionAdapter(client: PlatformClient): EntityAdapter 
         throw new TypeError("vexDecision requires a project version");
       }
       let pageNumber = 0;
+      const scopeKey = `${scope.projectId}\0${scope.projectVersionId}`;
+      const migrations = new Map<string, VexKeyMigration>();
+      migrationsByScope.set(scopeKey, migrations);
       const pages = client.getFindings({
         projectVersionId: scope.projectVersionId,
         page: { pageSize: PAGE_SIZE },
@@ -402,11 +580,20 @@ export function createVexDecisionAdapter(client: PlatformClient): EntityAdapter 
           of: page.total === null ? null : Math.ceil(page.total / PAGE_SIZE),
         });
         yield page.items.flatMap((row) => {
+          const canonical = findingIdentity(row);
+          rememberMigration(migrations, legacyVexIdentity(row), canonical);
+          rememberMigration(migrations, legacyCacheIdentity(row), canonical);
           const projected = projectVexDecision(row);
           return projected === null ? [] : [projected];
         });
       }
     },
     readWorking: readVexWorking,
+    async migrateWorkingKeys(worktreeRoot, scope) {
+      const scopeKey = `${scope.projectId}\0${scope.projectVersionId}`;
+      const migrations = migrationsByScope.get(scopeKey);
+      migrationsByScope.delete(scopeKey);
+      if (migrations !== undefined) await migrateVexWorkingKeys(worktreeRoot, scope, migrations);
+    },
   };
 }

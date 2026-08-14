@@ -1,4 +1,3 @@
-import { findingStableKey } from "../../../lib/sync/registry.js";
 import type { Json, RemotePage } from "../../../lib/remote/types.js";
 import type { SyncScope } from "../../sync/engine/adapter.js";
 import {
@@ -7,6 +6,11 @@ import {
   type PullFindingsResult,
   type PullProgress,
 } from "./types.js";
+import {
+  canonicalFindingStableKey,
+  canonicalizeFindingIdentity,
+  selectFindingCve,
+} from "../stable-key/canonical.js";
 
 const ENTITY_KIND = "finding";
 const DEFAULT_PAGE_SIZE = 200;
@@ -166,7 +170,13 @@ export function normalizeFinding(
   const row = record(value);
   if (!row) throw new FindingsCacheError("FINDING_INVALID_ROW", "Finding row must be an object");
   const findingId = requiredString(row, ["id", "findingId", "uuid"], "id");
-  const cve = requiredString(row, ["cve", "findingIdentifier", "vulnerabilityId"], `${findingId} CVE`);
+  const cve = selectFindingCve({
+    cve: stringValue(row, ["cve"]),
+    findingIdentifier: stringValue(row, ["findingIdentifier"]),
+    findingId: stringValue(row, ["findingId"]),
+    vulnerabilityId: stringValue(row, ["vulnerabilityId"]),
+  });
+  if (cve === null) throw new FindingsCacheError("FINDING_INVALID_ROW", `Finding ${findingId} CVE is missing`);
   const component = record(row["component"] ?? null);
   const componentId = stringValue(row, ["componentId", "componentUuid"])
     ?? (component ? stringValue(component, ["id"]) : null);
@@ -198,11 +208,16 @@ export function normalizeFinding(
     );
   }
   let stableKey: string;
+  let canonicalIdentity;
   try {
-    stableKey = findingStableKey(
-      { cve, purl: componentPurl, name: componentName, group: componentGroup, version: componentVersion },
-      componentPurl ? "purl" : "name-group-version",
-    );
+    canonicalIdentity = canonicalizeFindingIdentity({
+      cve,
+      purl: componentPurl,
+      name: componentName,
+      group: componentGroup,
+      version: componentVersion,
+    });
+    stableKey = canonicalFindingStableKey(canonicalIdentity);
   } catch {
     throw new FindingsCacheError("FINDING_STABLE_KEY_INVALID", `Finding ${findingId} has invalid canonical identity`);
   }
@@ -213,9 +228,9 @@ export function normalizeFinding(
     findingType: stringValue(row, ["findingType", "type"]),
     cve,
     title: stringValue(row, ["title", "name"]),
-    componentName,
-    componentGroup,
-    componentVersion,
+    componentName: canonicalIdentity.name,
+    componentGroup: canonicalIdentity.group,
+    componentVersion: canonicalIdentity.version,
     componentPurl,
     severity: stringValue(row, ["severity"]),
     riskScore: numberValue(row, ["riskScore", "risk"]),

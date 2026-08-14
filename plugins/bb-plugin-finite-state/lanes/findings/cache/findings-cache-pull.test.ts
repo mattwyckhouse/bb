@@ -25,6 +25,47 @@ function pages<T>(values: RemotePage<T>[]): AsyncIterable<RemotePage<T>> {
 }
 
 describe("findings cache pull", () => {
+  it("normalizes the captured distro and CVE/UUID specimens without losing wire identity", () => {
+    const fixture = (name: string) => JSON.parse(readFileSync(
+      new URL(`../../../test/mock-remote/fixtures/platform/${name}`, import.meta.url),
+      "utf8",
+    )) as Record<string, Json>;
+    const distroWire = fixture("fs174-i491nax-distro-specimen.json");
+    const distro = normalizeFinding(distroWire, new Map());
+    expect(distro).toMatchObject({
+      findingId: "0b529d2b-9da8-556e-81e4-f0f57a59956a",
+      cve: "CVE-2016-4658",
+      componentGroup: "debian",
+      componentName: "libxml2",
+      componentVersion: "2.9.4+dfsg1-2.2+deb9u2",
+    });
+    expect(JSON.parse(distro.raw)).toEqual(distroWire);
+    expect(parseFindingStableKey(distro.stableKey)).toMatchObject({
+      cve: "CVE-2016-4658",
+      component: { group: "debian", name: "libxml2", version: "2.9.4+dfsg1-2.2+deb9u2" },
+    });
+
+    const cveWire = fixture("fs174-cve-uuid-mapping-specimen.json");
+    const cve = normalizeFinding(cveWire, new Map());
+    expect(cve.cve).toBe("CVE-2026-34877");
+    expect(parseFindingStableKey(cve.stableKey).cve).toBe("CVE-2026-34877");
+    expect(cve.stableKey).not.toBe(findingStableKey({
+      cve: "cbdc8dc1-66ad-5264-b81b-67b2eaf1257e",
+      purl: null,
+      name: "Mbed TLS",
+      group: null,
+      version: "3.0.0",
+    }, "name-group-version"));
+  });
+
+  it("rejects malformed version escaping instead of creating ambiguous identity", () => {
+    expect(() => normalizeFinding({
+      id: "finding-bad-version",
+      findingId: "CVE-2026-12345",
+      component: { name: "debian/package", version: "1.0%2" },
+    }, new Map())).toThrow("invalid canonical identity");
+  });
+
   it("keeps stable keys byte-identical for equivalent flat and nested component identities", () => {
     const identities = new Map([
       ["component-1", {
@@ -228,7 +269,10 @@ describe("findings cache pull", () => {
     await expect(pull(deps, scope, ["finding"])).rejects.toThrow("connection reset");
     expect(queryFindings(db, { projectId: scope.projectId, pvId }).items).toEqual([]);
 
-    await expect(pull(deps, scope, ["finding"])).resolves.toMatchObject({ generationId: "generation-1" });
+    await expect(pull(deps, scope, ["finding"])).resolves.toMatchObject({
+      generationId: "generation-1",
+      kinds: { finding: { fetched: 2, baseRows: 2 } },
+    });
     const result = queryFindings(db, { projectId: scope.projectId, pvId });
     expect(result.items).toHaveLength(2);
     expect(result.items.map(item => item.stableKey)).toEqual([

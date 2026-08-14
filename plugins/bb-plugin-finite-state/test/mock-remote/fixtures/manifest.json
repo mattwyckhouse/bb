@@ -38,6 +38,18 @@
       "description": "Bulk VEX succeeds for three rows and fails independently for two.",
       "refs": ["platform/vex-bulk-partial.json"]
     },
+    "real-cve-uuid-field-mapping": {
+      "description": "Captured Platform response carries the CVE in findingId and an opaque UUID in vulnerabilityId.",
+      "refs": [
+        "platform/fs174-cve-uuid-mapping-specimen.json"
+      ]
+    },
+    "real-distro-finding-identity": {
+      "description": "Captured Platform response preserves a namespaced package name and percent-encoded Debian version.",
+      "refs": [
+        "platform/fs174-i491nax-distro-specimen.json"
+      ]
+    },
     "requirement-without-verification": {
       "description": "One requirement intentionally has no verification check.",
       "refs": [
@@ -129,9 +141,9 @@
       "sha256": "f39fa98949f3fc92ae2411e7836507dfd531d8f8df48137f9d165fd43c6763dd"
     },
     {
-      "bytes": 3156,
+      "bytes": 3621,
       "path": "cases.json",
-      "sha256": "eb55d27d752806df79687bc3b38399b3548150a5a89356b43fe80ded06ec9536"
+      "sha256": "61cfeece434dce20bebd37cfc9068ca6406faf554aee4dea748f3b9061baaaa8"
     },
     {
       "bytes": 3847,
@@ -259,6 +271,16 @@
       "path": "platform/findings.jsonl",
       "rows": 4001,
       "sha256": "d3881d1faf4b58412fd3d7245a55c88010bf64c0f6a6c4900abfeb1ce81d9dda"
+    },
+    {
+      "bytes": 1296,
+      "path": "platform/fs174-cve-uuid-mapping-specimen.json",
+      "sha256": "e760b8b49727ecf16f92e5fb437497e151fca82a943b3b552f1045d2a5ce6f38"
+    },
+    {
+      "bytes": 1348,
+      "path": "platform/fs174-i491nax-distro-specimen.json",
+      "sha256": "b8e47940f7f660ae8bc0c1c5fd7dd8a916f2c5550682946e335fc6c9b0ec46c6"
     },
     {
       "bytes": 697,

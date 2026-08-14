@@ -49,6 +49,18 @@
       "platform/vex-bulk-partial.json"
     ]
   },
+  "real-cve-uuid-field-mapping": {
+    "description": "Captured Platform response carries the CVE in findingId and an opaque UUID in vulnerabilityId.",
+    "refs": [
+      "platform/fs174-cve-uuid-mapping-specimen.json"
+    ]
+  },
+  "real-distro-finding-identity": {
+    "description": "Captured Platform response preserves a namespaced package name and percent-encoded Debian version.",
+    "refs": [
+      "platform/fs174-i491nax-distro-specimen.json"
+    ]
+  },
   "requirement-without-verification": {
     "description": "One requirement intentionally has no verification check.",
     "refs": [

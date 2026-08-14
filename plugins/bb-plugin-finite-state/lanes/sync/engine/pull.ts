@@ -770,7 +770,22 @@ export async function pull(
           phase: "fetch",
         });
       });
-      reportKinds[cache.kind] = { fetched: 0, baseRows: 0 };
+      const staged = deps.db.prepare(
+        `SELECT staged_rows
+           FROM sync_state
+          WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?
+            AND staging_generation_id = ?`,
+      ).get(scope.projectId, storageVersionId, cache.kind, generationId);
+      if (!isRecord(staged) || typeof staged["staged_rows"] !== "number") {
+        throw new Error(`Could not count staged ${cache.kind} rows`);
+      }
+      // Cache pullers resume from their continuation, so a successful call may
+      // fetch zero new pages while publishing rows staged by the prior call.
+      // The frozen report fields therefore describe the complete generation.
+      reportKinds[cache.kind] = {
+        fetched: staged["staged_rows"],
+        baseRows: staged["staged_rows"],
+      };
       deps.publish?.("fs-sync-pull", {
         scope,
         generationId,
@@ -786,6 +801,12 @@ export async function pull(
     }
   }
   if (failures.length > 0) throw new PullFailedError(generationId, failures);
+
+  if (deps.worktreeRoot !== null && deps.worktreeRoot !== undefined) {
+    for (const adapter of adapters) {
+      await adapter.migrateWorkingKeys?.(deps.worktreeRoot, scope);
+    }
+  }
 
   const working = await workingState(deps, scope, adapters);
   const acceptedAt = publishGeneration(

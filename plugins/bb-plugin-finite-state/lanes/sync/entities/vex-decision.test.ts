@@ -15,6 +15,7 @@ import type { EntityAdapter } from "../engine/adapter.js";
 import { createSerializer } from "../serialize/serializer.js";
 import { SerializeError } from "../serialize/yaml.js";
 import {
+  createVexDecisionAdapter,
   fastForwardVexWorking,
   projectVexDecision,
   readVexWorking,
@@ -51,9 +52,9 @@ describe("vexDecision adapter", () => {
       key: ENTITIES.vexDecision.key({
         cve: "CVE-2020-10000",
         purl: null,
-        name: "component-0001",
+        name: "eagle-component-001",
         group: null,
-        version: null,
+        version: "1.0.0",
       }),
       remoteId: "8000000000000000000",
       payload: {
@@ -72,7 +73,7 @@ describe("vexDecision adapter", () => {
       component: null,
       componentId: String(component["id"]),
     });
-    expect(projected?.key).toBe(flat?.key);
+    expect(projected?.key).not.toBe(flat?.key);
   });
 
   it("parses aggregate .fs/triage YAML into one working entity per decision", async () => {
@@ -208,8 +209,8 @@ reason: null
 project: project
 component:
   purl: null
-  name: component-0001
-  version: null
+  name: eagle-component-001
+  version: 1.0.0
 decisions:
   CVE-2020-10000:
     status: NOT_AFFECTED
@@ -261,5 +262,67 @@ decisions:
       conflicts: [],
       orphans: [],
     });
+  });
+
+  it("migrates a UUID-keyed triage row through pull and keeps the new key stable", async () => {
+    const specimen = JSON.parse(await readFile(
+      resolve(import.meta.dirname, "../../../test/mock-remote/fixtures/platform/fs174-cve-uuid-mapping-specimen.json"),
+      "utf8",
+    )) as Record<string, Json>;
+    const root = await worktree();
+    const projectId = "5d78bed3-fa8e-59cf-b8a1-6046853ba785";
+    const directory = join(root, ".fs", "triage", projectId);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "broken.yaml"), "decisions:\n  CVE-1: [unterminated\n", "utf8");
+    const file = join(directory, "mbed-tls.yaml");
+    await writeFile(file, `schema: fs-triage/v1
+project: ${projectId}
+component:
+  purl: null
+  name: Mbed TLS
+  group: null
+  version: 3.0.0
+decisions:
+  cbdc8dc1-66ad-5264-b81b-67b2eaf1257e:
+    status: NOT_AFFECTED
+    justification: CODE_NOT_PRESENT
+    response: null
+    reason: reviewed evidence
+`, "utf8");
+    const client = {
+      getFindings() {
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { items: [specimen], total: 1, next: null };
+          },
+        };
+      },
+    };
+    const host = createFakePluginHost({ pluginId: "finite-state-vex-key-migration" });
+    hosts.push(host);
+    let generation = 0;
+    const deps = {
+      db: createPluginContext(host.bb).db(),
+      adapters: [createVexDecisionAdapter(client)],
+      worktreeRoot: root,
+      createGenerationId: () => `migration-${++generation}`,
+      now: () => new Date("2026-08-13T23:00:00.000Z"),
+    };
+    const scope = {
+      projectId,
+      projectVersionId: "89ad8a41-2185-5df0-968b-c250312c908b",
+    };
+    await pull(deps, scope, ["vexDecision"]);
+    const migrated = await readFile(file, "utf8");
+    expect(migrated).toContain("CVE-2026-34877:");
+    expect(migrated).not.toContain("cbdc8dc1-66ad-5264-b81b-67b2eaf1257e:");
+    const workingKeys = async () => {
+      const result = await readVexWorking(root, scope).catch((error: unknown) => error);
+      if (!(result instanceof VexWorkingReadError)) throw new Error("expected isolated broken triage peer");
+      return result.partialWorking.map(row => row.key);
+    };
+    const firstKey = (await workingKeys())[0];
+    await pull(deps, scope, ["vexDecision"]);
+    expect((await workingKeys())[0]).toBe(firstKey);
   });
 });

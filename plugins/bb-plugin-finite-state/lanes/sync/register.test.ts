@@ -11,6 +11,7 @@ import { AssuranceStudioClient } from "../../lib/remote/assurance-studio/client.
 import { PlatformClient } from "../../lib/remote/platform/client.js";
 import type { RemoteServices } from "../../lib/remote/types.js";
 import { ENTITIES } from "../../lib/sync/registry.js";
+import { registerFindings } from "../findings/register.js";
 import { createMockRemote, type MockRemoteHarness } from "../../test/mock-remote/server.js";
 import { registerPlatformHandlers } from "../../test/mock-remote/platform/register.js";
 import { createMockPlatformState, type MockPlatformState } from "../../test/mock-remote/platform/state.js";
@@ -137,13 +138,14 @@ function platformScope() {
   return { projectId: project["id"], projectVersionId: finding["projectVersionId"] };
 }
 
-function findingComponentId(finding: Record<string, unknown>): string | null {
+function findingComponentIdentity(finding: Record<string, unknown>): { name: string; version: string } | null {
   const component = finding["component"];
   if (
     component === null || Array.isArray(component) || typeof component !== "object" ||
-    !("id" in component) || typeof component.id !== "string"
+    !("name" in component) || typeof component.name !== "string" ||
+    !("version" in component) || typeof component.version !== "string"
   ) return null;
-  return component.id;
+  return { name: component.name, version: component.version };
 }
 
 describe("sync registration", () => {
@@ -265,27 +267,27 @@ describe("sync registration", () => {
     };
     await pull(deps, scope, ["vexDecision"]);
     const findings = [...state.findings.values()].flatMap((row) => {
-      const componentId = findingComponentId(row);
+      const component = findingComponentIdentity(row);
       return row["projectVersionId"] === scope.projectVersionId
         && typeof row["vexStatus"] === "string"
-        && componentId !== null
-        ? [{ row, componentId }]
+        && component !== null
+        ? [{ row, component }]
         : [];
     }).slice(0, 3);
     if (findings.length !== 3) throw new Error("fixture has fewer than three VEX findings");
     const directory = join(root, ".fs", "triage", scope.projectId);
     await mkdir(directory, { recursive: true });
     for (const [index, finding] of findings.entries()) {
-      const { row, componentId } = finding;
+      const { row, component } = finding;
       const localStatus = index === 0 ? "NOT_AFFECTED" : index === 2 ? "FALSE_POSITIVE" : row["vexStatus"];
       const localReason = index === 0 || index === 2 ? `local edit ${index}` : null;
       await writeFile(join(directory, `${index}.yaml`), `schema: fs-triage/v1
 project: ${JSON.stringify(scope.projectId)}
 component:
   purl: null
-  name: ${JSON.stringify(componentId)}
+  name: ${JSON.stringify(component.name)}
   group: null
-  version: null
+  version: ${JSON.stringify(component.version)}
 decisions:
   ${String(row["cve"])}:
     status: ${JSON.stringify(localStatus)}
@@ -334,6 +336,38 @@ decisions:
     expect(host.harness.realtimeSignals.some((signal) => signal.channel === "fs-sync-pull")).toBe(true);
     expect(host.harness.sdk.callsTo("threads.get")).toHaveLength(2);
     expect(host.harness.sdk.callsTo("environments.get")).toHaveLength(2);
+  });
+
+  it("reports complete published finding counts through the registered CLI on repeat pulls", async () => {
+    registerFindings(host.bb, context);
+    const scope = platformScope();
+    const argv = [
+      "pull",
+      "finding",
+      "--project",
+      scope.projectId,
+      "--version",
+      scope.projectVersionId,
+      "--json",
+    ];
+    const first = await host.harness.behavior.runCli(argv, {
+      cwd: root,
+      threadId: "thread-sync-cli",
+      projectId: "bb-project-sync",
+    });
+    expect(first.exitCode).toBe(0);
+    expect(JSON.parse(first.stdout)).toMatchObject({
+      kinds: { finding: { fetched: 4_000, baseRows: 4_000 } },
+    });
+    const repeated = await host.harness.behavior.runCli(argv, {
+      cwd: root,
+      threadId: "thread-sync-cli",
+      projectId: "bb-project-sync",
+    });
+    expect(repeated.exitCode).toBe(0);
+    expect(JSON.parse(repeated.stdout)).toMatchObject({
+      kinds: { finding: { fetched: 4_000, baseRows: 4_000 } },
+    });
   });
 
   it("delegates the firmware namespace without changing sync verb parsing", async () => {
