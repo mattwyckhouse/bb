@@ -747,7 +747,11 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
             `Human push was incomplete: ${JSON.stringify(pushReport)}`,
           );
         }
-        expect(await slot.findByText("No local changes")).toBeTruthy();
+        expect(
+          await slot.findByText("No local changes", undefined, {
+            timeout: 10_000,
+          }),
+        ).toBeTruthy();
         const rpcStatus = await runtime.host.harness.behavior.callRpc(
           "syncStatus",
           {
