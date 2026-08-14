@@ -372,4 +372,184 @@ describe("vendor VEX staging", () => {
       }),
     ).toEqual({ file: "staging-apply.json", bytes });
   });
+
+  it("refreshes created_at on re-upload so a near-TTL document is not swept (upsert bite)", () => {
+    const host = createFakePluginHost({ pluginId: "vendor-vex-upsert-ttl" });
+    hosts.push(host);
+    const db = createPluginContext(host.bb).db();
+    const digest = "d".repeat(64);
+    const now = new Date("2026-08-14T12:00:00.000Z");
+    const almostStale = new Date(
+      now.getTime() - VENDOR_STAGING_TTL_MS + 60_000,
+    ).toISOString();
+
+    persistVendorDocument(db, {
+      projectId: PROJECT,
+      pvId: PV,
+      file: "supplier.json",
+      bytes: Uint8Array.from([1]),
+      documentSha256: digest,
+    });
+    backdateCreatedAt(db, `vendor-document-${digest}`, almostStale);
+
+    // Re-upload one minute before expiry must renew created_at via upsert.
+    persistVendorDocument(db, {
+      projectId: PROJECT,
+      pvId: PV,
+      file: "supplier.json",
+      bytes: Uint8Array.from([1]),
+      documentSha256: digest,
+    });
+
+    const later = new Date(almostStale);
+    later.setUTCMinutes(later.getUTCMinutes() + 2);
+    expect(
+      pruneStaleVendorStaging(
+        db,
+        new Date(later.getTime() + VENDOR_STAGING_TTL_MS),
+      ),
+    ).toBe(0);
+    expect(
+      readVendorDocument(db, {
+        projectId: PROJECT,
+        pvId: PV,
+        documentSha256: digest,
+      }),
+    ).not.toBeNull();
+  });
+
+  it("keeps a day-6.9 previewed document through apply (preview refreshes TTL)", async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), "fs-vendor-staging-ttl-window-")),
+    );
+    roots.push(root);
+    const host = createFakePluginHost({ pluginId: "vendor-vex-ttl-window" });
+    hosts.push(host);
+    const ctx = createPluginContext(host.bb);
+    const db = ctx.db();
+    db.prepare(
+      `INSERT INTO pull_generation
+         (project_id, project_version_id, generation_id, status, requested_kinds_json,
+          started_at, completed_at, accepted_at, error)
+       VALUES (?, ?, ?, 'accepted', '["finding"]', ?, ?, ?, NULL)`,
+    ).run(PROJECT, PV, GENERATION, AT, AT, AT);
+    db.prepare(
+      `INSERT INTO sync_state
+         (project_id, project_version_id, entity_kind, accepted_generation_id,
+          staging_generation_id, base_revision, staging_continuation, staged_pages,
+          staged_rows, last_pull, error)
+       VALUES (?, ?, 'finding', ?, NULL, 1, NULL, 0, 0, ?, NULL)`,
+    ).run(PROJECT, PV, GENERATION, AT);
+    const key = findingStableKey(
+      {
+        cve: "CVE-TTL-WINDOW",
+        purl: "pkg:generic/acme/ttl-window@1.0.0",
+        name: "ttl-window",
+        group: "acme",
+        version: "1.0.0",
+      },
+      "purl",
+    );
+    db.prepare(
+      `INSERT INTO findings
+         (project_id, project_version_id, generation_id, finding_id, stable_key,
+          cve, component_name, component_group, component_version, component_purl,
+          raw, pulled_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?)`,
+    ).run(
+      PROJECT,
+      PV,
+      GENERATION,
+      "finding-ttl-window",
+      key,
+      "CVE-TTL-WINDOW",
+      "ttl-window",
+      "acme",
+      "1.0.0",
+      "pkg:generic/acme/ttl-window@1.0.0",
+      AT,
+    );
+    registerCachePuller("finding", async () => ({
+      fetched: 0,
+      baseRows: 0,
+      quarantined: 0,
+      advisories: [],
+    }));
+    registerFindingsDrift(ctx);
+    const drift = ctx.service<FindingsDriftService>("findings.drift", () => {
+      throw new Error("Findings drift services are unavailable");
+    });
+
+    const bytes = new TextEncoder().encode(
+      JSON.stringify({
+        bomFormat: "CycloneDX",
+        specVersion: "1.6",
+        serialNumber: "urn:uuid:ttl-window",
+        components: [
+          {
+            "bom-ref": "ttl-ref",
+            purl: "pkg:generic/acme/ttl-window@1.0.0",
+            name: "ttl-window",
+            version: "1.0.0",
+          },
+        ],
+        vulnerabilities: [
+          {
+            id: "CVE-TTL-WINDOW",
+            affects: [{ ref: "ttl-ref" }],
+            analysis: {
+              state: "not_affected",
+              justification: "code_not_reachable",
+              detail: "Supplier evidence",
+            },
+          },
+        ],
+      }),
+    );
+    const staged = drift.stageVendorDocument({
+      projectId: PROJECT,
+      pvId: PV,
+      file: "ttl-window.json",
+      bytes,
+    });
+    const uploadAt = Date.now() - VENDOR_STAGING_TTL_MS + 60 * 60 * 1000; // day 6.9
+    backdateCreatedAt(
+      db,
+      `vendor-document-${staged.documentSha256}`,
+      new Date(uploadAt).toISOString(),
+    );
+    const preview = await drift.previewVendorVex({
+      root,
+      projectId: PROJECT,
+      pvId: PV,
+      documentSha256: staged.documentSha256,
+      vendor: "Acme",
+    });
+    // Preview refreshed the document clock. A sweep taken past the original
+    // upload TTL must not remove the still-referenced blob.
+    expect(
+      pruneStaleVendorStaging(
+        db,
+        new Date(uploadAt + VENDOR_STAGING_TTL_MS + 60_000),
+      ),
+    ).toBe(0);
+    expect(
+      readVendorDocument(db, {
+        projectId: PROJECT,
+        pvId: PV,
+        documentSha256: staged.documentSha256,
+      }),
+    ).not.toBeNull();
+
+    const applied = await drift.applyVendorVex({
+      root,
+      projectId: PROJECT,
+      pvId: PV,
+      importId: preview.importId,
+      expectedDocumentSha256: staged.documentSha256,
+      overwrite: false,
+    });
+    expect(applied.written).toBe(1);
+    expect(applied.errors).toEqual([]);
+  });
 });
