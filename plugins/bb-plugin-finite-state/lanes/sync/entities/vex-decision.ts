@@ -10,7 +10,9 @@ import {
 import { basename, join, relative, resolve, sep } from "node:path";
 
 import type { Json, PlatformClient } from "../../../lib/remote/types.js";
+import type Database from "better-sqlite3";
 import { stripVexProvenance } from "../../findings/bulk/readback.js";
+import { loadPersistedComponentIdentities } from "../../findings/cache/pull.js";
 import {
   canonicalFindingStableKey,
   canonicalizeFindingIdentity,
@@ -19,7 +21,12 @@ import {
   type CanonicalFindingIdentity,
   type FindingIdentityInput,
 } from "../../findings/stable-key/canonical.js";
-import { currentFindingIdentity } from "../../findings/stable-key/wire-identity.js";
+import {
+  currentFindingIdentity,
+  legacyCacheFindingIdentity,
+  loadComponentIdentities,
+  type ComponentIdentity,
+} from "../../findings/stable-key/wire-identity.js";
 import { createSerializer } from "../serialize/serializer.js";
 import { SerializeError } from "../serialize/yaml.js";
 import type {
@@ -145,8 +152,9 @@ function legacyVexIdentity(
 
 function findingIdentity(
   row: Readonly<Record<string, Json>>,
+  identities: ReadonlyMap<string, ComponentIdentity>,
 ): CanonicalFindingIdentity {
-  const identity = currentFindingIdentity(row, new Map());
+  const identity = currentFindingIdentity(row, identities);
   if (identity !== null) return canonicalizeFindingIdentity(identity);
   const component = nestedComponent(row);
   const cve = selectFindingCve({
@@ -180,18 +188,20 @@ function findingIdentity(
 /** Computes the frozen exact canonical key for any normalized Platform finding. */
 export function projectVexDecisionKey(
   row: Readonly<Record<string, Json>>,
+  identities: ReadonlyMap<string, ComponentIdentity> = new Map(),
 ): string {
-  return canonicalFindingStableKey(findingIdentity(row));
+  return canonicalFindingStableKey(findingIdentity(row, identities));
 }
 
 /** Projects one normalized Platform finding into the frozen VEX overlay shape. */
 export function projectVexDecision(
   row: Readonly<Record<string, Json>>,
+  identities: ReadonlyMap<string, ComponentIdentity> = new Map(),
 ): ServerEntity | null {
   const payload = vexPayload(row);
   if (payload === null) return null;
   return {
-    key: projectVexDecisionKey(row),
+    key: projectVexDecisionKey(row, identities),
     remoteId: requiredString(row, "id"),
     payload,
   };
@@ -201,8 +211,12 @@ export function projectVexDecision(
  * Creates WP-17's exact-key orphan resolver over the complete finding corpus,
  * including findings that do not currently carry a VEX tuple.
  */
-export function createVexDecisionResolver(client: PlatformClient): KeyResolver {
+export function createVexDecisionResolver(
+  client: PlatformClient,
+  db?: Database.Database,
+): KeyResolver {
   const pending = new Map<string, Promise<ReadonlySet<string>>>();
+  const declaredIdentities = new Map<string, ComponentIdentity>();
   const serverKeys = (
     projectId: string,
     projectVersionId: string,
@@ -212,11 +226,24 @@ export function createVexDecisionResolver(client: PlatformClient): KeyResolver {
     if (current !== undefined) return current;
     const next = (async () => {
       const keys = new Set<string>();
+      if (db !== undefined) {
+        for (const [id, identity] of loadPersistedComponentIdentities(
+          { db, platform: client },
+          { projectId, projectVersionId },
+        )) {
+          if (!declaredIdentities.has(id)) declaredIdentities.set(id, identity);
+        }
+      }
+      const loaded = await loadComponentIdentities(client, PAGE_SIZE);
+      for (const [id, identity] of loaded) {
+        if (!declaredIdentities.has(id)) declaredIdentities.set(id, identity);
+      }
       for await (const page of client.getFindings({
         projectVersionId,
         page: { pageSize: PAGE_SIZE },
       })) {
-        for (const row of page.items) keys.add(projectVexDecisionKey(row));
+        for (const row of page.items)
+          keys.add(projectVexDecisionKey(row, declaredIdentities));
       }
       return keys;
     })();
@@ -683,9 +710,11 @@ export async function fastForwardVexWorking(
 
 /** Creates the VEX adapter while closing over only its owning Platform client. */
 export function createVexDecisionAdapter(
-  client: Pick<PlatformClient, "getFindings">,
+  client: Pick<PlatformClient, "getFindings" | "listComponents">,
+  db?: Database.Database,
 ): EntityAdapter {
   const migrationsByScope = new Map<string, Map<string, VexKeyMigration>>();
+  const declaredIdentities = new Map<string, ComponentIdentity>();
   return {
     kind: "vexDecision",
     klass: "OVERLAY",
@@ -698,6 +727,22 @@ export function createVexDecisionAdapter(
       const scopeKey = `${scope.projectId}\0${scope.projectVersionId}`;
       const migrations = new Map<string, VexKeyMigration>();
       migrationsByScope.set(scopeKey, migrations);
+      // FS-173 declares the findings-cache canonical space as the one target.
+      // Accepted cache evidence and the first observed index identity are
+      // retained, so later portfolio-index absence or drift cannot change it.
+      if (db !== undefined) {
+        for (const [id, identity] of loadPersistedComponentIdentities(
+          { db, platform: client },
+          scope,
+        )) {
+          if (!declaredIdentities.has(id)) declaredIdentities.set(id, identity);
+        }
+      }
+      const loaded = await loadComponentIdentities(client, PAGE_SIZE);
+      for (const [id, identity] of loaded) {
+        if (!declaredIdentities.has(id)) declaredIdentities.set(id, identity);
+      }
+      const identities = declaredIdentities;
       const pages = client.getFindings({
         projectVersionId: scope.projectVersionId,
         page: { pageSize: PAGE_SIZE },
@@ -709,20 +754,30 @@ export function createVexDecisionAdapter(
           of: page.total === null ? null : Math.ceil(page.total / PAGE_SIZE),
         });
         yield page.items.flatMap((row) => {
-          const projected = projectVexDecision(row);
+          const projected = projectVexDecision(row, identities);
           if (projected === null) {
             // Migration is best-effort for undecided rows: they are not VEX
             // entities and therefore must never make this pull key-dependent.
             try {
-              const canonical = findingIdentity(row);
+              const canonical = findingIdentity(row, identities);
               rememberMigration(migrations, legacyVexIdentity(row), canonical);
+              rememberMigration(
+                migrations,
+                legacyCacheFindingIdentity(row, identities),
+                canonical,
+              );
             } catch {
               // Deliberately ignored for a row that cannot produce an entity.
             }
             return [];
           }
-          const canonical = findingIdentity(row);
+          const canonical = findingIdentity(row, identities);
           rememberMigration(migrations, legacyVexIdentity(row), canonical);
+          rememberMigration(
+            migrations,
+            legacyCacheFindingIdentity(row, identities),
+            canonical,
+          );
           return [projected];
         });
       }

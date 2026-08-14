@@ -168,7 +168,13 @@ function platformScope() {
 
 function findingComponentIdentity(
   finding: Record<string, unknown>,
-): { name: string; version: string } | null {
+  state: MockPlatformState,
+): {
+  purl: string | null;
+  name: string;
+  group: string | null;
+  version: string;
+} | null {
   const component = finding["component"];
   if (
     component === null ||
@@ -180,7 +186,18 @@ function findingComponentIdentity(
     typeof component.version !== "string"
   )
     return null;
-  return { name: component.name, version: component.version };
+  const id = "id" in component ? component.id : null;
+  const joined = typeof id === "string" ? state.components.get(id) : undefined;
+  return {
+    purl: typeof joined?.["purl"] === "string" ? joined["purl"] : null,
+    name:
+      typeof joined?.["name"] === "string" ? joined["name"] : component.name,
+    group: typeof joined?.["group"] === "string" ? joined["group"] : null,
+    version:
+      typeof joined?.["version"] === "string"
+        ? joined["version"]
+        : component.version,
+  };
 }
 
 describe("sync registration", () => {
@@ -378,7 +395,7 @@ describe("sync registration", () => {
     await pull(deps, scope, ["vexDecision"]);
     const findings = [...state.findings.values()]
       .flatMap((row) => {
-        const component = findingComponentIdentity(row);
+        const component = findingComponentIdentity(row, state);
         return row["projectVersionId"] === scope.projectVersionId &&
           typeof row["vexStatus"] === "string" &&
           component !== null
@@ -405,9 +422,9 @@ describe("sync registration", () => {
         `schema: fs-triage/v1
 project: ${JSON.stringify(scope.projectId)}
 component:
-  purl: null
+  purl: ${JSON.stringify(component.purl)}
   name: ${JSON.stringify(component.name)}
-  group: null
+  group: ${JSON.stringify(component.group)}
   version: ${JSON.stringify(component.version)}
 decisions:
   ${String(row["cve"])}:

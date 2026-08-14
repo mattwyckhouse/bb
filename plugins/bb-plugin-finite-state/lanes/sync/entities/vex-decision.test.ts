@@ -12,6 +12,7 @@ import {
   canonicalFindingStableKey,
   canonicalizeFindingIdentity,
 } from "../../findings/stable-key/canonical.js";
+import { normalizeFinding, pullFindings } from "../../findings/cache/pull.js";
 import { pull } from "../engine/pull.js";
 import { status } from "../engine/status.js";
 import { computePlan } from "../plan/index.js";
@@ -510,6 +511,13 @@ decisions:
       componentFallbackIdentity: "Mbed TLS",
     };
     const client = {
+      listComponents() {
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { items: [], total: 0, next: null };
+          },
+        };
+      },
       getFindings() {
         return {
           async *[Symbol.asyncIterator]() {
@@ -553,5 +561,145 @@ decisions:
     const firstKey = (await workingKeys())[0];
     await pull(deps, scope, ["vexDecision"]);
     expect((await workingKeys())[0]).toBe(firstKey);
+  });
+
+  it("unifies persisted cache and VEX keys through a declared real-shape migration", async () => {
+    const specimen = JSON.parse(
+      await readFile(
+        resolve(
+          import.meta.dirname,
+          "../../../test/mock-remote/fixtures/platform/fs174-i491nax-distro-specimen.json",
+        ),
+        "utf8",
+      ),
+    ) as Record<string, Json>;
+    const root = await worktree();
+    const projectId = "cfe6fb97-ed49-5ace-b0fe-8121dba2c793";
+    const projectVersionId = "b3df3633-ebd7-560e-a3b7-77953521b4e3";
+    const directory = join(root, ".fs", "triage", projectId);
+    await mkdir(directory, { recursive: true });
+    const rawVersion = "2.9.4%2Bdfsg1-2.2%2Bdeb9u2";
+    const purl = "pkg:generic/libxml2@2.9.4";
+    const legacyCve = "97f077e8-fc05-5198-8ab6-9111fb37e83a";
+    const file = join(directory, "libxml2.yaml");
+    await writeFile(
+      file,
+      `schema: fs-triage/v1
+project: ${projectId}
+component:
+  purl: ${purl}
+  name: libxml2
+  group: debian%2Fbase
+  version: ${rawVersion}
+decisions:
+  ${legacyCve}:
+    status: NOT_AFFECTED
+    justification: CODE_NOT_PRESENT
+    response: null
+    reason: reviewed evidence
+`,
+      "utf8",
+    );
+    const component = {
+      id: "e1a048dc-9890-5333-9e97-cd5d6f429fcd",
+      name: "libxml2",
+      group: "debian%2Fbase",
+      version: rawVersion,
+      purl,
+    };
+    const identities = new Map([[component.id, component]]);
+    const expectedKey = normalizeFinding(specimen, identities).stableKey;
+    const oldCacheKey = ENTITIES.vexDecision.key({
+      cve: legacyCve,
+      purl,
+      name: component.name,
+      group: component.group,
+      version: rawVersion,
+    });
+    expect((await readVexWorking(root))[0]?.key).toBe(oldCacheKey);
+
+    let componentIndexReads = 0;
+    const platform = {
+      listComponents() {
+        componentIndexReads += 1;
+        return {
+          async *[Symbol.asyncIterator]() {
+            const items = componentIndexReads <= 2 ? [component] : [];
+            yield { items, total: items.length, next: null };
+          },
+        };
+      },
+      getFindings() {
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { items: [specimen], total: 1, next: null };
+          },
+        };
+      },
+    };
+    const host = createFakePluginHost({
+      pluginId: "finite-state-vex-cache-key-unification",
+    });
+    hosts.push(host);
+    const db = createPluginContext(host.bb).db();
+    let generation = 0;
+    const deps = {
+      db,
+      adapters: [createVexDecisionAdapter(platform)],
+      cachePullers: [
+        {
+          kind: "finding" as const,
+          async pull(
+            scope: {
+              projectId: string;
+              projectVersionId: string | null;
+            },
+            generationId: string,
+          ) {
+            const result = await pullFindings(
+              { db, platform },
+              scope,
+              generationId,
+              () => undefined,
+            );
+            return { fetched: result.fetched, baseRows: result.published };
+          },
+        },
+      ],
+      worktreeRoot: root,
+      createGenerationId: () => `unified-${++generation}`,
+      now: () => new Date("2026-08-14T02:00:00.000Z"),
+    };
+    const scope = { projectId, projectVersionId };
+    await pull(deps, scope, ["vexDecision", "finding"]);
+
+    const persisted = db
+      .prepare(
+        `SELECT stable_key AS stableKey
+           FROM findings
+          WHERE project_id = ? AND project_version_id = ?`,
+      )
+      .get(projectId, projectVersionId) as { stableKey: string } | undefined;
+    expect(persisted?.stableKey).toBe(expectedKey);
+    expect((await readVexWorking(root, scope))[0]?.key).toBe(expectedKey);
+    expect(await readFile(file, "utf8")).toContain(`version: ${rawVersion}`);
+    expect(await readFile(file, "utf8")).toContain("group: debian%2Fbase");
+
+    // Simulate a plugin reload plus a now-empty portfolio component index.
+    deps.adapters = [createVexDecisionAdapter(platform, db)];
+    await pull(deps, scope, ["vexDecision", "finding"]);
+    expect(componentIndexReads).toBe(4);
+    expect((await readVexWorking(root, scope))[0]?.key).toBe(expectedKey);
+    expect(
+      (
+        db
+          .prepare(
+            `SELECT stable_key AS stableKey
+               FROM findings
+              WHERE project_id = ? AND project_version_id = ?`,
+          )
+          .get(projectId, projectVersionId) as { stableKey: string } | undefined
+      )?.stableKey,
+    ).toBe(expectedKey);
   });
 });

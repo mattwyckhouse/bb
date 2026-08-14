@@ -77,28 +77,41 @@ function cacheComponentIdentity(
 ): Omit<FindingIdentityInput, "cve"> | null {
   const component = jsonRecord(row["component"]);
   const joined = joinedComponent(row, identities);
+  const declaredPurl = wireString(row, ["componentPurl", "purl", "packageUrl"]);
+  const usesJoinedPurl = declaredPurl === null && joined?.purl != null;
   const name =
+    (usesJoinedPurl ? joined?.name : null) ??
     wireString(row, ["componentName", "name"]) ??
     (component === null ? null : wireString(component, ["name"])) ??
     joined?.name ??
     null;
   if (name === null) return null;
   return {
-    purl:
-      wireString(row, ["componentPurl", "purl", "packageUrl"]) ??
-      joined?.purl ??
-      null,
+    purl: declaredPurl ?? joined?.purl ?? null,
     name,
     group:
+      (usesJoinedPurl ? joined?.group : null) ??
       wireString(row, ["componentGroup", "group", "namespace"]) ??
       joined?.group ??
       null,
     version:
+      (usesJoinedPurl ? joined?.version : null) ??
       wireString(row, ["componentVersion", "version"]) ??
       (component === null ? null : wireString(component, ["version"])) ??
       joined?.version ??
       null,
   };
+}
+
+/** Mirrors the pre-FS-174 cache identity for declared persisted-key migration. */
+export function legacyCacheFindingIdentity(
+  row: Readonly<Record<string, Json>>,
+  identities: ReadonlyMap<string, ComponentIdentity>,
+): FindingIdentityInput | null {
+  const componentIdentity = cacheComponentIdentity(row, identities);
+  const cve = wireString(row, ["cve", "findingIdentifier", "vulnerabilityId"]);
+  if (componentIdentity === null || cve === null) return null;
+  return { ...componentIdentity, cve };
 }
 
 /** Reads the current canonical identity through the same aliases and index join as the cache. */
