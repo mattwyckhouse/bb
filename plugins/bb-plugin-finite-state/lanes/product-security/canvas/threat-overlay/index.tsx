@@ -114,7 +114,10 @@ function readPersistedProjectId(): string | null {
   }
 }
 
-function payloadProjectId(payload: unknown): string | null {
+function payloadScope(payload: unknown): {
+  projectId: string;
+  projectVersionId: string | null;
+} | null {
   if (
     typeof payload !== "object" ||
     payload === null ||
@@ -123,7 +126,13 @@ function payloadProjectId(payload: unknown): string | null {
     return null;
   }
   const projectId = Reflect.get(payload, "projectId");
-  return typeof projectId === "string" ? projectId : null;
+  if (typeof projectId !== "string") return null;
+  const projectVersionId = Reflect.get(payload, "projectVersionId");
+  return {
+    projectId,
+    projectVersionId:
+      typeof projectVersionId === "string" ? projectVersionId : null,
+  };
 }
 
 function useThreatSnapshot(
@@ -147,7 +156,17 @@ function useThreatSnapshot(
     [],
   );
   appRuntime.useRealtime("tara:changed", (payload) => {
-    if (projectId && payloadProjectId(payload) === projectId) retry();
+    const publishedScope = payloadScope(payload);
+    const activeVersionId =
+      state.projectId === projectId ? state.data?.projectVersionId ?? null : null;
+    if (
+      projectId &&
+      publishedScope?.projectId === projectId &&
+      (publishedScope.projectVersionId === null ||
+        publishedScope.projectVersionId === activeVersionId)
+    ) {
+      retry();
+    }
   });
 
   useEffect(() => {
@@ -636,7 +655,7 @@ function ConfiguredThreatOverlay({
       void rpc
         .call("threatOverlayPaths", {
           projectId,
-          projectVersionId: null,
+          projectVersionId: snapshot.state.data?.projectVersionId ?? null,
           threatSlug,
           pageSize: 50,
           continuation,
@@ -665,7 +684,7 @@ function ConfiguredThreatOverlay({
           }));
         });
     },
-    [projectId, rpc],
+    [projectId, rpc, snapshot.state.data?.projectVersionId],
   );
 
   useEffect(() => {
@@ -689,7 +708,7 @@ function ConfiguredThreatOverlay({
       void rpc
         .call("threatOverlayPath", {
           projectId,
-          projectVersionId: null,
+          projectVersionId: snapshot.state.data?.projectVersionId ?? null,
           routeSignature,
         })
         .then((result: PathResult) => {
@@ -713,7 +732,7 @@ function ConfiguredThreatOverlay({
           });
         });
     },
-    [projectId, rpc],
+    [projectId, rpc, snapshot.state.data?.projectVersionId],
   );
 
   useEffect(() => {

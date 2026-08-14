@@ -7,7 +7,11 @@ import {
   jsonValueSchema,
   type JsonValue,
 } from "../../../../shared/contract.js";
-import { toStorageProjectVersionId } from "../../../../lib/store/index.js";
+import {
+  fromStorageProjectVersionId,
+  PROJECT_LEVEL_VERSION_ID,
+  toStorageProjectVersionId,
+} from "../../../../lib/store/index.js";
 import {
   aggregateThreats,
   categoryFromVocabulary,
@@ -110,6 +114,7 @@ export const threatOverlayRpcContract = defineRpcContract({
     input: projectScopeSchema,
     output: z
       .object({
+        projectVersionId: z.string().trim().min(1).max(512).nullable(),
         revision: z.string().min(1).max(4096),
         threats: z.array(threatSummarySchema).max(MAX_THREATS),
         aggregates: z.array(aggregateSchema).max(MAX_AGGREGATES),
@@ -170,6 +175,33 @@ interface SyncRow {
   base_revision: number;
   last_pull: string | null;
   error: string | null;
+}
+
+interface VersionRow {
+  project_version_id: string;
+}
+
+function resolvedThreatScope(
+  db: Database.Database,
+  scope: ProjectScope,
+): ProjectScope {
+  if (scope.projectVersionId !== null) return scope;
+  const row = db
+    .prepare<[string, string], VersionRow>(
+      `SELECT project_version_id
+         FROM sync_state
+        WHERE project_id = ? AND entity_kind = 'threat'
+          AND project_version_id <> ? AND accepted_generation_id IS NOT NULL
+        ORDER BY last_pull DESC, project_version_id DESC
+        LIMIT 1`,
+    )
+    .get(scope.projectId, PROJECT_LEVEL_VERSION_ID);
+  return {
+    projectId: scope.projectId,
+    projectVersionId: row
+      ? fromStorageProjectVersionId(row.project_version_id)
+      : null,
+  };
 }
 
 interface SnapshotRow {
@@ -424,6 +456,7 @@ export function readThreatSnapshot(
   scope: ProjectScope,
   snapshotCache: Map<string, ThreatSnapshot> = new Map(),
 ): ThreatSnapshot {
+  scope = resolvedThreatScope(db, scope);
   const sync = syncRow(db, scope, "threat");
   const methodology = readMethodology(db, scope);
   const pathGeneration = acceptedPathGeneration(db, scope).generationId;
@@ -446,6 +479,7 @@ export function readThreatSnapshot(
 
   if (!sync?.accepted_generation_id) {
     const snapshot: ThreatSnapshot = {
+      projectVersionId: scope.projectVersionId,
       revision,
       threats: [],
       aggregates: [],
@@ -547,6 +581,7 @@ export function readThreatSnapshot(
       : null,
   ].filter((issue): issue is string => Boolean(issue));
   const snapshot: ThreatSnapshot = {
+    projectVersionId: scope.projectVersionId,
     revision,
     threats,
     aggregates,

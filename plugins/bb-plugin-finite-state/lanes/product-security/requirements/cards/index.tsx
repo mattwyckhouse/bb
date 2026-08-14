@@ -8,9 +8,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function payloadProjectId(value: unknown): string | null {
+function payloadScope(value: unknown): {
+  projectId: string;
+  projectVersionId: string | null;
+} | null {
   if (!isRecord(value)) return null;
-  return typeof value.projectId === "string" ? value.projectId : null;
+  if (typeof value.projectId !== "string") return null;
+  return {
+    projectId: value.projectId,
+    projectVersionId:
+      typeof value.projectVersionId === "string"
+        ? value.projectVersionId
+        : null,
+  };
 }
 
 export function RequirementsCards({
@@ -93,7 +103,16 @@ export function RequirementsCardsForProject({
   }, [projectId, rpc]);
 
   useRealtime("requirements:changed", (payload) => {
-    if (projectId && payloadProjectId(payload) === projectId) setRevision((value) => value + 1);
+    const publishedScope = payloadScope(payload);
+    const activeScope = projectVersionScopeRef.current;
+    if (
+      projectId &&
+      publishedScope?.projectId === projectId &&
+      (publishedScope.projectVersionId === null ||
+        publishedScope.projectVersionId === activeScope.projectVersionId)
+    ) {
+      setRevision((value) => value + 1);
+    }
   });
 
   useEffect(() => {
