@@ -4,12 +4,17 @@ import { afterEach, describe, expect, it } from "vitest";
 
 afterEach(() => {
   window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
-describe("Vitest localStorage setup", () => {
-  it("provides the Web Storage contract used by canvas tests", () => {
+describe("Vitest Web Storage setup", () => {
+  it("restores jsdom's real local and session storage objects", () => {
     expect(localStorage).toBe(window.localStorage);
+    expect(sessionStorage).toBe(window.sessionStorage);
+    expect(localStorage.constructor.name).toBe("Storage");
+    expect(sessionStorage.constructor.name).toBe("Storage");
     expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
 
     localStorage.setItem("first", "one");
     localStorage.setItem("second", "two");
@@ -27,5 +32,8 @@ describe("Vitest localStorage setup", () => {
 
     localStorage.clear();
     expect(localStorage.length).toBe(0);
+
+    sessionStorage.setItem("device-panel", "session-value");
+    expect(sessionStorage.getItem("device-panel")).toBe("session-value");
   });
 });
