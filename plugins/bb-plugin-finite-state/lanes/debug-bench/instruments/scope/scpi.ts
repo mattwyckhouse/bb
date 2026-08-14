@@ -1,5 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  readFile,
+  realpath,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type {
   CaptureConfig,
@@ -26,6 +33,7 @@ import type {
 
 const MAX_CAPTURE_MS = 60_000;
 const MAX_CAPTURE_SAMPLES = 10_000_000;
+const MAX_RAW_WAVEFORM_BYTES = MAX_CAPTURE_SAMPLES;
 const MAX_BRIDGE_OUTPUT_BYTES = 256 * 1024;
 
 class ScopeTriggerTimeoutError extends Error {
@@ -47,6 +55,7 @@ class ScopeTriggerTimeoutError extends Error {
 export interface ScpiProfile {
   readonly vendor: string;
   readonly commands: Readonly<Record<string, string>>;
+  /** Parses one waveform response produced by one channel query. */
   parseWaveform(raw: Uint8Array): WaveformData;
 }
 
@@ -127,14 +136,14 @@ function parseDefiniteBlock(raw: Uint8Array, headerStart = 0): Int8Array {
 
 export function parseSiglentWaveform(raw: Uint8Array): WaveformData {
   const marker = raw.indexOf(35);
-  if (marker < 1) {
+  if (marker < 0) {
     throw new InstrumentError(
       "INSTRUMENT_PROTOCOL_ERROR",
-      "Siglent DAT2 waveform lacks its channel response header.",
+      "Siglent DAT2 waveform lacks an IEEE 488.2 block.",
     );
   }
   const prefix = new TextDecoder("ascii").decode(raw.slice(0, marker));
-  if (!/^C\d+:WF DAT2,$/u.test(prefix)) {
+  if (marker > 0 && !/^C\d+:WF DAT2,$/u.test(prefix)) {
     throw new InstrumentError(
       "INSTRUMENT_PROTOCOL_ERROR",
       "Siglent DAT2 waveform response header is malformed.",
@@ -158,8 +167,36 @@ export const SIGLENT_SDS_PROFILE: ScpiProfile = Object.freeze({
 });
 
 export const PYVISA_BRIDGE = String.raw`
-import json, os, sys, time
+import json, math, os, re, sys, time
 import pyvisa
+
+def numeric_response(value, unit):
+    match = re.fullmatch(r"\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?)(?:" + re.escape(unit) + r")?\s*", value)
+    if match is None:
+        raise ValueError("malformed numeric response for " + unit + ": " + value)
+    return float(match.group(1))
+
+def bounded_waveform_read(instrument, max_bytes):
+    marker = instrument.read_bytes(1, break_on_termchar=False)
+    if marker != b"#":
+        raise ValueError("headerless waveform does not begin with an IEEE 488.2 block")
+    digit_text = instrument.read_bytes(1, break_on_termchar=False)
+    if len(digit_text) != 1 or digit_text < b"1" or digit_text > b"9":
+        raise ValueError("waveform block digit count is malformed")
+    digits = int(digit_text)
+    length_text = instrument.read_bytes(digits, break_on_termchar=False)
+    if len(length_text) != digits or not length_text.isdigit():
+        raise ValueError("waveform block length is malformed")
+    length = int(length_text)
+    if length < 1 or length > max_bytes:
+        raise ValueError("waveform response exceeds the raw byte bound")
+    payload = instrument.read_bytes(length, break_on_termchar=False)
+    if len(payload) != length:
+        raise ValueError("waveform block is truncated")
+    terminator = instrument.read_bytes(2, break_on_termchar=False)
+    if terminator != b"\n\n":
+        raise ValueError("waveform response terminator is malformed")
+    return marker + digit_text + length_text + payload + terminator
 
 action = sys.argv[1]
 request = json.loads(sys.argv[2])
@@ -172,7 +209,8 @@ try:
     elif action == "capture":
         for command in request["setupCommands"]:
             instrument.write(command)
-        actual_sample_rate_hz = float(instrument.query(request["sampleRateQuery"]).strip())
+        actual_sample_rate_hz = numeric_response(instrument.query(request["sampleRateQuery"]), "Sa/s")
+        actual_samples = min(request["samples"], math.ceil(actual_sample_rate_hz * request["durationMs"] / 1000.0))
         instrument.write(request["armCommand"])
         deadline = time.monotonic() + request["triggerTimeoutMs"] / 1000.0
         triggered = False
@@ -184,16 +222,16 @@ try:
             time.sleep(0.01)
         if not triggered:
             instrument.write(request["stopCommand"])
-            print(json.dumps({"armedConfiguration": request, "sampleRateHz": actual_sample_rate_hz, "samples": request["samples"]}), flush=True)
+            print(json.dumps({"armedConfiguration": request, "sampleRateHz": actual_sample_rate_hz, "samples": actual_samples}), flush=True)
             sys.exit(42)
         os.makedirs(request["outputDirectory"], exist_ok=True)
         raw_waveforms = {}
         for channel in request["channelConfigs"]:
             channel_name = channel["channel"]
-            vdiv_v = float(instrument.query(request["channelScaleQueries"][channel_name]).strip())
-            offset_v = float(instrument.query(request["channelOffsetQueries"][channel_name]).strip())
+            vdiv_v = numeric_response(instrument.query(request["channelScaleQueries"][channel_name]), "V")
+            offset_v = numeric_response(instrument.query(request["channelOffsetQueries"][channel_name]), "V")
             instrument.write(request["waveformQueries"][channel_name])
-            raw = instrument.read_raw()
+            raw = bounded_waveform_read(instrument, request["maxRawBytes"])
             raw_path = os.path.join(request["outputDirectory"], "scpi-" + channel_name + ".dat2")
             with open(raw_path, "wb") as handle:
                 handle.write(raw)
@@ -632,7 +670,12 @@ async function artifactFromResponse(
         "SCPI raw waveform escaped its capture directory.",
       );
     }
-    const parsed = profile.parseWaveform(await readFile(confinedPath));
+    let parsed: WaveformData;
+    try {
+      parsed = profile.parseWaveform(await readFile(confinedPath));
+    } finally {
+      await unlink(confinedPath).catch(() => undefined);
+    }
     const series = Object.values(parsed.channels);
     if (series.length !== 1 || series[0] === undefined) {
       throw new InstrumentError(
@@ -850,6 +893,7 @@ export function createScpiScopeDriver(
                       profile,
                       "sampleRateQuery",
                     ),
+                    maxRawBytes: MAX_RAW_WAVEFORM_BYTES,
                   }),
                 ],
                 timeoutMs: armed.triggerTimeoutMs + 15_000,

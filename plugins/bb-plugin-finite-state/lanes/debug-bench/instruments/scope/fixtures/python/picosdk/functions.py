@@ -3,9 +3,29 @@ def assert_pico_ok(status):
         raise RuntimeError("Pico status " + str(status))
 
 
-def mV2adc(millivolts, _range_id, max_adc):
-    return int(millivolts / 2000.0 * max_adc.value)
+channelInputRanges = [
+    10,
+    20,
+    50,
+    100,
+    200,
+    500,
+    1000,
+    2000,
+    5000,
+    10000,
+    20000,
+    50000,
+    100000,
+    200000,
+]
 
 
-def adc2mV(buffer, _range_id, max_adc):
-    return [sample / max_adc.value * 2000.0 for sample in buffer]
+def mV2adc(millivolts, range_id, max_adc):
+    return round(millivolts * max_adc.value / channelInputRanges[range_id])
+
+
+def adc2mV(buffer, range_id, max_adc):
+    return [
+        sample * channelInputRanges[range_id] / max_adc.value for sample in buffer
+    ]

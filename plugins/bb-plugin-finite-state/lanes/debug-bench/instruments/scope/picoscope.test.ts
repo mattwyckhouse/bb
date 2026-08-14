@@ -220,7 +220,7 @@ describe("PicoScope USB driver", () => {
     const artifact = await session.capture(
       {
         durationMs: 1,
-        sampleRateHz: 125_000_000,
+        sampleRateHz: 100_000_000,
         channels: [0],
         settings: {
           "channel.A.rangeV": 2,
@@ -235,8 +235,8 @@ describe("PicoScope USB driver", () => {
       new AbortController().signal,
     );
     expect(artifact).toMatchObject({
-      sampleRateHz: 125_000_000,
-      samples: 125_000,
+      sampleRateHz: 62_500_000,
+      samples: 62_500,
       durationMs: 1,
     });
     const calls = readFileSync(protocolLog, "utf8")
@@ -263,7 +263,7 @@ describe("PicoScope USB driver", () => {
     const timebaseCall = calls.find(
       ({ call }) => call === "ps2000aGetTimebase2",
     );
-    expect(timebaseCall?.args).toEqual(expect.arrayContaining([3, 8]));
+    expect(timebaseCall?.args).toEqual([7, 4, 100_000, 16, 0, 10_000_000, 0]);
     await session.close();
   });
 

@@ -141,7 +141,7 @@ elif action == "capture":
         time_interval_ns = ctypes.c_float()
         max_samples = ctypes.c_int32()
         while True:
-            status = ps.ps2000aGetTimebase2(handle, timebase, request["samples"], ctypes.byref(time_interval_ns), ctypes.byref(max_samples), 0)
+            status = ps.ps2000aGetTimebase2(handle, timebase, request["samples"], ctypes.byref(time_interval_ns), 0, ctypes.byref(max_samples), 0)
             if status == 0 and time_interval_ns.value >= target_interval_ns:
                 break
             timebase += 1

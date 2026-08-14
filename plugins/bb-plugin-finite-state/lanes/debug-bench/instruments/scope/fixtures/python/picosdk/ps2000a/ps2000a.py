@@ -89,11 +89,22 @@ def ps2000aSetSimpleTrigger(handle, enabled, source, threshold, direction, delay
     return 0
 
 
-def ps2000aGetTimebase2(handle, timebase, samples, interval_ns, max_samples, segment):
+def ps2000aGetTimebase2(
+    handle, timebase, samples, interval_ns, oversample, max_samples, segment
+):
     interval = (2 ** timebase) if timebase <= 2 else (timebase - 2) * 8
-    _log("ps2000aGetTimebase2", handle, timebase, samples, segment, interval)
     interval_ns._obj.value = interval
     max_samples._obj.value = 10_000_000
+    _log(
+        "ps2000aGetTimebase2",
+        handle,
+        timebase,
+        samples,
+        interval_ns._obj.value,
+        oversample,
+        max_samples._obj.value,
+        segment,
+    )
     return 0
 
 

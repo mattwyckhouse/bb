@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,7 +115,7 @@ describe("SCPI/LAN scope driver", () => {
       ...process.env,
       PYTHONPATH: pythonFixtures,
       FS_SCOPE_PROTOCOL_LOG: protocolLog,
-      FS_SCOPE_SCPI_SAMPLE_RATE: "1.25E+08",
+      FS_SCOPE_SCPI_SAMPLE_RATE: "6.25E+07Sa/s",
     };
     const driver = createScpiScopeDriver({
       runner: runInstrumentProcess,
@@ -130,7 +136,7 @@ describe("SCPI/LAN scope driver", () => {
     const artifact = await session.capture(
       {
         durationMs: 1,
-        sampleRateHz: 125_000_000,
+        sampleRateHz: 100_000_000,
         channels: [0],
         settings: {
           "channel.C1.rangeV": 8,
@@ -144,7 +150,7 @@ describe("SCPI/LAN scope driver", () => {
       },
       new AbortController().signal,
     );
-    expect(artifact).toMatchObject({ sampleRateHz: 125_000_000, samples: 3 });
+    expect(artifact).toMatchObject({ sampleRateHz: 62_500_000, samples: 3 });
     const calls = readFileSync(protocolLog, "utf8")
       .trim()
       .split("\n")
@@ -163,14 +169,102 @@ describe("SCPI/LAN scope driver", () => {
         "query:C1:VDIV?",
         "query:C1:OFST?",
         "write:C1:WF? DAT2",
-        "read_raw:C1:WF? DAT2",
+        "read_bytes:[object Object]",
       ]),
     );
+    expect(
+      calls
+        .filter(({ operation }) => operation === "read_bytes")
+        .map(({ value }) =>
+          typeof value === "object" && value !== null
+            ? Reflect.get(value, "count")
+            : null,
+        ),
+    ).toEqual([1, 1, 9, 3, 2]);
     const normalized = JSON.parse(readFileSync(artifact.path, "utf8")) as {
+      sampleRateHz: number;
       channels: { C1: number[] };
     };
+    expect(normalized.sampleRateHz).toBe(62_500_000);
     expect(normalized.channels.C1).toEqual([5, 15, -5]);
+    expect(existsSync(join(protocolDirectory, "scpi-C1.dat2"))).toBe(false);
     expect(artifactSink.record).toHaveBeenCalledTimes(1);
+    await session.close();
+  });
+
+  it("reports trigger timeout with instrument-read timing and sample count", async () => {
+    const captureDirectory = directory();
+    const driver = createScpiScopeDriver({
+      runner: runInstrumentProcess,
+      bridgeEnv: {
+        ...process.env,
+        PYTHONPATH: pythonFixtures,
+        FS_SCOPE_SCPI_SAMPLE_RATE: "6.25E+07Sa/s",
+        FS_SCOPE_SCPI_STATUS: "Arm",
+      },
+      verifyClaim: vi.fn(),
+      resourceForDeviceId: () => "TCPIP0::192.0.2.8::5025::SOCKET",
+    });
+    const transport = { kind: "lan", host: "192.0.2.8", port: 5_025 } as const;
+    const session = await driver.open(
+      transport,
+      claim(),
+      new AbortController().signal,
+    );
+    await expect(
+      session.capture(
+        {
+          durationMs: 1,
+          sampleRateHz: 100_000_000,
+          channels: [0],
+          settings: {
+            "trigger.channel": "C1",
+            "trigger.timeoutMs": 20,
+          },
+          artifactSink: sink(captureDirectory),
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: "TRIGGER_TIMEOUT",
+      armedConfiguration: {
+        sampleRateHz: 62_500_000,
+        samples: 62_500,
+      },
+    });
+    await session.close();
+  });
+
+  it("rejects an oversized PyVISA waveform before writing it to disk", async () => {
+    const captureDirectory = directory();
+    const driver = createScpiScopeDriver({
+      runner: runInstrumentProcess,
+      bridgeEnv: {
+        ...process.env,
+        PYTHONPATH: pythonFixtures,
+        FS_SCOPE_SCPI_RAW_SIZE: "10000001",
+      },
+      verifyClaim: vi.fn(),
+      resourceForDeviceId: () => "TCPIP0::192.0.2.8::5025::SOCKET",
+    });
+    const transport = { kind: "lan", host: "192.0.2.8", port: 5_025 } as const;
+    const session = await driver.open(
+      transport,
+      claim(),
+      new AbortController().signal,
+    );
+    await expect(
+      session.capture(
+        {
+          durationMs: 1,
+          sampleRateHz: 1_000,
+          channels: [0],
+          artifactSink: sink(captureDirectory),
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "INSTRUMENT_PROTOCOL_ERROR" });
+    expect(existsSync(join(captureDirectory, "scpi-C1.dat2"))).toBe(false);
     await session.close();
   });
 
@@ -546,7 +640,7 @@ describe("SCPI/LAN scope driver", () => {
 
   it("rejects malformed or truncated IEEE 488.2 waveform blocks", () => {
     expect(() => parseSiglentWaveform(new Uint8Array([1, 2, 3]))).toThrow(
-      "channel response header",
+      "IEEE 488.2 block",
     );
     expect(() =>
       parseSiglentWaveform(new TextEncoder().encode("C1:WF DAT2,#210abc")),
@@ -560,6 +654,11 @@ describe("SCPI/LAN scope driver", () => {
       ]),
     );
     expect(parsed.channels.divisions).toEqual([0, 1, -1]);
+    expect(
+      parseSiglentWaveform(
+        new Uint8Array([...new TextEncoder().encode("#13"), 0, 25, 231]),
+      ).channels.divisions,
+    ).toEqual([0, 1, -1]);
   });
 
   it("reports PyVISA and its working backend as distinct confirmed-remediation prerequisites", () => {
