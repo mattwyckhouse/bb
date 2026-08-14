@@ -330,7 +330,7 @@ function beginGeneration(
         .prepare(
           `UPDATE sync_state
             SET staging_generation_id = NULL, staging_continuation = NULL,
-                staged_pages = 0, staged_rows = 0
+                staged_pages = 0, staged_rows = 0, staged_quarantined = 0
           WHERE project_id = ? AND project_version_id = ?
             AND staging_generation_id = ?`,
         )
@@ -362,11 +362,12 @@ function beginGeneration(
           staging_generation_id, base_revision, staging_continuation,
           staged_pages, staged_rows, last_pull, error)
        VALUES (?, ?, ?, NULL, ?, 0, NULL, 0, 0, NULL, NULL)
-       ON CONFLICT (project_id, project_version_id, entity_kind) DO UPDATE SET
+         ON CONFLICT (project_id, project_version_id, entity_kind) DO UPDATE SET
          staging_generation_id = excluded.staging_generation_id,
          staging_continuation = NULL,
          staged_pages = 0,
          staged_rows = 0,
+         staged_quarantined = 0,
          error = NULL`,
     );
     for (const kind of kinds)
@@ -824,7 +825,8 @@ function publishGeneration(
       `UPDATE sync_state
           SET accepted_generation_id = ?, staging_generation_id = NULL,
               base_revision = base_revision + 1, staging_continuation = NULL,
-              staged_pages = 0, staged_rows = 0, last_pull = ?, error = NULL
+              staged_pages = 0, staged_rows = 0, staged_quarantined = 0,
+              last_pull = ?, error = NULL
         WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?
           AND staging_generation_id = ?`,
     );

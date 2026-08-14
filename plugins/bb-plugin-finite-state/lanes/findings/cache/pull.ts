@@ -285,15 +285,16 @@ function checkpoint(
 ): {
   pages: number;
   rows: number;
+  quarantined: number;
   continuation: string | null;
   pulledAt: string;
-  error: string | null;
 } {
   const row = deps.db
     .prepare(
       `SELECT state.staged_pages AS pages, state.staged_rows AS rows,
-            state.staging_continuation AS continuation, generation.started_at AS pulledAt,
-            state.error
+            state.staged_quarantined AS quarantined,
+            state.staging_continuation AS continuation,
+            generation.started_at AS pulledAt
        FROM sync_state AS state
        JOIN pull_generation AS generation
          ON generation.project_id = state.project_id
@@ -306,9 +307,9 @@ function checkpoint(
     | {
         pages: number;
         rows: number;
+        quarantined: number;
         continuation: string | null;
         pulledAt: string;
-        error: string | null;
       }
     | undefined;
   if (!row)
@@ -434,7 +435,9 @@ function writePage(
     const updated = deps.db
       .prepare(
         `UPDATE sync_state
-          SET staging_continuation = ?, staged_pages = ?, staged_rows = staged_rows + ?, error = NULL
+          SET staging_continuation = ?, staged_pages = ?,
+              staged_rows = staged_rows + ?,
+              staged_quarantined = staged_quarantined + ?, error = NULL
         WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?
           AND staging_generation_id = ? AND staged_pages = ?`,
       )
@@ -442,6 +445,7 @@ function writePage(
         page.next,
         pageNumber,
         inserted,
+        quarantined,
         scope.projectId,
         scope.projectVersionId,
         ENTITY_KIND,
@@ -463,10 +467,11 @@ function allRowsQuarantinedError(
   quarantined: number,
   reasons: ReadonlyMap<string, number>,
 ): FindingsCacheError {
-  const reasonSummary = [...reasons.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([code, count]) => `${code}=${count}`)
-    .join(", ");
+  const reasonSummary =
+    [...reasons.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([code, count]) => `${code}=${count}`)
+      .join(", ") || `FINDING_PRIOR_INVOCATION_QUARANTINE=${quarantined}`;
   return new FindingsCacheError(
     ALL_ROWS_QUARANTINED,
     `${ALL_ROWS_QUARANTINED}: quarantined ${quarantined} fetched finding rows; reasons [${reasonSummary}]`,
@@ -497,12 +502,9 @@ export async function pullFindings(
   let latestOf: number | null = null;
   try {
     if (state.pages > 0 && state.continuation === null) {
-      if (
-        state.rows === 0 &&
-        state.error?.startsWith(`${ALL_ROWS_QUARANTINED}:`) === true
-      ) {
+      if (state.rows === 0 && state.quarantined > 0) {
         throw new TerminalPullError(
-          new FindingsCacheError(ALL_ROWS_QUARANTINED, state.error),
+          allRowsQuarantinedError(state.quarantined, quarantineReasons),
         );
       }
       onProgress({ page: pages, of: pages, phase: "done" });
@@ -512,7 +514,7 @@ export async function pullFindings(
         pages,
         pulledAt,
         deduplicated,
-        quarantined,
+        quarantined: state.quarantined,
       };
     }
     const iterable = deps.platform.getFindings({
@@ -556,9 +558,16 @@ export async function pullFindings(
       });
     }
     const published = state.rows + staged;
-    if (fetched > 0 && published === 0) {
+    const generationQuarantined = state.quarantined + quarantined;
+    if (state.quarantined > 0) {
+      quarantineReasons.set(
+        "FINDING_PRIOR_INVOCATION_QUARANTINE",
+        state.quarantined,
+      );
+    }
+    if (generationQuarantined > 0 && published === 0) {
       throw new TerminalPullError(
-        allRowsQuarantinedError(quarantined, quarantineReasons),
+        allRowsQuarantinedError(generationQuarantined, quarantineReasons),
       );
     }
     onProgress({ page: pages, of: latestOf, phase: "done" });
@@ -568,7 +577,7 @@ export async function pullFindings(
       pages,
       pulledAt,
       deduplicated,
-      quarantined,
+      quarantined: generationQuarantined,
     };
   } catch (error: unknown) {
     onProgress({ page: pages, of: latestOf, phase: "error" });

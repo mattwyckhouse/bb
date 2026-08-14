@@ -132,7 +132,7 @@ export interface PullFindingsResult {
   fetched: number;
   /** Complete row count in the generation that is ready to publish. */
   published: number;
-  /** Individually invalid remote rows excluded from staging by this invocation. */
+  /** Individually invalid remote rows excluded across this staged generation. */
   quarantined: number;
   pages: number;
   pulledAt: string;
