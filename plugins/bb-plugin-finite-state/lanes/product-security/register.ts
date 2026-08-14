@@ -13,6 +13,7 @@ import { toStorageProjectVersionId } from "../../lib/store/index.js";
 import { registerCanvasEditingBackend } from "./canvas/editing/backend.js";
 import { registerCanvasLinksBackend } from "./canvas/links/backend.js";
 import { registerCanvasNodesBackend } from "./canvas/nodes/backend.js";
+import { registerTaraScopeBackend } from "./canvas/scope/backend.js";
 import { registerThreatOverlayBackend } from "./canvas/threat-overlay/backend.js";
 import type { CanvasTaraKind } from "./canvas/foundation/types.js";
 import { architectureEntityPayload } from "./canvas/editing/schema.js";
@@ -548,6 +549,7 @@ export function registerProductSecurity(
   });
 
   registerCanvasNodesBackend(bb, ctx);
+  registerTaraScopeBackend(bb, ctx);
   registerThreatOverlayBackend(bb, ctx);
   registerCanvasLinksBackend(bb, ctx);
   registerCanvasEditingBackend(bb, ctx);

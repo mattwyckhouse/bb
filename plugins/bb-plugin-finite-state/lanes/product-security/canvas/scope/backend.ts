@@ -1,0 +1,362 @@
+import { createHash } from "node:crypto";
+import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
+import type Database from "better-sqlite3";
+import { z } from "zod";
+import type { PluginContext } from "../../../../lib/context.js";
+import { PROJECT_LEVEL_VERSION_ID } from "../../../../lib/store/index.js";
+import {
+  backfillUnambiguousWorkspaceProjectBinding,
+  WORKSPACE_PLATFORM_PROJECT_PREDICATE,
+} from "../../../../lib/store/project-scope.js";
+
+const TARA_ENTITY_KINDS = [
+  "asset",
+  "component",
+  "dataflow",
+  "threat",
+  "zone",
+] as const;
+
+const explicitScopeSchema = z
+  .object({
+    platformProjectId: z.string().trim().min(1).max(512),
+    projectVersionId: z.string().trim().min(1).max(512),
+  })
+  .strict();
+
+const versionSchema = explicitScopeSchema.extend({
+  asOf: z.string().nullable(),
+});
+
+export const taraScopeRpcContract = defineRpcContract({
+  taraScopeResolve: {
+    input: z
+      .object({
+        workspaceProjectId: z.string().trim().min(1).max(512),
+        explicit: explicitScopeSchema.nullable().default(null),
+      })
+      .strict(),
+    output: z
+      .object({
+        versions: z.array(versionSchema).max(1_000),
+        selected: versionSchema.nullable(),
+        source: z.enum(["explicit", "bound", "latest", "none"]),
+        promotedKinds: z.array(z.enum(TARA_ENTITY_KINDS)),
+      })
+      .strict(),
+  },
+});
+
+type TaraEntityKind = (typeof TARA_ENTITY_KINDS)[number];
+type ExplicitScope = z.output<typeof explicitScopeSchema>;
+type Version = z.output<typeof versionSchema>;
+
+interface VersionRow {
+  project_id: string;
+  project_version_id: string;
+  as_of: string | null;
+}
+
+interface LegacySyncRow {
+  entity_kind: TaraEntityKind;
+  accepted_generation_id: string;
+  base_revision: number;
+  last_pull: string | null;
+  error: string | null;
+  started_at: string;
+  completed_at: string | null;
+  accepted_at: string | null;
+}
+
+interface TargetSyncRow {
+  entity_kind: string;
+  accepted_generation_id: string | null;
+  staging_generation_id: string | null;
+}
+
+function versionRows(
+  db: Database.Database,
+  workspaceProjectId: string,
+): { versions: Version[]; bound: boolean } {
+  const exactRows = db
+    .prepare<[string, string], VersionRow>(
+      `SELECT s.project_id, s.project_version_id, MAX(s.last_pull) AS as_of
+         FROM sync_state AS s
+         JOIN workspace_platform_project_binding AS binding
+           ON binding.platform_project_id = s.project_id
+          AND binding.workspace_project_id = ?
+        WHERE s.project_version_id <> ?
+          AND s.accepted_generation_id IS NOT NULL
+        GROUP BY s.project_id, s.project_version_id
+        ORDER BY as_of DESC, s.project_id ASC, s.project_version_id DESC`,
+    )
+    .all(workspaceProjectId, PROJECT_LEVEL_VERSION_ID);
+  const rows =
+    exactRows.length > 0
+      ? exactRows
+      : db
+          .prepare<[string, string], VersionRow>(
+            `SELECT s.project_id, s.project_version_id, MAX(s.last_pull) AS as_of
+               FROM sync_state AS s
+              WHERE ${WORKSPACE_PLATFORM_PROJECT_PREDICATE}
+                AND s.project_version_id <> ?
+                AND s.accepted_generation_id IS NOT NULL
+              GROUP BY s.project_id, s.project_version_id
+              ORDER BY as_of DESC, s.project_id ASC, s.project_version_id DESC`,
+          )
+          .all(workspaceProjectId, PROJECT_LEVEL_VERSION_ID);
+  return {
+    versions: rows.map((row) => ({
+      platformProjectId: row.project_id,
+      projectVersionId: row.project_version_id,
+      asOf: row.as_of,
+    })),
+    bound: exactRows.length > 0,
+  };
+}
+
+function sameScope(left: ExplicitScope, right: ExplicitScope): boolean {
+  return (
+    left.platformProjectId === right.platformProjectId &&
+    left.projectVersionId === right.projectVersionId
+  );
+}
+
+function promotedGenerationId(
+  platformProjectId: string,
+  projectVersionId: string,
+  sourceGenerationId: string,
+): string {
+  const digest = createHash("sha256")
+    .update(
+      [platformProjectId, projectVersionId, sourceGenerationId].join("\0"),
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return `tara-scope-promotion-${digest}`;
+}
+
+function copyGenerationRows(
+  db: Database.Database,
+  platformProjectId: string,
+  projectVersionId: string,
+  sourceGenerationId: string,
+  targetGenerationId: string,
+  kinds: readonly TaraEntityKind[],
+): void {
+  const placeholders = kinds.map(() => "?").join(",");
+  const scope = [
+    platformProjectId,
+    projectVersionId,
+    targetGenerationId,
+    platformProjectId,
+    PROJECT_LEVEL_VERSION_ID,
+    sourceGenerationId,
+  ];
+  db.prepare(
+    `INSERT OR IGNORE INTO base_snapshot
+       (project_id, project_version_id, entity_kind, generation_id, entity_key,
+        remote_id, payload, content_hash, pulled_at)
+     SELECT ?, ?, entity_kind, ?, entity_key, remote_id, payload, content_hash,
+            pulled_at
+       FROM base_snapshot
+      WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
+        AND entity_kind IN (${placeholders})`,
+  ).run(...scope, ...kinds);
+  db.prepare(
+    `INSERT OR IGNORE INTO id_map
+       (project_id, project_version_id, entity_kind, generation_id, entity_key,
+        remote_id, pulled_at)
+     SELECT ?, ?, entity_kind, ?, entity_key, remote_id, pulled_at
+       FROM id_map
+      WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
+        AND entity_kind IN (${placeholders})`,
+  ).run(...scope, ...kinds);
+  db.prepare(
+    `INSERT OR IGNORE INTO entity_review_state
+       (project_id, project_version_id, generation_id, entity_kind, entity_key,
+        remote_id, review_status, review_version, pulled_at)
+     SELECT ?, ?, ?, entity_kind, entity_key, remote_id, review_status,
+            review_version, pulled_at
+       FROM entity_review_state
+      WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
+        AND entity_kind IN (${placeholders})`,
+  ).run(...scope, ...kinds);
+
+  db.prepare(
+    `INSERT OR IGNORE INTO methodology_profiles
+     SELECT project_id, ?, ?, profile_id, organization_id, scope, name,
+            asset_properties, impact_dimensions, risk_scale, assurance_levels,
+            ownership_labels, stride_map, review_version, raw, pulled_at
+       FROM methodology_profiles
+      WHERE project_id = ? AND project_version_id = ? AND generation_id = ?`,
+  ).run(
+    projectVersionId,
+    targetGenerationId,
+    platformProjectId,
+    PROJECT_LEVEL_VERSION_ID,
+    sourceGenerationId,
+  );
+  db.prepare(
+    `INSERT OR IGNORE INTO attack_paths
+     SELECT project_id, ?, ?, path_id, route_signature, name, threat_key,
+            steps, edges, total_steps, zones_traversed, exploitability,
+            review_status, review_version, raw, pulled_at
+       FROM attack_paths
+      WHERE project_id = ? AND project_version_id = ? AND generation_id = ?`,
+  ).run(
+    projectVersionId,
+    targetGenerationId,
+    platformProjectId,
+    PROJECT_LEVEL_VERSION_ID,
+    sourceGenerationId,
+  );
+}
+
+/**
+ * Promote accepted legacy @project cache into one version without deleting or
+ * rewriting either scope. Existing accepted/staging destination state always
+ * wins, so a real version pull can never be replaced by compatibility data.
+ */
+export function promoteLegacyProjectTara(
+  db: Database.Database,
+  scope: ExplicitScope,
+): TaraEntityKind[] {
+  return db.transaction(() => {
+    const source = db
+      .prepare<[string, string], LegacySyncRow>(
+        `SELECT state.entity_kind, state.accepted_generation_id,
+                state.base_revision, state.last_pull, state.error,
+                generation.started_at, generation.completed_at,
+                generation.accepted_at
+           FROM sync_state AS state
+           JOIN pull_generation AS generation
+             ON generation.project_id = state.project_id
+            AND generation.project_version_id = state.project_version_id
+            AND generation.generation_id = state.accepted_generation_id
+            AND generation.status = 'accepted'
+          WHERE state.project_id = ? AND state.project_version_id = ?
+            AND state.entity_kind IN ('asset','component','dataflow','threat','zone')
+            AND state.accepted_generation_id IS NOT NULL
+          ORDER BY state.entity_kind`,
+      )
+      .all(scope.platformProjectId, PROJECT_LEVEL_VERSION_ID);
+    const target = db
+      .prepare<[string, string], TargetSyncRow>(
+        `SELECT entity_kind, accepted_generation_id, staging_generation_id
+           FROM sync_state
+          WHERE project_id = ? AND project_version_id = ?
+            AND entity_kind IN ('asset','component','dataflow','threat','zone')`,
+      )
+      .all(scope.platformProjectId, scope.projectVersionId);
+    const occupied = new Set(
+      target
+        .filter(
+          (row) =>
+            row.accepted_generation_id !== null ||
+            row.staging_generation_id !== null,
+        )
+        .map((row) => row.entity_kind),
+    );
+    const promotable = source.filter((row) => !occupied.has(row.entity_kind));
+    const grouped = new Map<string, LegacySyncRow[]>();
+    for (const row of promotable) {
+      const rows = grouped.get(row.accepted_generation_id) ?? [];
+      rows.push(row);
+      grouped.set(row.accepted_generation_id, rows);
+    }
+    for (const [sourceGenerationId, rows] of grouped) {
+      const kinds = rows.map((row) => row.entity_kind).sort();
+      const targetGenerationId = promotedGenerationId(
+        scope.platformProjectId,
+        scope.projectVersionId,
+        sourceGenerationId,
+      );
+      const representative = rows[0]!;
+      db.prepare(
+        `INSERT OR IGNORE INTO pull_generation
+           (project_id, project_version_id, generation_id, status,
+            requested_kinds_json, started_at, completed_at, accepted_at, error)
+         VALUES (?, ?, ?, 'accepted', ?, ?, ?, ?, NULL)`,
+      ).run(
+        scope.platformProjectId,
+        scope.projectVersionId,
+        targetGenerationId,
+        JSON.stringify(kinds),
+        representative.started_at,
+        representative.completed_at,
+        representative.accepted_at,
+      );
+      copyGenerationRows(
+        db,
+        scope.platformProjectId,
+        scope.projectVersionId,
+        sourceGenerationId,
+        targetGenerationId,
+        kinds,
+      );
+      for (const row of rows) {
+        db.prepare(
+          `INSERT INTO sync_state
+             (project_id, project_version_id, entity_kind,
+              accepted_generation_id, staging_generation_id, base_revision,
+              staging_continuation, staged_pages, staged_rows, last_pull, error)
+           VALUES (?, ?, ?, ?, NULL, ?, NULL, 0, 0, ?, ?)
+           ON CONFLICT(project_id, project_version_id, entity_kind) DO UPDATE SET
+             accepted_generation_id = excluded.accepted_generation_id,
+             base_revision = MAX(sync_state.base_revision, excluded.base_revision),
+             last_pull = excluded.last_pull,
+             error = excluded.error
+           WHERE sync_state.accepted_generation_id IS NULL
+             AND sync_state.staging_generation_id IS NULL`,
+        ).run(
+          scope.platformProjectId,
+          scope.projectVersionId,
+          row.entity_kind,
+          targetGenerationId,
+          row.base_revision,
+          row.last_pull,
+          row.error,
+        );
+      }
+    }
+    return promotable.map((row) => row.entity_kind).sort();
+  })();
+}
+
+export function registerTaraScopeBackend(
+  bb: BbPluginApi,
+  ctx: PluginContext,
+): void {
+  bb.rpc.register(taraScopeRpcContract, {
+    async taraScopeResolve(input) {
+      await bb.sdk.projects.get({ projectId: input.workspaceProjectId });
+      const db = ctx.db();
+      backfillUnambiguousWorkspaceProjectBinding(db, input.workspaceProjectId);
+      const catalog = versionRows(db, input.workspaceProjectId);
+      const selected =
+        input.explicit &&
+        catalog.versions.some((version) => sameScope(version, input.explicit!))
+          ? catalog.versions.find((version) =>
+              sameScope(version, input.explicit!),
+            )!
+          : (catalog.versions[0] ?? null);
+      const promotedKinds = selected
+        ? promoteLegacyProjectTara(db, selected)
+        : [];
+      return {
+        versions: catalog.versions,
+        selected,
+        source:
+          input.explicit && selected && sameScope(input.explicit, selected)
+            ? ("explicit" as const)
+            : selected
+              ? catalog.bound
+                ? ("bound" as const)
+                : ("latest" as const)
+              : ("none" as const),
+        promotedKinds,
+      };
+    },
+  });
+}

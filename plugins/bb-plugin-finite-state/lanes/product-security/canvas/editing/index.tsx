@@ -16,6 +16,7 @@ import {
   type ArchitectureYamlEntity,
   type CanvasEntityKind,
 } from "./schema.js";
+import type { ResolvedTaraScope } from "../scope/index.js";
 
 const PROJECT_SCOPE_STORAGE_KEY =
   "finite-state:product-security:project-scope:v1";
@@ -148,7 +149,11 @@ function referenceOptions(
   };
 }
 
-export function ProductSecurityEditingLayer(): React.JSX.Element | null {
+export function ProductSecurityEditingLayer({
+  scope,
+}: {
+  scope?: ResolvedTaraScope;
+} = {}): React.JSX.Element | null {
   const [appRuntime, setAppRuntime] = useState<EditingAppRuntime | null>(null);
   useEffect(() => {
     let active = true;
@@ -159,15 +164,19 @@ export function ProductSecurityEditingLayer(): React.JSX.Element | null {
       active = false;
     };
   }, []);
-  return appRuntime ? <ConfiguredEditingLayer appRuntime={appRuntime} /> : null;
+  return appRuntime ? (
+    <ConfiguredEditingLayer appRuntime={appRuntime} scope={scope} />
+  ) : null;
 }
 
 function ConfiguredEditingLayer({
   appRuntime,
+  scope,
 }: {
   appRuntime: EditingAppRuntime;
+  scope?: ResolvedTaraScope;
 }): React.JSX.Element | null {
-  const projectId = readPersistedProjectId();
+  const projectId = scope?.workspaceProjectId ?? readPersistedProjectId();
   if (!projectId) {
     return (
       <div className="pointer-events-none absolute inset-x-3 top-3 z-30 rounded-md border border-border bg-card/95 p-3 text-sm text-muted-foreground shadow-sm">

@@ -4,6 +4,7 @@ import { cleanup, fireEvent } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@bb/plugin-sdk/testing/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { connectedRemoteStatus } from "../../../../test/app-connections.js";
+import { resolveTestTaraScope } from "../scope/test-fixture.js";
 
 afterEach(() => {
   cleanup();
@@ -30,6 +31,7 @@ describe("WP-35 empty-model editing entry", () => {
         context: { projectId: "project-empty", threadId: null },
         rpc: {
           connectionsStatus: connectedRemoteStatus,
+          taraScopeResolve: resolveTestTaraScope,
           taraList: () => ({
             items: [],
             total: 0,
@@ -67,6 +69,7 @@ describe("WP-35 empty-model editing entry", () => {
         context: { projectId: "project-invalid", threadId: null },
         rpc: {
           connectionsStatus: connectedRemoteStatus,
+          taraScopeResolve: resolveTestTaraScope,
           taraList: () =>
             Promise.reject(
               new Error(

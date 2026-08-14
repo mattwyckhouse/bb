@@ -423,6 +423,19 @@ describe("registered product-security realtime boundary", () => {
             context: { projectId: PROJECT_ID, threadId: null },
             rpc: {
               connectionsStatus: connectedRemoteStatus,
+              taraScopeResolve: () => {
+                const selected = {
+                  platformProjectId: PROJECT_ID,
+                  projectVersionId: threatVersionId ?? ACTIVE_VERSION_ID,
+                  asOf: cache.asOf,
+                };
+                return {
+                  versions: [selected],
+                  selected,
+                  source: "bound",
+                  promotedKinds: [],
+                };
+              },
               taraList: taraPage,
               threatOverlaySnapshot: () => {
                 threatReads += 1;
