@@ -976,7 +976,7 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           throw new Error(
             `failed bench run missing from list: ${JSON.stringify(runs)}`,
           );
-        const runId = string(failed?.["key"], "failed run id");
+        const runId = string(failed["key"], "failed run id");
         slot.unmount();
         const detail = renderSlot(
           panel,
@@ -1178,9 +1178,10 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
         fireEvent.click(
           partialSlot.getByRole("button", { name: "Pull findings" }),
         );
-        const partialReport = await partialSlot.findByText(
+        await partialSlot.findByText(
           /3 fetched · 1 quarantined · 2 published/u,
         );
+        const partialReportText = partialSlot.container.textContent ?? "";
         await artifacts.writeText(
           "partial-quarantine.dom.html",
           partialSlot.container.innerHTML,
@@ -1326,7 +1327,7 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
         detailSlot.unmount();
         runtime.evidence.set("fs193", {
           partial,
-          partialReport: partialReport.textContent,
+          partialReport: partialReportText,
           failure,
           retained,
           recovered,

@@ -8,6 +8,7 @@ import {
 import { execFile } from "node:child_process";
 import {
   chmod,
+  copyFile,
   mkdir,
   readFile,
   readdir,
@@ -19,15 +20,26 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import type { BbPluginApi } from "@bb/plugin-sdk";
+import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import Database from "better-sqlite3";
 import { format } from "prettier";
 
 import { openStore } from "../../../../lib/store/index.js";
 import { MIGRATIONS } from "../../../../lib/store/schema.js";
 import type { Json } from "../../../../lib/remote/types.js";
+import { parseFindingStableKey } from "../../../../lib/sync/registry.js";
 import { pullFindings } from "../../../../lanes/findings/cache/pull.js";
+import { normalizeFinding } from "../../../../lanes/findings/cache/pull.js";
 import type { FindingsDeps } from "../../../../lanes/findings/cache/types.js";
+import {
+  readOverlayFiles,
+  serializeOverlay,
+} from "../../../../lanes/findings/overlay/reader.js";
+import {
+  stableKeyFor,
+  type DecisionInput,
+  type TriageOverlayV1,
+} from "../../../../lanes/findings/overlay/schema.js";
 import {
   openManifest,
   verifyMountIntegrity,
@@ -41,7 +53,7 @@ const GENERATED_AT = "2026-01-01T00:00:00.000Z";
 const PROJECT_ID = "project-ax3000-demo";
 const V23_ID = "pv-ax3000-2.3";
 const V24_ID = "pv-ax3000-2.4";
-const GENERATOR_VERSION = "wp66-v1";
+const GENERATOR_VERSION = "wp66-v2";
 const EXPECTED = {
   newUntriaged: 412,
   policyMatches: 306,
@@ -54,6 +66,8 @@ const EXPECTED = {
 
 export type GoldenSeedManifest = {
   seedVersion: 1;
+  generatorVersion: typeof GENERATOR_VERSION;
+  seed: number;
   sourceSeed: string;
   generatedAt: string;
   products: {
@@ -67,6 +81,17 @@ export type GoldenSeedManifest = {
     purpose: string;
     schemaVersion?: number;
   }>;
+};
+
+type SeedFindingSets = {
+  v23: Record<string, Json>[];
+  v24: Record<string, Json>[];
+  recovered: string[];
+  stale: string[];
+  orphans: string[];
+  matched: string[];
+  held: string[];
+  decisions: DecisionInput[];
 };
 
 type Story = {
@@ -107,125 +132,242 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   );
 }
 
-function findingRows(seed: number): Record<string, Json>[] {
-  return Array.from({ length: EXPECTED.newUntriaged }, (_, index) => {
+async function findingRows(seed: number): Promise<SeedFindingSets> {
+  const specimen = JSON.parse(
+    await readFile(
+      resolve(
+        import.meta.dirname,
+        "../../../mock-remote/fixtures/platform/fs193-binary-sast-specimen.json",
+      ),
+      "utf8",
+    ),
+  ) as Record<string, Json>;
+  const componentSpecimen = specimen["component"] as Record<string, Json>;
+  const makeRow = (
+    index: number,
+    options: { purl?: string; cve?: string; idPrefix?: string } = {},
+  ): Record<string, Json> => {
     const ordinal = index + 1;
     const kev = index === 0;
     const policyMatch = index < EXPECTED.policyMatches;
-    const cve = kev
-      ? "CVE-2026-31337"
-      : `CVE-2026-${String(40_000 + seed * 1_000 + ordinal).padStart(5, "0")}`;
-    const componentName = kev ? "httpd" : `ax3000-component-${ordinal}`;
+    const cve =
+      options.cve ??
+      (kev ? "CVE-2026-31337" : `CVE-2026-${40_000 + seed * 1_000 + ordinal}`);
+    const purl = options.purl ?? "pkg:generic/finite-state/httpd@2.3.1";
     return {
-      id: `FINDING-${String(ordinal).padStart(4, "0")}`,
-      findingId: cve,
+      ...specimen,
+      id: `${options.idPrefix ?? "FINDING"}-${String(ordinal).padStart(4, "0")}`,
+      findingId: `${options.idPrefix ?? "FINDING"}-${String(ordinal).padStart(4, "0")}`,
       cve,
-      title: `${cve} on ${componentName}`,
-      type: "cve",
+      vulnerabilityId: `VULN-${seed}-${String(ordinal).padStart(4, "0")}`,
+      title: `${cve} on httpd`,
+      type: "binary-sast",
       severity: policyMatch ? "high" : "low",
       inKev: kev,
-      warnings: 0,
+      inVcKev: false,
+      vulnInDataset: true,
+      hasExploit: kev,
+      exploitMaturity: kev ? "weaponized" : "proof-of-concept",
+      risk: policyMatch ? 92 : 18,
+      riskBand: policyMatch ? "critical" : "low",
+      cvssScore: policyMatch ? 9.8 : 3.1,
+      epssScore: policyMatch ? "0.971" : "0.014",
+      epssPercentile: policyMatch ? "0.998" : "0.210",
+      warnings: policyMatch ? 1 : 0,
       violations: policyMatch ? 1 : 0,
       reachabilityScore: policyMatch ? 9 : 0,
-      reachability: {
-        verdict: policyMatch ? "reachable" : "unreachable",
-        factors: policyMatch ? ["WAN ingress", "http parser"] : ["no path"],
-      },
+      reachability: policyMatch ? "reachable" : "unreachable",
+      reachabilityFactors: policyMatch
+        ? ["WAN ingress", "http parser"]
+        : ["no path"],
+      purl,
       component: {
-        id: kev ? "COMP-httpd" : `COMP-${String(ordinal).padStart(4, "0")}`,
-        name: componentName,
-        version: kev ? "2.3.1" : "1.0.0",
-        purl: kev
-          ? "pkg:generic/httpd@2.3.1"
-          : `pkg:generic/ax3000-component-${ordinal}@1.0.0`,
+        ...componentSpecimen,
+        id: "COMP-httpd",
+        name: "httpd",
+        version: purl.endsWith("@2.2.0") ? "2.2.0" : "2.3.1",
+        appId: "APP-AX3000",
+        vcId: "VC-AX3000",
       },
+      project: { id: PROJECT_ID, name: "AX3000" },
+      projectVersion: {
+        id: V24_ID,
+        version: "2.4",
+        created: GENERATED_AT,
+        updated: GENERATED_AT,
+      },
+      cwes: policyMatch ? ["CWE-119", "CWE-20"] : ["CWE-20"],
+      exploitInfo: kev ? [{ type: "test-fixture", public: false }] : [],
+      comments: [],
+      firstSeen: GENERATED_AT,
+      softDeleted: false,
       detected: GENERATED_AT,
     };
+  };
+  const v24 = Array.from({ length: EXPECTED.newUntriaged }, (_, index) =>
+    makeRow(index),
+  );
+  const recoveredRows = v24.slice(1, 15).map((row, index) => ({
+    ...row,
+    id: `V23-RECOVERED-${String(index + 1).padStart(2, "0")}`,
+    findingId: `V23-RECOVERED-${String(index + 1).padStart(2, "0")}`,
+    projectVersion: {
+      id: V23_ID,
+      version: "2.3",
+      created: GENERATED_AT,
+      updated: GENERATED_AT,
+    },
+  }));
+  const asV23 = (row: Record<string, Json>): Record<string, Json> => ({
+    ...row,
+    projectVersion: {
+      id: V23_ID,
+      version: "2.3",
+      created: GENERATED_AT,
+      updated: GENERATED_AT,
+    },
   });
+  const staleRows = v24.slice(15, 24).map((row, index) =>
+    asV23(
+      makeRow(15 + index, {
+        purl: "pkg:generic/finite-state/httpd@2.2.0",
+        cve: String(row["cve"]),
+        idPrefix: "V23-STALE",
+      }),
+    ),
+  );
+  const orphanRows = [0, 1].map((index) =>
+    asV23(
+      makeRow(500 + index, {
+        purl: "pkg:generic/finite-state/httpd@2.2.0",
+        cve: `CVE-2025-${99_001 + index}`,
+        idPrefix: "V23-ORPHAN",
+      }),
+    ),
+  );
+  const v23 = [...recoveredRows, ...staleRows, ...orphanRows];
+  const stableKey = (row: Record<string, Json>): string =>
+    normalizeFinding(row).stableKey;
+  const recovered = recoveredRows.map(stableKey);
+  const stale = staleRows.map(stableKey);
+  const orphans = orphanRows.map(stableKey);
+  const matched = v24.slice(0, EXPECTED.policyMatches).map(stableKey);
+  const held = [matched[0]!];
+  // The 14 recovered decisions share their stable keys across versions. The
+  // stale/orphan baselines remain authored alongside all 305 writable v2.4
+  // policy matches, producing 316 unique overlay rows in total.
+  const authoredRows = [...v23, ...v24.slice(15, EXPECTED.policyMatches)];
+  const decisions = authoredRows.map((row, index): DecisionInput => {
+    const normalized = normalizeFinding(row);
+    const component = {
+      purl: normalized.componentPurl,
+      name: normalized.componentName,
+      group: normalized.componentGroup,
+      version: normalized.componentVersion,
+    };
+    return {
+      project: PROJECT_ID,
+      component,
+      cve: normalized.cve!,
+      stableKey: stableKeyFor(PROJECT_ID, component, normalized.cve!),
+      status: "IN_TRIAGE",
+      justification: null,
+      response: null,
+      reason: "Golden Loop deterministic policy decision",
+      pin: "exact_version",
+      provenance: {
+        by: "bb.test/golden-seed",
+        at: GENERATED_AT,
+        evidence: `offline policy evaluation ${String(index + 1).padStart(3, "0")}`,
+      },
+      sync: {
+        base:
+          index < EXPECTED.carryForwardRecovered
+            ? {
+                status: "IN_TRIAGE",
+                justification: null,
+                response: null,
+                reason: "Golden Loop deterministic policy decision",
+              }
+            : null,
+        pushed_at: index < EXPECTED.carryForwardRecovered ? GENERATED_AT : null,
+      },
+    };
+  });
+  return { v23, v24, recovered, stale, orphans, matched, held, decisions };
 }
 
-async function createWarmDatabase(path: string, seed: number): Promise<void> {
+async function createWarmDatabase(
+  path: string,
+  seed: number,
+  rows: SeedFindingSets,
+): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  const database = new Database(path);
-  const storageBoundary = {
-    database: () => database,
-    migrate(db: Database.Database, statements: readonly string[]) {
-      db.exec(
-        "CREATE TABLE IF NOT EXISTS _bb_migrations (id INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)",
-      );
-      const applied = new Set(
-        (
-          db.prepare("SELECT id FROM _bb_migrations").all() as Array<{
-            id: number;
-          }>
-        ).map(({ id }) => id),
-      );
-      const record = db.prepare(
-        "INSERT INTO _bb_migrations (id, applied_at) VALUES (?, ?)",
-      );
-      db.transaction(() => {
-        statements.forEach((statement, index) => {
-          if (applied.has(index)) return;
-          db.exec(statement);
-          record.run(index, Date.parse(GENERATED_AT));
-        });
-      })();
-    },
-  };
-  // Deliberate host boundary: production openStore only consumes storage;
-  // the E2E generator supplies that primitive with a real file-backed DB.
-  const store = openStore({ storage: storageBoundary } as BbPluginApi);
-  const rows = findingRows(seed);
-  const platform: FindingsDeps["platform"] = {
-    async *getFindings() {
-      for (let offset = 0; offset < rows.length; offset += 137) {
-        const items = rows.slice(offset, offset + 137);
-        yield {
-          items,
-          next:
-            offset + items.length < rows.length
-              ? String(offset + items.length)
-              : null,
-          total: rows.length,
-        };
-      }
-    },
-  };
-  await pull(
-    {
-      db: store.db,
-      now: () => new Date(GENERATED_AT),
-      createGenerationId: () => `golden-seed-${seed}-findings`,
-      adapters: [],
-      cachePullers: [
-        {
-          kind: "finding",
-          pull: async (scope, generationId, onProgress) => {
-            const result = await pullFindings(
-              { db: store.db, platform, pageSize: 137 },
-              scope,
-              generationId,
-              onProgress,
-            );
-            return {
-              fetched: result.fetched,
-              baseRows: result.published,
-              quarantined: result.quarantined,
-              advisories: result.advisories,
-            };
+  const host = createFakePluginHost({ pluginId: "finite-state-golden-seed" });
+  const store = openStore(host.bb);
+  const pullScope = async (
+    pvId: string,
+    scopeRows: Record<string, Json>[],
+  ): Promise<void> => {
+    const platform: FindingsDeps["platform"] = {
+      async *getFindings() {
+        for (let offset = 0; offset < scopeRows.length; offset += 137) {
+          const items = scopeRows.slice(offset, offset + 137);
+          yield {
+            items,
+            next:
+              offset + items.length < scopeRows.length
+                ? String(offset + items.length)
+                : null,
+            total: scopeRows.length,
+          };
+        }
+      },
+    };
+    await pull(
+      {
+        db: store.db,
+        now: () => new Date(GENERATED_AT),
+        createGenerationId: () => `golden-seed-${seed}-${pvId}-findings`,
+        adapters: [],
+        cachePullers: [
+          {
+            kind: "finding",
+            pull: async (scope, generationId, onProgress) => {
+              const result = await pullFindings(
+                { db: store.db, platform, pageSize: 137 },
+                scope,
+                generationId,
+                onProgress,
+              );
+              return {
+                fetched: result.fetched,
+                baseRows: result.published,
+                quarantined: result.quarantined,
+                advisories: result.advisories,
+              };
+            },
           },
-        },
-      ],
-    },
-    { projectId: PROJECT_ID, projectVersionId: V24_ID },
-    ["finding"],
-  );
-  store.db
-    .prepare("UPDATE _bb_migrations SET applied_at = ?")
-    .run(Date.parse(GENERATED_AT));
-  store.db.pragma("journal_mode = DELETE");
-  store.db.exec("VACUUM");
-  store.db.close();
+        ],
+      },
+      { projectId: PROJECT_ID, projectVersionId: pvId },
+      ["finding"],
+    );
+  };
+  try {
+    await pullScope(V23_ID, rows.v23);
+    await pullScope(V24_ID, rows.v24);
+    store.db
+      .prepare("UPDATE _bb_migrations SET applied_at = ?")
+      .run(Date.parse(GENERATED_AT));
+    store.db.pragma("journal_mode = DELETE");
+    store.db.exec("VACUUM");
+    const sourcePath = store.db.name;
+    store.db.close();
+    await copyFile(sourcePath, path);
+  } finally {
+    await host.harness.lifecycle.dispose();
+  }
 }
 
 const FILES = {
@@ -323,11 +465,19 @@ async function createFirmware(
     stale: false,
   });
   verifyMountIntegrity(manifest);
+  manifest.database.exec(
+    `UPDATE fs_node
+        SET verified_dev = NULL,
+            verified_ino = NULL,
+            verified_mtime_ns = NULL,
+            verified_ctime_ns = NULL`,
+  );
   manifest.database
     .prepare("UPDATE _fs_migrations SET applied_at = ?")
     .run(GENERATED_AT);
   manifest.database.pragma("wal_checkpoint(TRUNCATE)");
   manifest.database.pragma("journal_mode = DELETE");
+  manifest.database.exec("VACUUM");
   const manifestFile = manifest.path;
   manifest.close();
   await rm(`${manifestFile}-wal`, { force: true });
@@ -335,11 +485,53 @@ async function createFirmware(
   return { digest, fileCount: Object.keys(files).length };
 }
 
-function story(): Story {
-  const matched = Array.from(
-    { length: EXPECTED.policyMatches },
-    (_, index) => `FINDING-${String(index + 1).padStart(4, "0")}`,
+async function createOverlays(
+  worktree: string,
+  findings: SeedFindingSets,
+): Promise<void> {
+  const overlays = new Map<string, TriageOverlayV1>();
+  for (const input of findings.decisions) {
+    const identity = JSON.stringify(input.component);
+    const overlay = overlays.get(identity) ?? {
+      schema: "fs-triage/v1",
+      project: input.project,
+      component: input.component,
+      decisions: {},
+    };
+    overlay.decisions[input.cve] = {
+      status: input.status,
+      justification: input.justification,
+      response: input.response,
+      reason: input.reason,
+      pin: input.pin ?? "exact_version",
+      provenance: input.provenance,
+      sync: input.sync ?? { base: null, pushed_at: null },
+    };
+    overlays.set(identity, overlay);
+  }
+  const directory = join(worktree, ".fs", "triage", PROJECT_ID);
+  await mkdir(directory, { recursive: true });
+  for (const [index, overlay] of [...overlays.values()].entries())
+    await writeFile(
+      join(directory, `httpd-${index + 1}.yaml`),
+      serializeOverlay(overlay),
+      "utf8",
+    );
+  const corpus = await readOverlayFiles(worktree);
+  const authored = corpus.files.flatMap((file) =>
+    Object.keys(file.overlay.decisions).map((cve) =>
+      stableKeyFor(file.overlay.project, file.overlay.component, cve),
+    ),
   );
+  if (
+    corpus.errors.length > 0 ||
+    authored.length !==
+      EXPECTED.policyWritten + EXPECTED.stale + EXPECTED.orphans
+  )
+    throw new Error("generated triage overlay count mismatch");
+}
+
+function story(findings: SeedFindingSets): Story {
   return {
     generatorVersion: GENERATOR_VERSION,
     project: { id: PROJECT_ID, product: "AX3000" },
@@ -358,14 +550,14 @@ function story(): Story {
       check: "CHECK-HTTPD-WAN",
     },
     drift: {
-      recovered: Array.from({ length: 14 }, (_, index) => `CF-${index + 1}`),
-      stale: Array.from({ length: 9 }, (_, index) => `STALE-${index + 1}`),
-      orphans: ["ORPHAN-1", "ORPHAN-2"],
+      recovered: findings.recovered,
+      stale: findings.stale,
+      orphans: findings.orphans,
     },
     policy: {
-      matched,
-      written: matched.slice(1),
-      held: [matched[0]!],
+      matched: findings.matched,
+      written: findings.matched.slice(1),
+      held: findings.held,
     },
   };
 }
@@ -469,6 +661,8 @@ function purpose(path: string): string {
     return "fully materialized synthetic firmware file";
   if (path.endsWith("story.json"))
     return "Golden Loop identities, counts, and drift cross-links";
+  if (path.includes("/.fs/triage/"))
+    return "production-format authored VEX triage overlay";
   if (path.endsWith("trace.json"))
     return "source, binary, firmware, run, and attestation trace links";
   if (path.endsWith("run-events.json"))
@@ -515,7 +709,12 @@ export async function generateGoldenSeed(
     sourceAfter,
     "utf8",
   );
-  await writeJson(join(worktree, ".fs", "golden-loop", "story.json"), story());
+  const findings = await findingRows(seed);
+  await createOverlays(worktree, findings);
+  await writeJson(
+    join(worktree, ".fs", "golden-loop", "story.json"),
+    story(findings),
+  );
   await writeJson(join(worktree, ".fs", "threats", "THREAT-22.json"), {
     id: "THREAT-22",
     component: "COMP-httpd",
@@ -552,7 +751,7 @@ export async function generateGoldenSeed(
     false,
     ["TEST_GAP: optional squashfs segment intentionally unavailable"],
   );
-  await createWarmDatabase(join(root, "warm-cache", "data.db"), seed);
+  await createWarmDatabase(join(root, "warm-cache", "data.db"), seed, findings);
   await writeJson(join(root, "warm-cache", "run-events.json"), {
     runId: "RUN-OFFLINE-AX3000-24",
     firmwareDigest: v24.digest,
@@ -598,7 +797,9 @@ export async function generateGoldenSeed(
   );
   const manifest: GoldenSeedManifest = {
     seedVersion: 1,
-    sourceSeed: `wp08-sha256:${sha256(sourceManifest)}`,
+    generatorVersion: GENERATOR_VERSION,
+    seed,
+    sourceSeed: `wp08-sha256:${sha256(sourceManifest)};seed=${seed};generator=${GENERATOR_VERSION}`,
     generatedAt: GENERATED_AT,
     products,
     expected: EXPECTED,
@@ -614,6 +815,11 @@ function parseManifest(value: unknown): GoldenSeedManifest {
   const manifest = value as Partial<GoldenSeedManifest>;
   if (
     manifest.seedVersion !== 1 ||
+    manifest.generatorVersion !== GENERATOR_VERSION ||
+    !Number.isSafeInteger(manifest.seed) ||
+    !manifest.sourceSeed?.endsWith(
+      `;seed=${manifest.seed};generator=${GENERATOR_VERSION}`,
+    ) ||
     manifest.generatedAt !== GENERATED_AT ||
     manifest.expected?.newUntriaged !== 412 ||
     !Array.isArray(manifest.artifacts)
@@ -722,25 +928,121 @@ export async function verifyGoldenSeed(rootInput: string): Promise<void> {
       .pluck()
       .get();
     const findingCount = dataDb
-      .prepare("SELECT COUNT(*) FROM findings")
+      .prepare("SELECT COUNT(*) FROM findings WHERE project_version_id = ?")
       .pluck()
-      .get();
+      .get(V24_ID);
+    const baselineCount = dataDb
+      .prepare("SELECT COUNT(*) FROM findings WHERE project_version_id = ?")
+      .pluck()
+      .get(V23_ID);
     const kev = dataDb
-      .prepare("SELECT component_name, cve, in_kev FROM findings WHERE cve = ?")
-      .get("CVE-2026-31337") as
-      | { component_name: string; cve: string; in_kev: number }
+      .prepare(
+        `SELECT stable_key, component_name, component_group,
+                component_version, component_purl, cve, in_kev,
+                severity, risk_score, band, cvss_score, cvss_vector,
+                epss_score, epss_percentile, has_exploit,
+                exploit_maturity, reachability_score,
+                reachability_verdict, reachability_factors,
+                vuln_in_dataset, cwes, warning_count, violation_count,
+                location, first_seen
+           FROM findings
+          WHERE project_version_id = ? AND cve = ?`,
+      )
+      .get(V24_ID, "CVE-2026-31337") as
+      | Record<string, string | number | null>
       | undefined;
     if (migrationCount !== MIGRATIONS.length)
       throw new Error("data.db schema mismatch");
+    const showcaseFields = [
+      "component_name",
+      "component_group",
+      "component_version",
+      "component_purl",
+      "severity",
+      "risk_score",
+      "band",
+      "cvss_score",
+      "cvss_vector",
+      "epss_score",
+      "epss_percentile",
+      "exploit_maturity",
+      "reachability_score",
+      "reachability_verdict",
+      "reachability_factors",
+      "vuln_in_dataset",
+      "cwes",
+      "warning_count",
+      "violation_count",
+      "location",
+      "first_seen",
+    ];
     if (
       findingCount !== EXPECTED.newUntriaged ||
-      kev?.component_name !== "httpd" ||
-      kev.in_kev !== 1
+      baselineCount !== 25 ||
+      kev?.["component_name"] !== "httpd" ||
+      kev["in_kev"] !== 1 ||
+      kev["has_exploit"] !== 1 ||
+      showcaseFields.some((field) => kev[field] === null) ||
+      parseFindingStableKey(String(kev["stable_key"])).tier !== "purl"
     )
       throw new Error("data.db Golden Loop cross-link mismatch");
+
+    const v23Rows = dataDb
+      .prepare(
+        "SELECT stable_key, cve FROM findings WHERE project_version_id = ?",
+      )
+      .all(V23_ID) as Array<{ stable_key: string; cve: string }>;
+    const v24Rows = dataDb
+      .prepare(
+        "SELECT stable_key, cve FROM findings WHERE project_version_id = ?",
+      )
+      .all(V24_ID) as Array<{ stable_key: string; cve: string }>;
+    const v23Keys = new Set(v23Rows.map(({ stable_key }) => stable_key));
+    const v24Keys = new Set(v24Rows.map(({ stable_key }) => stable_key));
+    const v24Cves = new Set(v24Rows.map(({ cve }) => cve));
+    if (
+      !storyValue.policy.matched.every((key) => v24Keys.has(key)) ||
+      !storyValue.drift.recovered.every(
+        (key) => v23Keys.has(key) && v24Keys.has(key),
+      ) ||
+      !storyValue.drift.stale.every(
+        (key) =>
+          v23Keys.has(key) &&
+          !v24Keys.has(key) &&
+          v24Cves.has(parseFindingStableKey(key).cve),
+      ) ||
+      !storyValue.drift.orphans.every(
+        (key) =>
+          v23Keys.has(key) &&
+          !v24Keys.has(key) &&
+          !v24Cves.has(parseFindingStableKey(key).cve),
+      )
+    )
+      throw new Error("data.db drift baseline mismatch");
   } finally {
     dataDb.close();
   }
+  const overlays = await readOverlayFiles(join(root, "worktree"));
+  const authoredKeys = overlays.files.flatMap((file) =>
+    Object.keys(file.overlay.decisions).map((cve) =>
+      stableKeyFor(file.overlay.project, file.overlay.component, cve),
+    ),
+  );
+  if (
+    overlays.errors.length > 0 ||
+    authoredKeys.length !==
+      EXPECTED.policyWritten + EXPECTED.stale + EXPECTED.orphans ||
+    !storyValue.policy.written.every((key) => authoredKeys.includes(key)) ||
+    JSON.stringify([...authoredKeys].sort()) !==
+      JSON.stringify(
+        [
+          ...storyValue.policy.written,
+          ...storyValue.drift.stale,
+          ...storyValue.drift.orphans,
+        ].sort(),
+      )
+  )
+    throw new Error("triage overlay cross-link mismatch");
   const worktree = join(root, "worktree");
   for (const product of [manifest.products.v23, manifest.products.v24]) {
     const manifestPath = join(

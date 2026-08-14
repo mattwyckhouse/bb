@@ -13,6 +13,7 @@ import {
 } from "./generate.js";
 
 const FIXTURES = resolve(import.meta.dirname, "../../../mock-remote/fixtures");
+const COMMITTED_SEED = import.meta.dirname;
 const roots: string[] = [];
 
 async function temporaryRoot(label: string): Promise<string> {
@@ -21,11 +22,13 @@ async function temporaryRoot(label: string): Promise<string> {
   return root;
 }
 
-function withoutSqliteHashes(manifest: GoldenSeedManifest): GoldenSeedManifest {
+function withoutDataDatabaseHash(
+  manifest: GoldenSeedManifest,
+): GoldenSeedManifest {
   return {
     ...manifest,
     artifacts: manifest.artifacts.map((artifact) =>
-      artifact.path.endsWith(".sqlite") || artifact.path.endsWith("data.db")
+      artifact.path.endsWith("data.db")
         ? { ...artifact, sha256: "SQLITE_BYTE_LAYOUT_EXCLUDED" }
         : artifact,
     ),
@@ -86,13 +89,46 @@ describe("WP-66 Golden Loop seed", () => {
     const second = await temporaryRoot("same-b");
     const firstManifest = await generateGoldenSeed(first, 66);
     const secondManifest = await generateGoldenSeed(second, 66);
-    expect(withoutSqliteHashes(firstManifest)).toEqual(
-      withoutSqliteHashes(secondManifest),
+    expect(withoutDataDatabaseHash(firstManifest)).toEqual(
+      withoutDataDatabaseHash(secondManifest),
     );
     expect(semanticDatabaseDump(join(first, "warm-cache", "data.db"))).toEqual(
       semanticDatabaseDump(join(second, "warm-cache", "data.db")),
     );
+    for (const pvId of [
+      "pv-ax3000-2.3",
+      "pv-ax3000-2.4",
+      "pv-ax3000-unpack-gap",
+    ]) {
+      expect(
+        semanticDatabaseDump(
+          join(first, "worktree", ".fs-firmware", pvId, "manifest.sqlite"),
+        ),
+      ).toEqual(
+        semanticDatabaseDump(
+          join(second, "worktree", ".fs-firmware", pvId, "manifest.sqlite"),
+        ),
+      );
+    }
   }, 60_000);
+
+  it("records the seed and generator provenance", async () => {
+    const first = await generateGoldenSeed(
+      await temporaryRoot("provenance-a"),
+      66,
+    );
+    const second = await generateGoldenSeed(
+      await temporaryRoot("provenance-b"),
+      67,
+    );
+    expect(first.seed).toBe(66);
+    expect(first.generatorVersion).toBe("wp66-v2");
+    expect(first.sourceSeed).not.toBe(second.sourceSeed);
+  }, 60_000);
+
+  it("verifies the committed Golden Loop seed", async () => {
+    await expect(verifyGoldenSeed(COMMITTED_SEED)).resolves.toBeUndefined();
+  });
 
   it("expected drift, policy, KEV, threat, and trace counts hold", async () => {
     const root = await temporaryRoot("counts");
