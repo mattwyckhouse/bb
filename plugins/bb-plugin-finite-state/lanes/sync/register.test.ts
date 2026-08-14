@@ -962,7 +962,7 @@ decisions:
         },
       },
       {
-        id: "fs193-quarantined",
+        id: "fs199-advisory",
         projectVersionId: mixedVersion,
         findingId: "CVE-2026-19301",
         title: "https://remote.invalid/?api_key=must-not-reach-diagnostics",
@@ -972,6 +972,14 @@ decisions:
           version: "1.0.0",
         },
         epssScore: "authorization must-not-reach-diagnostics",
+        warningCount: null,
+        violations: "credential=must-not-reach-diagnostics",
+      },
+      {
+        id: "fs193-quarantined",
+        projectVersionId: mixedVersion,
+        findingId: "CVE-2026-19302",
+        component: { id: "fs193-invalid-component", version: "1.0.0" },
       },
     ];
     for (const row of mixedRows) {
@@ -988,7 +996,7 @@ decisions:
         kinds: ["finding"],
       });
       expect(mixed).toMatchObject({
-        kinds: { finding: { fetched: 3, baseRows: 2, quarantined: 1 } },
+        kinds: { finding: { fetched: 4, baseRows: 3, quarantined: 1 } },
       });
       if (
         typeof mixed !== "object" ||
@@ -1018,6 +1026,7 @@ decisions:
       expect(persisted.map((row) => row.findingId)).toEqual([
         "00000000-0000-5000-8000-000000000193",
         "fs193-exact",
+        "fs199-advisory",
       ]);
       expect(persisted[0]).toMatchObject({
         epssScore: 0.00426,
@@ -1027,6 +1036,11 @@ decisions:
       expect(parseFindingStableKey(persisted[0]?.stableKey ?? "").tier).toBe(
         "name-group-any-version",
       );
+      expect(persisted[2]).toMatchObject({
+        epssScore: null,
+        warningCount: 0,
+        violationCount: 0,
+      });
       const registeredList = await host.harness.behavior.callRpc(
         "findingsUiList",
         {
@@ -1047,7 +1061,32 @@ decisions:
               violationCount: 1,
             }),
           }),
+          expect.objectContaining({
+            key: "fs199-advisory",
+            fields: expect.objectContaining({
+              epssScore: null,
+              warningCount: null,
+              violationCount: null,
+            }),
+          }),
         ]),
+      });
+      const diagnostics = await host.harness.behavior.callRpc(
+        "findingsPullAdvisories",
+        {
+          projectId: scope.projectId,
+          projectVersionId: mixedVersion,
+          generationId: mixed.generationId,
+        },
+      );
+      expect(diagnostics).toEqual({
+        generationId: mixed.generationId,
+        advisories: [
+          { code: "FINDING_COMPONENT_IDENTITY_MISSING", count: 1 },
+          { code: "FINDING_EPSS_SCORE_INVALID", count: 1 },
+          { code: "FINDING_VIOLATION_COUNT_INVALID", count: 1 },
+          { code: "FINDING_WARNING_COUNT_INVALID", count: 1 },
+        ],
       });
       const registeredDetail = await host.harness.behavior.callRpc(
         "findingDetailGet",
@@ -1071,7 +1110,8 @@ decisions:
       });
       expect(host.harness.inspection.logEntries).toContainEqual({
         level: "warn",
-        message: "Quarantined individually unkeyable Platform finding rows: 1",
+        message:
+          "Quarantined Platform finding rows with invalid identity: 1; reasons [FINDING_COMPONENT_IDENTITY_MISSING=1]",
       });
       expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
         "must-not-reach-diagnostics",
@@ -1096,7 +1136,29 @@ decisions:
       expect(mixedCli).toMatchObject({ exitCode: 0, stderr: "" });
       const mixedCliReport: unknown = JSON.parse(mixedCli.stdout);
       expect(mixedCliReport).toMatchObject({
-        kinds: { finding: { fetched: 3, baseRows: 2, quarantined: 1 } },
+        kinds: { finding: { fetched: 4, baseRows: 3, quarantined: 1 } },
+        advisories: [
+          {
+            kind: "finding",
+            code: "FINDING_COMPONENT_IDENTITY_MISSING",
+            count: 1,
+          },
+          {
+            kind: "finding",
+            code: "FINDING_EPSS_SCORE_INVALID",
+            count: 1,
+          },
+          {
+            kind: "finding",
+            code: "FINDING_VIOLATION_COUNT_INVALID",
+            count: 1,
+          },
+          {
+            kind: "finding",
+            code: "FINDING_WARNING_COUNT_INVALID",
+            count: 1,
+          },
+        ],
       });
       if (
         typeof mixedCliReport !== "object" ||
@@ -1172,7 +1234,7 @@ decisions:
         .get(scope.projectId, mixedVersion);
       expect(acceptedAfterFailure).toEqual({
         acceptedGenerationId: mixedCliReport.generationId,
-        visibleRows: 2,
+        visibleRows: 3,
       });
       expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
         "remote-authored-secret",

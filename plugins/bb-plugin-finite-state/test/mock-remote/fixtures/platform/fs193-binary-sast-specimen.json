@@ -31,7 +31,7 @@
   "reachabilityScore": 0,
   "project": {
     "id": "cfe6fb97-ed49-5ace-b0fe-8121dba2c793",
-    "name": "Sanitized firmware project"
+    "name": "I491NAX"
   },
   "projectVersion": {
     "id": "b3df3633-ebd7-560e-a3b7-77953521b4e3",
@@ -39,9 +39,7 @@
     "created": "2025-08-01T20:34:39.020812Z",
     "updated": "2026-08-13T13:31:12.642019Z"
   },
-  "cwes": [
-    "CWE-295"
-  ],
+  "cwes": ["CWE-295"],
   "exploitInfo": [],
   "dependencyPath": null
 }

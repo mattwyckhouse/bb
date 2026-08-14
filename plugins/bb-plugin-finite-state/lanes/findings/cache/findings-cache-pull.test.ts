@@ -132,25 +132,33 @@ describe("findings cache pull", () => {
       "authorization hostile",
       "FINDING_EPSS_PERCENTILE_INVALID",
     ],
+    ["warnings", null, "FINDING_WARNING_COUNT_INVALID"],
     ["warnings", "credential=hostile-warning", "FINDING_WARNING_COUNT_INVALID"],
+    ["warningCount", null, "FINDING_WARNING_COUNT_INVALID"],
     ["violations", -1, "FINDING_VIOLATION_COUNT_INVALID"],
+    ["violations", null, "FINDING_VIOLATION_COUNT_INVALID"],
   ] as const)(
-    "rejects present but unmappable %s values with a value-free quarantine reason",
+    "nulls present but unmappable %s values with a value-free advisory",
     (field, hostileValue, code) => {
-      const attempt = () =>
-        normalizeFinding({
-          id: `hostile-${field}`,
-          findingId: "CVE-2026-19900",
-          component: { name: "library", version: "1.0.0" },
-          [field]: hostileValue,
-        });
-      try {
-        attempt();
-        throw new Error("hostile finding value was accepted");
-      } catch (error: unknown) {
-        expect(error).toMatchObject({ code });
-        expect(String(error)).not.toContain(String(hostileValue));
-      }
+      const finding = normalizeFinding({
+        id: `hostile-${field}`,
+        findingId: "CVE-2026-19900",
+        component: { name: "library", version: "1.0.0" },
+        [field]: hostileValue,
+      });
+      expect(finding.advisories).toEqual([code]);
+      expect(
+        field === "epssScore" || field === "epssPercentile"
+          ? field === "epssScore"
+            ? finding.epssScore
+            : finding.epssPercentile
+          : field === "warnings" || field === "warningCount"
+            ? finding.warningCount
+            : finding.violationCount,
+      ).toBeNull();
+      expect(JSON.stringify(finding.advisories)).not.toContain(
+        String(hostileValue),
+      );
     },
   );
 
@@ -432,6 +440,7 @@ describe("findings cache pull", () => {
               fetched: result.fetched,
               baseRows: result.published,
               quarantined: result.quarantined,
+              advisories: result.advisories,
             })),
         },
       ],
@@ -555,6 +564,7 @@ describe("findings cache pull", () => {
               fetched: result.fetched,
               baseRows: result.published,
               quarantined: result.quarantined,
+              advisories: result.advisories,
             };
           },
         },
@@ -657,6 +667,7 @@ describe("findings cache pull", () => {
               fetched: result.fetched,
               baseRows: result.published,
               quarantined: result.quarantined,
+              advisories: result.advisories,
             })),
         },
       ],

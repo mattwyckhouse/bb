@@ -164,7 +164,7 @@ const FS193_BINARY_SAST_FINDING = `{
   "reachabilityScore": 0,
   "project": {
     "id": "cfe6fb97-ed49-5ace-b0fe-8121dba2c793",
-    "name": "Sanitized firmware project"
+    "name": "I491NAX"
   },
   "projectVersion": {
     "id": "b3df3633-ebd7-560e-a3b7-77953521b4e3",
@@ -235,6 +235,7 @@ const decoder = new TextDecoder();
 const PRETTIER_JSON_DRAFTS = new Set([
   "assurance-studio/entities-page-1.json",
   "cases.json",
+  "platform/fs193-binary-sast-specimen.json",
 ]);
 
 function capturedFinding(source: string): Record<string, JsonValue> {
