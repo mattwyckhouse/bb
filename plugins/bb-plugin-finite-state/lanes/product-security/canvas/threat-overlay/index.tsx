@@ -483,6 +483,7 @@ function ConfiguredThreatOverlay({
   const { fitView } = useReactFlow();
   const rpc = appRuntime.useRpc<typeof threatOverlayRpcContract>();
   const snapshot = useThreatSnapshot(projectId, appRuntime);
+  const [collapsed, setCollapsed] = useState(false);
   const [selectionState, dispatchSelection] = useReducer(
     reduceThreatSelection,
     EMPTY_THREAT_SELECTION,
@@ -875,82 +876,126 @@ function ConfiguredThreatOverlay({
           labels={labels}
         />
       ) : null}
-      <div className="absolute bottom-3 left-3 right-3 z-20 flex h-64 min-h-0 overflow-hidden rounded-lg border border-border bg-card/95 text-card-foreground shadow-lg backdrop-blur-sm">
-        {selectedThreat ? (
-          <AttackPathOverlay
-            error={
-              selectionState.selection.routeSignature
-                ? (pathDetail.result?.error ?? pathList.error)
-                : pathList.error
-            }
-            loading={
-              pathList.loading ||
-              (selectionState.selection.routeSignature !== null &&
-                pathDetail.loading)
-            }
-            next={pathList.next}
-            onBack={clearThreat}
-            onLoadMore={() => {
-              if (pathList.threatSlug && pathList.next) {
-                loadPaths(pathList.threatSlug, pathList.next, true);
-              }
-            }}
-            onSelectPath={selectPath}
-            paths={pathList.items}
-            selectedPath={resolvedPath}
-            selectedRouteSignature={selectionState.selection.routeSignature}
-            threatLabel={selectedThreat.title}
-            total={pathList.total}
-          />
-        ) : (
-          <section
-            className="flex min-w-0 flex-1 flex-col"
-            aria-label="Threat overlay"
+      <div
+        className={
+          collapsed
+            ? "absolute bottom-3 left-3 z-20 max-w-[calc(100%-1.5rem)]"
+            : "absolute bottom-3 left-3 z-20 flex h-[min(16rem,calc(100%-1.5rem))] w-[min(32rem,calc(100%-1.5rem))] min-h-0 overflow-hidden rounded-lg border border-border bg-card/95 text-card-foreground shadow-lg backdrop-blur-sm"
+        }
+        data-state={collapsed ? "collapsed" : "expanded"}
+        data-threat-overlay-dock=""
+      >
+        {collapsed ? (
+          <button
+            aria-expanded="false"
+            aria-label="Expand threat overlay"
+            className="flex min-h-10 max-w-full items-center gap-2 rounded-lg border border-border bg-card/95 px-3 py-2 text-xs font-medium text-card-foreground shadow-lg backdrop-blur-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => setCollapsed(false)}
+            type="button"
           >
-            <div className="flex min-h-11 items-center gap-3 border-b border-border px-3 py-2">
-              {labels ? (
-                <ThreatLegend
-                  configured={snapshot.state.data.methodology.configured}
-                  labels={labels}
-                />
-              ) : null}
-              <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
-                {snapshot.state.data.threats.length} open threats
-              </span>
-            </div>
-            {snapshot.state.error ||
-            snapshot.state.data.partialError ||
-            snapshot.state.data.cache.state === "stale" ? (
-              <div
-                className="flex items-center gap-2 border-b border-border bg-muted px-3 py-1.5 text-xs text-foreground"
-                role="status"
-              >
-                <Icon
-                  aria-hidden="true"
-                  className="size-3.5 text-destructive"
-                  name="AlertTriangle"
-                />
-                <span className="truncate">
-                  {snapshot.state.error
-                    ? "Refresh failed; accepted threats remain usable."
-                    : (snapshot.state.data.partialError ??
-                      "Threat overlay is stale; accepted cache remains usable.")}
-                </span>
-              </div>
-            ) : null}
-            {labels ? (
-              <ThreatTable
-                filterTargetSlug={selectionState.selection.targetSlug}
-                labels={labels}
-                onClearFilter={() =>
-                  dispatchSelection({ type: "graph", targetSlug: null })
-                }
-                onSelectThreat={selectThreat}
-                selectedThreatSlug={selectionState.selection.threatSlug}
-                threats={threats}
+            <Icon aria-hidden="true" className="size-3.5" name="Target" />
+            <span className="truncate">STRIDE threats</span>
+            <span className="shrink-0 tabular-nums text-muted-foreground">
+              {snapshot.state.data.threats.length}
+            </span>
+            <Icon aria-hidden="true" className="size-3.5" name="ChevronUp" />
+          </button>
+        ) : (
+          <>
+            <button
+              aria-expanded="true"
+              aria-label="Collapse threat overlay"
+              className="absolute right-2 top-2 z-10 flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => setCollapsed(true)}
+              type="button"
+            >
+              <Icon
+                aria-hidden="true"
+                className="size-3.5"
+                name="ChevronDown"
               />
-            ) : null}
-          </section>
+            </button>
+            <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+              {selectedThreat ? (
+                <AttackPathOverlay
+                  error={
+                    selectionState.selection.routeSignature
+                      ? (pathDetail.result?.error ?? pathList.error)
+                      : pathList.error
+                  }
+                  loading={
+                    pathList.loading ||
+                    (selectionState.selection.routeSignature !== null &&
+                      pathDetail.loading)
+                  }
+                  next={pathList.next}
+                  onBack={clearThreat}
+                  onLoadMore={() => {
+                    if (pathList.threatSlug && pathList.next) {
+                      loadPaths(pathList.threatSlug, pathList.next, true);
+                    }
+                  }}
+                  onSelectPath={selectPath}
+                  paths={pathList.items}
+                  selectedPath={resolvedPath}
+                  selectedRouteSignature={
+                    selectionState.selection.routeSignature
+                  }
+                  threatLabel={selectedThreat.title}
+                  total={pathList.total}
+                />
+              ) : (
+                <section
+                  className="flex min-w-0 flex-1 flex-col"
+                  aria-label="Threat overlay"
+                >
+                  <div className="flex min-h-11 items-center gap-3 border-b border-border px-3 py-2 pr-11">
+                    {labels ? (
+                      <ThreatLegend
+                        configured={snapshot.state.data.methodology.configured}
+                        labels={labels}
+                      />
+                    ) : null}
+                    <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
+                      {snapshot.state.data.threats.length} open threats
+                    </span>
+                  </div>
+                  {snapshot.state.error ||
+                  snapshot.state.data.partialError ||
+                  snapshot.state.data.cache.state === "stale" ? (
+                    <div
+                      className="flex items-center gap-2 border-b border-border bg-muted px-3 py-1.5 text-xs text-foreground"
+                      role="status"
+                    >
+                      <Icon
+                        aria-hidden="true"
+                        className="size-3.5 text-destructive"
+                        name="AlertTriangle"
+                      />
+                      <span className="truncate">
+                        {snapshot.state.error
+                          ? "Refresh failed; accepted threats remain usable."
+                          : (snapshot.state.data.partialError ??
+                            "Threat overlay is stale; accepted cache remains usable.")}
+                      </span>
+                    </div>
+                  ) : null}
+                  {labels ? (
+                    <ThreatTable
+                      filterTargetSlug={selectionState.selection.targetSlug}
+                      labels={labels}
+                      onClearFilter={() =>
+                        dispatchSelection({ type: "graph", targetSlug: null })
+                      }
+                      onSelectThreat={selectThreat}
+                      selectedThreatSlug={selectionState.selection.threatSlug}
+                      threats={threats}
+                    />
+                  ) : null}
+                </section>
+              )}
+            </div>
+          </>
         )}
       </div>
     </>

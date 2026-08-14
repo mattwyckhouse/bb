@@ -616,6 +616,56 @@ describe("WP-33 bidirectional selection and deep links", () => {
     slot.lifecycle.unmount();
   });
 
+  it("docks the overlay to a bounded corner and collapses it to a compact control", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/plugins/finite-state/product-security/tara",
+    );
+    const { ProductSecurityThreatOverlay } = await import("./index.js");
+    const appRuntime = installedAppRuntime();
+    const slot = renderSlot<{}, typeof threatOverlayRpcContract>(
+      {
+        component: () => (
+          <ArchitectureHarness setSelectedIds={() => undefined}>
+            <ProductSecurityThreatOverlay
+              appRuntime={appRuntime}
+              projectId={PROJECT_ID}
+            />
+          </ArchitectureHarness>
+        ),
+      },
+      {},
+      { rpc: mountedRpcHandlers() },
+    );
+
+    await slot.findByText("2 open threats");
+    const dock = slot.container.querySelector("[data-threat-overlay-dock]");
+    expect(dock).toBeInstanceOf(HTMLElement);
+    expect(dock?.getAttribute("data-state")).toBe("expanded");
+    expect(dock?.className).toContain("bottom-3 left-3");
+    expect(dock?.className).toContain("w-[min(32rem,calc(100%-1.5rem))]");
+    expect(dock?.className).not.toContain("right-3");
+
+    fireEvent.click(
+      slot.getByRole("button", { name: "Collapse threat overlay" }),
+    );
+    expect(dock?.getAttribute("data-state")).toBe("collapsed");
+    expect(slot.queryByText("2 open threats")).toBeNull();
+    expect(
+      slot
+        .getByRole("button", { name: "Expand threat overlay" })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
+
+    fireEvent.click(
+      slot.getByRole("button", { name: "Expand threat overlay" }),
+    );
+    expect(await slot.findByText("2 open threats")).toBeTruthy();
+    expect(dock?.getAttribute("data-state")).toBe("expanded");
+    slot.lifecycle.unmount();
+  });
+
   it("mounts a direct threat link and restores the attack-path view", async () => {
     window.history.replaceState(
       null,
