@@ -1,6 +1,6 @@
 # Work Package Index
 
-_102 work packages across eleven logical lanes (WP-71…98 added 2026-08-12 for SPECs 07–08; WP-99…102 drafted 2026-08-14 for the AUTHORITY near-term sequence, held stopped pending owner ratification). Start with `HANDOFF — Product & Architecture.md`, then the accepted direct-API ADR and `api-reference/README.md`, then the Master Plan, AGENTS, the scheduling bootstrap/manifest, and your WP. The ADR and frozen interfaces outrank historical Forge-first recon on transport ownership._
+_102 work packages across eleven logical lanes (WP-71…98 added 2026-08-12 for SPECs 07–08; WP-99…102 added and owner-ratified 2026-08-14 for the AUTHORITY near-term sequence). Start with `HANDOFF — Product & Architecture.md`, then the accepted direct-API ADR and `api-reference/README.md`, then the Master Plan, AGENTS, the scheduling bootstrap/manifest, and your WP. The ADR and frozen interfaces outrank historical Forge-first recon on transport ownership._
 
 **Status legend:** ✅ detailed implementation spec written
 
@@ -290,16 +290,16 @@ Staff this path with your strongest agents. Keep a human reviewer on WP-03/04/05
 
 ---
 
-## AUTHORITY near-term set — Git SoR keystone _(drafted 2026-08-14, owner review pending)_ · AUTHORITY doc
+## AUTHORITY near-term set — Git SoR keystone _(ratified 2026-08-14 23:21Z)_ · AUTHORITY doc
 
-Commissioned by owner decision 2026-08-14 (22:05Z) from the near-term sequence in `AUTHORITY — Git SoR, Platform Graph & AS Seed`. All four are held in `stoppedWorkPackages` until the owner ratifies the drafts; no dispatch before then. Binding constraints baked into every acceptance set: no beat or criterion may require an AS round-trip; `.fs/` YAML is the truth surface; the kept-frozen AS export rule (bugfix only, do not remove) stands.
+Commissioned by owner decision 2026-08-14 (22:05Z) and ratified the same day from the near-term sequence in `AUTHORITY — Git SoR, Platform Graph & AS Seed`. Dispatch order: WP-99 keystone first; WP-101 in parallel after the keystone lands; WP-100 → WP-102 sequential in the cluster. Binding constraints baked into every acceptance set: no beat or criterion may require an AS round-trip; `.fs/` YAML is the truth surface; the kept-frozen AS export rule (bugfix only, do not remove) stands. WP-101 carries an owner condition: one live `fs-cli` evidence capture before stage 0 is declared proven (not a CI dependency).
 
-| WP  | Title                                                         | Effort | Depends on | Status |
-| --- | ------------------------------------------------------------- | ------ | ---------- | ------ |
-| 99  | **Repo contract load on checkout (YAML → SQLite) — KEYSTONE** | 3 d    | 16, 17     | draft  |
-| 100 | `seed --from as` writes `.fs/` once for human commit          | 2 d    | 99         | draft  |
-| 101 | Stage-0 Code Assurance binding against `.fs/requirements`     | 2 d    | 99         | draft  |
-| 102 | Optional `publish` target — truthful stub                     | 0.5 d  | 99, 100    | draft  |
+| WP  | Title                                                         | Effort | Depends on |
+| --- | ------------------------------------------------------------- | ------ | ---------- |
+| 99  | **Repo contract load on checkout (YAML → SQLite) — KEYSTONE** | 3 d    | 16, 17     |
+| 100 | `seed --from as` writes `.fs/` once for human commit          | 2 d    | 99         |
+| 101 | Stage-0 Code Assurance binding against `.fs/requirements`     | 2 d    | 99         |
+| 102 | Optional `publish` target — truthful stub                     | 0.5 d  | 99, 100    |
 
 **WP-99 scope.** The keystone: on activation and checkout movement, rebuild the SQLite projection from `.fs/**` YAML keyed on HEAD + content hash, fully offline. SQLite is disposable; agents author YAML, never the projection. Gates the other three.
 

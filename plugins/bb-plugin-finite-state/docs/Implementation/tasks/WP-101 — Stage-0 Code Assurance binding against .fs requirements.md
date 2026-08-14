@@ -1,6 +1,6 @@
 # WP-101 — Stage-0 Code Assurance binding against `.fs/requirements`
 
-**Lane:** integration · **Spec:** AUTHORITY near-term item 4 · SPEC 00 §14 · **Effort:** 2 d · **Status:** unassigned (DRAFT — owner review required before dispatch)
+**Lane:** integration · **Spec:** AUTHORITY near-term item 4 · SPEC 00 §14 · **Effort:** 2 d · **Status:** unassigned (ratified 2026-08-14, owner condition below)
 **Depends on:** WP-99 · **Blocks:** nothing in this set
 **Produces a FROZEN artifact:** no
 
@@ -51,6 +51,7 @@ export function exportRequirementBindings(
 - [ ] File rename does not break binding (stable key holds); text edit updates the bound text under the same key.
 - [ ] Malformed/duplicate stable keys yield named diagnostics, not crashes or silent drops.
 - [ ] The test header documents exactly which consumption path stands in for `fs-cli` / SEI, so the owner can judge the fidelity of the proof.
+- [ ] **Owner ratification condition (Matt, 2026-08-14 23:21Z):** the in-repo stand-in is accepted for this WP, but before stage 0 is _declared_ proven, one live `fs-cli` invocation against a committed `.fs/requirements` fixture must be recorded as a one-time evidence artifact attached to the task. It is an evidence capture, **not a CI dependency** — CI stays fully offline.
 - [ ] No acceptance criterion requires an AS round-trip or a Graph publish.
 
 ## Test plan
@@ -65,4 +66,4 @@ export function exportRequirementBindings(
 
 ## Open questions
 
-- Whether the stand-in consumption path is faithful enough to `fs-cli` / SEI internals, or whether the owner wants a live `fs-cli` invocation pinned in CI later (out of scope here).
+- ~~Whether the stand-in consumption path is faithful enough to `fs-cli` / SEI internals~~ — resolved by the owner ratification condition above: stand-in accepted for the WP, one live `fs-cli` evidence capture required before stage 0 is declared proven.

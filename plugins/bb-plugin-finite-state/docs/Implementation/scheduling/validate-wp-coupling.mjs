@@ -195,8 +195,8 @@ function duplicates(values) {
 // WP01-WP70 are the FS-93 audit universe (WP01-WP07 minus WP02 had already
 // started). WP71-WP98 are the SPEC 07/08 intake adopted 2026-08-12; all were
 // unstarted at adoption, so the whole range is remaining. WP99-WP102 are the
-// AUTHORITY near-term set drafted 2026-08-14 under owner commissioning; they
-// stay in stoppedWorkPackages until the owner ratifies the drafts.
+// AUTHORITY near-term set, drafted 2026-08-14 and owner-ratified the same day
+// (WP-101 carries a live fs-cli evidence-capture condition in its doc).
 const TOTAL_WORK_PACKAGES = 102;
 
 function expectedRemainingWorkPackages() {

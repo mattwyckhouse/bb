@@ -1,6 +1,6 @@
 # WP-100 — `seed --from as` writes `.fs/` once for human commit
 
-**Lane:** L2 Sync engine · **Spec:** AUTHORITY near-term item 2 · SPEC 01 §3/§5 · **Effort:** 2 d · **Status:** unassigned (DRAFT — owner review required before dispatch)
+**Lane:** L2 Sync engine · **Spec:** AUTHORITY near-term item 2 · SPEC 01 §3/§5 · **Effort:** 2 d · **Status:** unassigned (ratified 2026-08-14)
 **Depends on:** WP-99 · **Blocks:** WP-102
 **Produces a FROZEN artifact:** no
 

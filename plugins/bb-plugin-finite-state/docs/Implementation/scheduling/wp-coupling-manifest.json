@@ -230,27 +230,11 @@
     "prohibitedWorkPackageReasons": {
       "WP02": "ADR — bb Is Not Modified: builtin registration is a BB release decision; dispatch is prohibited and FS-16 stays in backlog until the ADR is superseded."
     },
-    "stoppedWorkPackages": ["WP56", "WP99", "WP100", "WP101", "WP102"],
+    "stoppedWorkPackages": ["WP56"],
     "stoppedWorkPackageReasons": {
       "WP56": {
         "reason": "At integration 056899c2d, local-auth plugin mutations reject multipart before dispatch and plugin HTTP routes match exact paths, blocking the required upload and content route.",
         "resumeCondition": "Resume only after an owner-approved interface revision supplies both multipart upload and parameterized document-content delivery without bb-core changes or forbidden escape hatches."
-      },
-      "WP99": {
-        "reason": "AUTHORITY near-term set drafted 2026-08-14 under owner commissioning; owner review of the draft WP docs is required before any dispatch.",
-        "resumeCondition": "Owner ratifies the WP-99 draft (acceptance criteria, lane, dependencies) via the supervisor."
-      },
-      "WP100": {
-        "reason": "AUTHORITY near-term set drafted 2026-08-14 under owner commissioning; owner review of the draft WP docs is required before any dispatch.",
-        "resumeCondition": "Owner ratifies the WP-100 draft via the supervisor; WP-99 must also be complete."
-      },
-      "WP101": {
-        "reason": "AUTHORITY near-term set drafted 2026-08-14 under owner commissioning; owner review of the draft WP docs is required before any dispatch.",
-        "resumeCondition": "Owner ratifies the WP-101 draft via the supervisor; WP-99 must also be complete."
-      },
-      "WP102": {
-        "reason": "AUTHORITY near-term set drafted 2026-08-14 under owner commissioning; owner review of the draft WP docs is required before any dispatch.",
-        "resumeCondition": "Owner ratifies the WP-102 draft via the supervisor; WP-99 and WP-100 must also be complete."
       }
     },
     "currentLaneCap": 6,

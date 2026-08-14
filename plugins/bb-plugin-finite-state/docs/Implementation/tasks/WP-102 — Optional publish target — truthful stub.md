@@ -1,6 +1,6 @@
 # WP-102 — Optional `publish` target — truthful stub
 
-**Lane:** L2 Sync engine · **Spec:** AUTHORITY near-term item 5 · ADR addendum · **Effort:** 0.5 d · **Status:** unassigned (DRAFT — owner review required before dispatch)
+**Lane:** L2 Sync engine · **Spec:** AUTHORITY near-term item 5 · ADR addendum · **Effort:** 0.5 d · **Status:** unassigned (ratified 2026-08-14)
 **Depends on:** WP-99, WP-100 · **Blocks:** nothing (GraphClient facade is a future amendment, not part of this set)
 **Produces a FROZEN artifact:** no
 

@@ -1,6 +1,6 @@
 # WP-99 — Repo contract load on checkout (YAML → SQLite projection)
 
-**Lane:** L2 Sync engine · **Spec:** AUTHORITY near-term item 1 · SPEC 00 §14 · SPEC 01 §3 · **Effort:** 3 d · **Status:** unassigned (DRAFT — owner review required before dispatch)
+**Lane:** L2 Sync engine · **Spec:** AUTHORITY near-term item 1 · SPEC 00 §14 · SPEC 01 §3 · **Effort:** 3 d · **Status:** unassigned (ratified 2026-08-14)
 **Depends on:** WP-16, WP-17 · **Blocks:** WP-100, WP-101, WP-102
 **Produces a FROZEN artifact:** no
 
