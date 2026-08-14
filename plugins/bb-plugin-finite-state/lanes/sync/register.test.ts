@@ -142,6 +142,15 @@ beforeAll(async () => {
     projectId: "bb-project-sync",
     path: root,
   }));
+  host.harness.sdk.stub("projects.get", async ({ projectId }) => {
+    if (projectId === "junk-workspace-project") {
+      throw new Error("Workspace project not found");
+    }
+    return {
+      id: projectId,
+      sources: [{ hostId: "host-sync", path: root, isDefault: true }],
+    };
+  });
 });
 
 afterAll(async () => {
@@ -250,6 +259,25 @@ describe("sync registration", () => {
 
   it("serves frozen sync RPCs and fails push closed when human authorization is unavailable", async () => {
     const scope = platformScope();
+    await expect(
+      host.harness.behavior.callRpc("syncPull", {
+        ...scope,
+        workspaceProjectId: "junk-workspace-project",
+        kinds: ["requirement"],
+      }),
+    ).rejects.toThrow("Workspace project not found");
+    expect(
+      context
+        .db()
+        .prepare(
+          `SELECT COUNT(*)
+             FROM workspace_platform_project_binding
+            WHERE workspace_project_id = ?`,
+        )
+        .pluck()
+        .get("junk-workspace-project"),
+    ).toBe(0);
+
     const pulled = await host.harness.behavior.callRpc("syncPull", {
       ...scope,
       workspaceProjectId: "bb-project-sync",

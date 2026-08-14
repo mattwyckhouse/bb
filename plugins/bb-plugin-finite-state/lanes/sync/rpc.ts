@@ -44,6 +44,7 @@ function cacheState(metadata: ReturnType<typeof syncMetadata>) {
 export function registerSyncRpc(bb: BbPluginApi, deps: EngineDeps): void {
   bb.rpc.register(syncContract, {
     async syncPull(input) {
+      await bb.sdk.projects.get({ projectId: input.workspaceProjectId });
       const kinds = entityKinds(input.kinds);
       const scope = {
         projectId: input.projectId,

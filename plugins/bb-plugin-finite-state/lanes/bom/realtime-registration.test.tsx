@@ -85,6 +85,11 @@ describe("registered BOM realtime boundary", () => {
     async () => {
       const host = createFakePluginHost({
         pluginId: "finite-state-bom-realtime-boundary",
+        sdk: {
+          projects: {
+            get: ({ projectId }) => ({ id: projectId, sources: [] }),
+          },
+        },
       });
       const state = createMockPlatformState(FIXTURE_ROOT);
       const mock = createMockRemote({

@@ -275,6 +275,11 @@ describe("registered product-security realtime boundary", () => {
     async () => {
       const host = createFakePluginHost({
         pluginId: "finite-state-product-security-realtime-boundary",
+        sdk: {
+          projects: {
+            get: ({ projectId }) => ({ id: projectId, sources: [] }),
+          },
+        },
       });
       const remoteState = createMockPlatformState(FIXTURE_ROOT);
       const mock = createMockRemote({
