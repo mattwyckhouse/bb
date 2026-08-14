@@ -26,6 +26,7 @@ import { connectedRemoteStatus } from "../../test/app-connections.js";
 import { registerPlatformHandlers } from "../../test/mock-remote/platform/register.js";
 import { createMockPlatformState } from "../../test/mock-remote/platform/state.js";
 import { createMockRemote } from "../../test/mock-remote/server.js";
+import { rpcContract } from "../../shared/contract.js";
 import { registerAdapter, type EntityAdapter } from "../sync/engine/adapter.js";
 import { registerSync } from "../sync/register.js";
 import { createSerializer } from "../sync/serialize/serializer.js";
@@ -171,10 +172,10 @@ function requirementPage(projectVersionId: string | null) {
                   status: "draft",
                   ears: {
                     pattern: "ubiquitous",
-                    text: "The gateway SHALL reject unsigned firmware",
+                    text: `The gateway SHALL reject unsigned firmware for ${projectVersionId}`,
                     parts: {
                       system: "gateway",
-                      response: "reject unsigned firmware",
+                      response: `reject unsigned firmware for ${projectVersionId}`,
                     },
                   },
                   source_description: "Protect updates.",
@@ -322,7 +323,8 @@ describe("registered product-security realtime boundary", () => {
         };
 
         let requirementReads = 0;
-        let requirementVersionId: string | null = null;
+        let newestRequirementVersionId: string | null = null;
+        const requirementRequestedVersions: Array<string | null> = [];
         const requirements = renderSlot(
           panel,
           { subPath: "requirements" },
@@ -330,16 +332,21 @@ describe("registered product-security realtime boundary", () => {
             context: { projectId: PROJECT_ID, threadId: null },
             rpc: {
               connectionsStatus: connectedRemoteStatus,
-              requirementsList: () => {
+              requirementsList: (input) => {
                 requirementReads += 1;
-                return requirementPage(requirementVersionId);
+                const request = rpcContract.requirementsList.input.parse(input);
+                requirementRequestedVersions.push(request.projectVersionId);
+                return requirementPage(
+                  request.projectVersionId ?? newestRequirementVersionId,
+                );
               },
             },
           },
         );
         await requirements.findByText("No requirements yet");
         expect(requirementReads).toBe(1);
-        requirementVersionId = ACTIVE_VERSION_ID;
+        expect(requirementRequestedVersions).toEqual([null]);
+        newestRequirementVersionId = ACTIVE_VERSION_ID;
         expect(
           await publishAndDeliver(
             requirements,
@@ -358,8 +365,12 @@ describe("registered product-security realtime boundary", () => {
         ]);
         await waitFor(() => expect(requirementReads).toBe(2));
         await requirements.findByText("REQ-1");
+        expect(requirementRequestedVersions[1]).toBeNull();
+        await requirements.findByText(
+          `reject unsigned firmware for ${ACTIVE_VERSION_ID}`,
+        );
 
-        requirementVersionId = OTHER_VERSION_ID;
+        newestRequirementVersionId = OTHER_VERSION_ID;
         await publishAndDeliver(
           requirements,
           "requirement",
@@ -367,6 +378,10 @@ describe("registered product-security realtime boundary", () => {
           "requirements:changed",
         );
         await waitFor(() => expect(requirementReads).toBe(3));
+        expect(requirementRequestedVersions[2]).toBeNull();
+        await requirements.findByText(
+          `reject unsigned firmware for ${OTHER_VERSION_ID}`,
+        );
         await publishAndDeliver(
           requirements,
           "requirement",

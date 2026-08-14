@@ -74,6 +74,7 @@ export function RequirementsCardsForProject({
       const request = {
         projectId,
         projectVersionId:
+          continuation !== null &&
           projectVersionScopeRef.current.projectId === projectId
             ? projectVersionScopeRef.current.projectVersionId
             : null,
