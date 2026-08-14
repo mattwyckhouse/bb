@@ -31,7 +31,7 @@ import { GOLDEN_LOOP_BEATS, type GoldenLoopBeat } from "./scenario.js";
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../../../..");
 const FIXTURE_ROOT = resolve(import.meta.dirname, "../../mock-remote/fixtures");
 const WORKSPACE_PROJECT_ID = "workspace-golden-loop";
-const BENCH_VERSION = "golden-bench-version";
+const BENCH_VERSION = "pv-a481df87dadf";
 const execFileAsync = promisify(execFile);
 
 interface Runtime {
@@ -446,19 +446,8 @@ async function filesBelow(root: string): Promise<string[]> {
 
 async function ensureFirmware(runtime: Runtime, pvId: string): Promise<void> {
   if (runtime.firmwareReady.has(pvId)) return;
-  const image = `golden-${pvId}.bin`;
-  await writeFile(join(runtime.worktree, image), `firmware:${pvId}\n`, "utf8");
   const pull = await runtime.host.harness.behavior.runCli(
-    [
-      "finite-state",
-      "firmware",
-      "pull",
-      pvId,
-      "--image",
-      image,
-      "--max-depth",
-      "4",
-    ],
+    ["finite-state", "firmware", "pull", pvId, "--source", "api"],
     { projectId: runtime.projectId, threadId: "thread-firmware-golden" },
   );
   if (!successfulCli(pull)) {
@@ -1217,6 +1206,24 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
             "same-kind repaired pull publishes",
             published.length === 1,
           ),
+          assertion(
+            "full-shape pull isolates identity errors and publishes enrichment advisories",
+            enrichmentKind["fetched"] === 3 &&
+              enrichmentKind["quarantined"] === 1 &&
+              enrichmentKind["baseRows"] === 2 &&
+              array(enrichmentPull["advisories"], "FS-199 advisories").some(
+                (item) =>
+                  object(item, "FS-199 advisory")["code"] ===
+                  "FINDING_WARNING_COUNT_INVALID",
+              ),
+          ),
+          assertion(
+            "registered finding detail renders real-shape enrichment",
+            detailText.includes("ca-certificates.crt") &&
+              detailText.includes("0.4%") &&
+              detailText.includes("2 warnings") &&
+              detailText.includes("1 violations"),
+          ),
         ];
       },
     },
@@ -1897,6 +1904,7 @@ async function createRun(
         mockModule,
         platformStateModule,
         platformRegisterModule,
+        platformFirmwareModule,
         asRegisterModule,
         syncModule,
         pushModule,
@@ -1913,6 +1921,7 @@ async function createRun(
         import("../../mock-remote/server.js"),
         import("../../mock-remote/platform/state.js"),
         import("../../mock-remote/platform/register.js"),
+        import("../../mock-remote/platform/firmware.js"),
         import("../../mock-remote/assurance-studio/register.js"),
         import("../../../lanes/sync/register.js"),
         import("../../../lanes/sync/push/index.js"),
@@ -1998,9 +2007,13 @@ async function createRun(
         assuranceStudioKey: "golden-as-key",
         fixtureRoot: FIXTURE_ROOT,
         register(service, registry) {
-          if (service === "platform")
+          if (service === "platform") {
             platformRegisterModule.registerPlatformHandlers(registry, state);
-          else
+            platformFirmwareModule.registerMockPlatformFirmware(
+              registry,
+              FIXTURE_ROOT,
+            );
+          } else
             asRegisterModule.registerMockAssuranceStudio(
               registry,
               FIXTURE_ROOT,
