@@ -135,6 +135,10 @@ describe.sequential("registered requirement-to-bench journey", () => {
       },
     });
     const platformState = createMockPlatformState(FIXTURE_ROOT);
+    platformProjectId = requiredId(
+      [...platformState.projects.values()][0],
+      "project fixture",
+    );
     let firmwareFixtureVersionId: string | null = null;
     mock = createMockRemote({
       platformToken: "fs201-platform-token",
@@ -162,6 +166,29 @@ describe.sequential("registered requirement-to-bench journey", () => {
       apiKey: "fs201-as-key",
       fetch: mock.assuranceStudio.fetch,
     });
+    assuranceStudio.listProjectLinks = () => ({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          items: [
+            {
+              linkId: "link-fs201",
+              assuranceStudioProjectId: platformProjectId,
+              assuranceStudioProjectName: "FS-201 Assurance Studio project",
+              platformProjectId,
+              platformProjectName: "FS-201 Platform project",
+              platformProjectVersionId: projectVersionId,
+              platformProjectVersionName: "FS-201 firmware version",
+              isPrimary: true,
+              syncStatus: "synced" as const,
+              lastSyncedAt: "2026-08-14T00:00:00.000Z",
+              versionStrategy: "specific",
+            },
+          ],
+          total: 1,
+          next: null,
+        };
+      },
+    });
     ctx = createPluginContext(host.bb);
     const services: RemoteServices = {
       platform,
@@ -173,10 +200,6 @@ describe.sequential("registered requirement-to-bench journey", () => {
     registerProductSecurity(host.bb, ctx);
     registerFirmware(host.bb, ctx);
     registerBench(host.bb, ctx);
-    platformProjectId = requiredId(
-      [...platformState.projects.values()][0],
-      "project fixture",
-    );
     if (firmwareFixtureVersionId === null)
       throw new Error("firmware fixture has no project version");
     projectVersionId = firmwareFixtureVersionId;
@@ -191,6 +214,34 @@ describe.sequential("registered requirement-to-bench journey", () => {
   });
 
   it("keeps requirements out of default Sync surfaces and exposes a clean pre-run Bench state", async () => {
+    const candidates = await host.harness.behavior.runCli(
+      ["finite-state", "as-projects", "--project", platformProjectId, "--json"],
+      cliContext(),
+    );
+    expect(candidates).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(candidates.stdout)).toMatchObject({
+      candidateState: "unambiguous",
+      selectedAssuranceStudioProjectId: null,
+      items: [
+        expect.objectContaining({
+          assuranceStudioProjectId: platformProjectId,
+        }),
+      ],
+    });
+    const selected = await host.harness.behavior.runCli(
+      [
+        "finite-state",
+        "as-project-select",
+        "--project",
+        platformProjectId,
+        "--as-project",
+        platformProjectId,
+        "--json",
+      ],
+      cliContext(),
+    );
+    expect(selected).toMatchObject({ exitCode: 0, stderr: "" });
+
     const defaultPull = await host.harness.behavior.runCli(
       [
         "finite-state",
@@ -209,6 +260,7 @@ describe.sequential("registered requirement-to-bench journey", () => {
     );
 
     const defaultPlan = await host.harness.behavior.callRpc("syncPlan", {
+      workspaceProjectId: WORKSPACE_PROJECT_ID,
       projectId: platformProjectId,
       projectVersionId,
       pageSize: 200,
