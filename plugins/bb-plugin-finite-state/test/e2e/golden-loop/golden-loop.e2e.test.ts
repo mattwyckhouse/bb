@@ -605,7 +605,15 @@ async function authorFs167Decisions(runtime: Runtime): Promise<unknown> {
   });
   await execFileAsync(
     "git",
-    ["commit", "-m", "test: seed FS-167 clean triage baseline"],
+    [
+      "-c",
+      "user.name=Finite State Golden Loop",
+      "-c",
+      "user.email=golden-loop@finite-state.test",
+      "commit",
+      "-m",
+      "test: seed FS-167 clean triage baseline",
+    ],
     { cwd: runtime.worktree },
   );
   const guardedPull = await runtime.host.harness.behavior.runCli(
