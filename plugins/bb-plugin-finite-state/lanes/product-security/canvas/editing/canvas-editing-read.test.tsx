@@ -808,6 +808,7 @@ describe("WP-35 read-classified editing RPCs", () => {
       "actuator",
       "communication",
       "other",
+      "external_service",
     ]);
     expect(() => parseArchitectureEntity("component", loaded.fields)).toThrow();
   });

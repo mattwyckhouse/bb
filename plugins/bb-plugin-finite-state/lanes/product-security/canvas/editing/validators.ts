@@ -80,7 +80,7 @@ export class RetiredComponentTypeValidationAdvisory extends CanvasEntityValidati
   constructor(readonly entity: RetiredAuthoredComponentYamlEntity) {
     super(
       "RETIRED_COMPONENT_TYPE",
-      `component_type “${entity.component_type}” was valid in an earlier canvas vocabulary but cannot be authored to Assurance Studio. Update it to one of the current vendored component types before editing or syncing this component.`,
+      `component_type “${entity.component_type}” was valid in an earlier canvas vocabulary but cannot be authored to Assurance Studio. Update it to one of the current known component types before editing or syncing this component.`,
       "component_type",
     );
     this.name = "RetiredComponentTypeValidationAdvisory";
