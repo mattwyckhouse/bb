@@ -1286,12 +1286,31 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
     },
     {
       ...metadata(7),
-      expectedFailure: {
-        task: "FS-201",
-        reason: "the registered requirement Sync puller has not landed",
-        signature: "No puller is registered for requirement",
-      },
       action: async ({ artifacts }) => {
+        const candidates = object(
+          await runtime.host.harness.behavior.callRpc(
+            "syncAsProjectCandidates",
+            {
+              workspaceProjectId: WORKSPACE_PROJECT_ID,
+              projectId: runtime.projectId,
+              projectVersionId: null,
+            },
+          ),
+          "Assurance Studio project candidates",
+        );
+        const candidate = object(
+          array(candidates["items"], "AS project candidates")[0],
+          "AS project candidate",
+        );
+        await runtime.host.harness.behavior.callRpc("syncAsProjectSelect", {
+          workspaceProjectId: WORKSPACE_PROJECT_ID,
+          projectId: runtime.projectId,
+          projectVersionId: null,
+          assuranceStudioProjectId: string(
+            candidate["assuranceStudioProjectId"],
+            "AS project id",
+          ),
+        });
         const pull = await runtime.host.harness.behavior.runCli(
           [
             "finite-state",
@@ -1305,16 +1324,8 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           ],
           cliContext(),
         );
-        if (!successfulCli(pull)) {
-          const refusal = String(object(pull, "requirement pull")["stderr"]);
-          await artifacts.writeJson("fs201-pending.json", {
-            marker: "EXPECTED_FAILURE",
-            task: "FS-201",
-            signature: "No puller is registered for requirement",
-            refusal,
-          });
-          throw new Error(refusal);
-        }
+        if (!successfulCli(pull))
+          throw new Error(String(object(pull, "requirement pull")["stderr"]));
         await ensureFirmware(runtime, runtime.findingVersion);
         const versions = await runtime.host.harness.behavior.callRpc(
           "benchProjectVersions",
@@ -1913,7 +1924,10 @@ async function createRun(
         import("../../../lanes/agentic/tools/actions.js"),
       ]);
       const state = platformStateModule.createMockPlatformState(FIXTURE_ROOT);
-      const templateVersion = state.versions.values().next().value;
+      const templateVersion =
+        [...state.versions.values()].find(
+          (version) => version["priorVersionId"] !== null,
+        ) ?? state.versions.values().next().value;
       const templateProject = state.projects.values().next().value;
       if (!templateVersion || !templateProject)
         throw new Error("Mock Platform seed is empty");
@@ -2137,7 +2151,7 @@ describe.sequential("Golden Loop incremental acceptance", () => {
         expect(firstResults.map(({ beat }) => beat)).toEqual(
           GOLDEN_LOOP_BEATS.map(({ number }) => number),
         );
-        const pendingBeats = new Set([3, 7, 11, 12]);
+        const pendingBeats = new Set([3, 11, 12]);
         expect(
           firstResults
             .filter(({ status }) => status === "skipped")
