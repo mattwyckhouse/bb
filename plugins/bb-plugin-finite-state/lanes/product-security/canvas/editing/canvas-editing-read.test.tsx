@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPluginContext } from "../../../../lib/context.js";
 import { ENTITIES } from "../../../../lib/sync/registry.js";
 import { rpcContract } from "../../../../shared/contract.js";
+import { registerProductSecurity } from "../../register.js";
 import { registerCanvasEditingBackend } from "./backend.js";
 import {
   architectureEntityPayload,
@@ -121,6 +122,113 @@ function seedAccepted(
 }
 
 describe("WP-35 read-classified editing RPCs", () => {
+  it("authors a new component while a retired component is quarantined with an advisory", async () => {
+    const legacy = component("legacy-controller", "hardware");
+    const legacyContent = serializeCanvasEntity(legacy).replace(
+      "component_type: hardware",
+      "component_type: ecu",
+    );
+    const legacyPath =
+      "/workspace/product-security/architecture/components/legacy-controller.yaml";
+    const createdPath =
+      "/workspace/product-security/architecture/components/new-firmware.yaml";
+    const files = new Map([[legacyPath, legacyContent]]);
+    const host = createFakePluginHost({
+      pluginId: "finite-state-editing-quarantined-component",
+      sdk: {
+        projects: {
+          get: ({ projectId }) => ({
+            id: projectId,
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
+        files: {
+          list: ({ path }) => ({
+            files: [...files.keys()]
+              .filter((candidate) => candidate.startsWith(`${path}/`))
+              .map((candidate) => ({
+                path: candidate,
+                name: candidate.slice(candidate.lastIndexOf("/") + 1),
+              })),
+            truncated: false,
+          }),
+          read: ({ path }) => {
+            const content = files.get(path);
+            if (content === undefined) {
+              throw Object.assign(new Error(`ENOENT: ${path}`), {
+                code: "ENOENT",
+              });
+            }
+            return {
+              content,
+              contentEncoding: "utf8" as const,
+              sha256: hash(content),
+            };
+          },
+          write: ({ path, content, expectedSha256 }) => {
+            const current = files.get(path);
+            const currentSha256 = current === undefined ? null : hash(current);
+            if (currentSha256 !== expectedSha256) {
+              return { outcome: "conflict" as const, currentSha256 };
+            }
+            files.set(path, content);
+            return {
+              outcome: "written" as const,
+              sha256: hash(content),
+              sizeBytes: content.length,
+            };
+          },
+        },
+      },
+    });
+    hosts.push(host);
+    const context = createPluginContext(host.bb);
+    registerProductSecurity(host.bb, context);
+
+    const created = rpcContract.taraCommandApply.output.parse(
+      await host.harness.callRpc("taraCommandApply", {
+        projectId: PROJECT,
+        projectVersionId: null,
+        operation: "create",
+        kind: "component",
+        fields: architectureEntityPayload(
+          component("new-firmware", "firmware"),
+        ),
+        expectedContentSha256: null,
+      }),
+    );
+
+    expect(created).toMatchObject({
+      stableKey: "new-firmware",
+      beforeSha256: null,
+    });
+    expect(files.get(createdPath)).toContain("component_type: firmware");
+    expect(files.get(legacyPath)).toBe(legacyContent);
+
+    const page = rpcContract.taraList.output.parse(
+      await host.harness.callRpc("taraList", {
+        projectId: PROJECT,
+        projectVersionId: null,
+        kind: "component",
+        filters: {},
+        pageSize: 50,
+        continuation: null,
+      }),
+    );
+    expect(page).toMatchObject({
+      items: [expect.objectContaining({ key: "new-firmware" })],
+      total: 1,
+      cache: {
+        state: "stale",
+        message: expect.stringMatching(
+          /legacy-controller\.yaml.*component_type.*earlier canvas vocabulary/iu,
+        ),
+      },
+    });
+  });
+
   it("returns a typed migration advisory for a retired authored component type", async () => {
     const current = component("legacy-controller", "hardware");
     const content = serializeCanvasEntity(current).replace(

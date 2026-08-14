@@ -44,10 +44,20 @@ import {
   RetiredComponentTypeReadAdvisory,
   serializeCanvasEntity,
   type CanvasEditCommand,
+  type CanvasFileListing,
   type CanvasFileStore,
   type CanvasProjectSource,
   type EditDeps,
 } from "./writer.js";
+
+async function isolatedCanvasFileListing(
+  files: CanvasFileStore,
+  kind: CanvasEntityKind,
+): Promise<CanvasFileListing> {
+  return files.listWithDiagnostics
+    ? files.listWithDiagnostics(kind)
+    : { entities: await files.list(kind), diagnostics: [] };
+}
 
 export const canvasEditingRpcContract = defineRpcContract({
   canvasEditingLoad: {
@@ -250,9 +260,11 @@ async function materializeAcceptedCanvasKind(
       key.slice(deletedPrefix.length),
     ),
   );
-  const existing = new Set(
-    (await files.list(kind)).map((stored) => stored.entity.slug),
-  );
+  const listing = await isolatedCanvasFileListing(files, kind);
+  const existing = new Set([
+    ...listing.entities.map((stored) => stored.entity.slug),
+    ...listing.diagnostics.map((diagnostic) => diagnostic.slug),
+  ]);
   for (const row of acceptedCanvasRows(db, input, kind)) {
     const entity = parseAcceptedCanvasEntity(kind, row);
     if (deleted.has(encodeURIComponent(entity.slug))) continue;
@@ -297,14 +309,18 @@ async function mergedCanvasEntities(
   const kinds = ["component", "zone", "asset", "dataflow", "threat"] as const;
   const groups = await Promise.all(
     kinds.map(async (kind) => {
+      const listing = await isolatedCanvasFileListing(files, kind);
       const merged = new Map(
         acceptedCanvasRows(db, input, kind).map((row) => {
           const entity = parseAcceptedCanvasEntity(kind, row);
           return [entity.slug, entity] as const;
         }),
       );
-      for (const stored of await files.list(kind)) {
+      for (const stored of listing.entities) {
         merged.set(stored.entity.slug, stored.entity);
+      }
+      for (const diagnostic of listing.diagnostics) {
+        merged.delete(diagnostic.slug);
       }
       for (const slug of await deletedCanvasSlugs(bb, input, kind)) {
         merged.delete(slug);

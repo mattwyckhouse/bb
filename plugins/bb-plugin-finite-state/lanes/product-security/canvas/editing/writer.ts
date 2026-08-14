@@ -531,12 +531,7 @@ export function createSdkCanvasFileStore(
   return {
     read,
     async list(kind) {
-      const listing = await listWithDiagnostics(kind);
-      const first = listing.diagnostics[0];
-      if (first) {
-        throw new Error(`${first.file}: ${first.message}`);
-      }
-      return listing.entities;
+      return (await listWithDiagnostics(kind)).entities;
     },
     listWithDiagnostics,
     async write(file, content, expectedSha256) {
