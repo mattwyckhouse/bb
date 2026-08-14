@@ -12,20 +12,16 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import type { Json, PlatformClient } from "../../../lib/remote/types.js";
 import type Database from "better-sqlite3";
 import { stripVexProvenance } from "../../findings/bulk/readback.js";
-import { loadPersistedComponentIdentities } from "../../findings/cache/pull.js";
 import {
   canonicalFindingStableKey,
   canonicalizeFindingIdentity,
   legacyFindingStableKey,
-  selectFindingCve,
   type CanonicalFindingIdentity,
   type FindingIdentityInput,
 } from "../../findings/stable-key/canonical.js";
 import {
   currentFindingIdentity,
-  legacyCacheFindingIdentity,
-  loadComponentIdentities,
-  type ComponentIdentity,
+  purlIdentity,
 } from "../../findings/stable-key/wire-identity.js";
 import { createSerializer } from "../serialize/serializer.js";
 import { SerializeError } from "../serialize/yaml.js";
@@ -84,38 +80,6 @@ function nestedComponent(
   return isJsonRecord(value) ? value : null;
 }
 
-function purlIdentity(purl: string | null): {
-  name: string;
-  group: string | null;
-  version: string | null;
-} | null {
-  if (purl === null || !purl.startsWith("pkg:")) return null;
-  const withoutSuffix = purl.slice(4).split(/[?#]/u, 1)[0] ?? "";
-  const slash = withoutSuffix.indexOf("/");
-  if (slash < 0) return null;
-  const segments = withoutSuffix.slice(slash + 1).split("/");
-  const last = segments.pop();
-  if (last === undefined || last.length === 0) return null;
-  const at = last.lastIndexOf("@");
-  const encodedName = at < 0 ? last : last.slice(0, at);
-  const encodedVersion = at < 0 ? null : last.slice(at + 1);
-  try {
-    return {
-      name: decodeURIComponent(encodedName),
-      group:
-        segments.length === 0
-          ? null
-          : segments.map(decodeURIComponent).join("/"),
-      version:
-        encodedVersion === null || encodedVersion.length === 0
-          ? null
-          : decodeURIComponent(encodedVersion),
-    };
-  } catch {
-    return null;
-  }
-}
-
 function vexPayload(
   row: Readonly<Record<string, Json>>,
 ): Record<string, unknown> | null {
@@ -152,56 +116,28 @@ function legacyVexIdentity(
 
 function findingIdentity(
   row: Readonly<Record<string, Json>>,
-  identities: ReadonlyMap<string, ComponentIdentity>,
 ): CanonicalFindingIdentity {
-  const identity = currentFindingIdentity(row, identities);
-  if (identity !== null) return canonicalizeFindingIdentity(identity);
-  const component = nestedComponent(row);
-  const cve = selectFindingCve({
-    cve: optionalString(row, "cve"),
-    findingIdentifier: optionalString(row, "findingIdentifier"),
-    findingId: optionalString(row, "findingId"),
-    vulnerabilityId: optionalString(row, "vulnerabilityId"),
-  });
-  const purl =
-    optionalString(row, "componentPurl") ?? optionalString(row, "purl");
-  const parsed = purlIdentity(purl);
-  const componentId =
-    optionalString(row, "componentId") ??
-    (component === null ? null : optionalString(component, "id"));
-  const name =
-    parsed?.name ??
-    optionalString(row, "componentFallbackIdentity") ??
-    componentId;
-  if (cve === null || name === null) {
+  const identity = currentFindingIdentity(row);
+  if (identity === null)
     throw new TypeError("Platform finding is missing canonical identity");
-  }
-  return canonicalizeFindingIdentity({
-    cve,
-    purl,
-    name,
-    group: parsed?.group ?? null,
-    version: parsed?.version ?? null,
-  });
+  return canonicalizeFindingIdentity(identity);
 }
 
 /** Computes the frozen exact canonical key for any normalized Platform finding. */
 export function projectVexDecisionKey(
   row: Readonly<Record<string, Json>>,
-  identities: ReadonlyMap<string, ComponentIdentity> = new Map(),
 ): string {
-  return canonicalFindingStableKey(findingIdentity(row, identities));
+  return canonicalFindingStableKey(findingIdentity(row));
 }
 
 /** Projects one normalized Platform finding into the frozen VEX overlay shape. */
 export function projectVexDecision(
   row: Readonly<Record<string, Json>>,
-  identities: ReadonlyMap<string, ComponentIdentity> = new Map(),
 ): ServerEntity | null {
   const payload = vexPayload(row);
   if (payload === null) return null;
   return {
-    key: projectVexDecisionKey(row, identities),
+    key: projectVexDecisionKey(row),
     remoteId: requiredString(row, "id"),
     payload,
   };
@@ -212,11 +148,9 @@ export function projectVexDecision(
  * including findings that do not currently carry a VEX tuple.
  */
 export function createVexDecisionResolver(
-  client: PlatformClient,
-  db?: Database.Database,
+  client: Pick<PlatformClient, "getFindings">,
 ): KeyResolver {
   const pending = new Map<string, Promise<ReadonlySet<string>>>();
-  const declaredIdentities = new Map<string, ComponentIdentity>();
   const serverKeys = (
     projectId: string,
     projectVersionId: string,
@@ -226,24 +160,11 @@ export function createVexDecisionResolver(
     if (current !== undefined) return current;
     const next = (async () => {
       const keys = new Set<string>();
-      if (db !== undefined) {
-        for (const [id, identity] of loadPersistedComponentIdentities(
-          { db, platform: client },
-          { projectId, projectVersionId },
-        )) {
-          if (!declaredIdentities.has(id)) declaredIdentities.set(id, identity);
-        }
-      }
-      const loaded = await loadComponentIdentities(client, PAGE_SIZE);
-      for (const [id, identity] of loaded) {
-        if (!declaredIdentities.has(id)) declaredIdentities.set(id, identity);
-      }
       for await (const page of client.getFindings({
         projectVersionId,
         page: { pageSize: PAGE_SIZE },
       })) {
-        for (const row of page.items)
-          keys.add(projectVexDecisionKey(row, declaredIdentities));
+        for (const row of page.items) keys.add(projectVexDecisionKey(row));
       }
       return keys;
     })();
@@ -540,6 +461,50 @@ function rememberMigration(
   migrations.set(legacyKey, { key: canonicalKey, identity: canonical });
 }
 
+function rememberPersistedKeyMigration(
+  migrations: Map<string, VexKeyMigration>,
+  legacyKey: string | undefined,
+  canonical: CanonicalFindingIdentity,
+): void {
+  if (legacyKey === undefined) return;
+  const canonicalKey = canonicalFindingStableKey(canonical);
+  if (legacyKey === canonicalKey) return;
+  const prior = migrations.get(legacyKey);
+  if (prior !== undefined && prior.key !== canonicalKey) {
+    throw new TypeError(
+      `Persisted finding key maps to multiple canonical identities`,
+    );
+  }
+  migrations.set(legacyKey, { key: canonicalKey, identity: canonical });
+}
+
+function persistedFindingKeys(
+  db: Database.Database | undefined,
+  scope: SyncScope,
+  rows: readonly Record<string, Json>[],
+): ReadonlyMap<string, string> {
+  if (db === undefined || rows.length === 0) return new Map();
+  const ids = rows.map((row) => requiredString(row, "id"));
+  const placeholders = ids.map(() => "?").join(", ");
+  const persisted = db
+    .prepare(
+      `SELECT finding.finding_id AS findingId, finding.stable_key AS stableKey
+         FROM findings AS finding
+         JOIN sync_state AS state
+           ON state.project_id = finding.project_id
+          AND state.project_version_id = finding.project_version_id
+          AND state.entity_kind = 'finding'
+          AND state.accepted_generation_id = finding.generation_id
+        WHERE finding.project_id = ? AND finding.project_version_id = ?
+          AND finding.finding_id IN (${placeholders})`,
+    )
+    .all(scope.projectId, scope.projectVersionId, ...ids) as Array<{
+    findingId: string;
+    stableKey: string;
+  }>;
+  return new Map(persisted.map((row) => [row.findingId, row.stableKey]));
+}
+
 function writeCanonicalComponent(
   target: Record<string, unknown>,
   identity: CanonicalFindingIdentity,
@@ -710,11 +675,10 @@ export async function fastForwardVexWorking(
 
 /** Creates the VEX adapter while closing over only its owning Platform client. */
 export function createVexDecisionAdapter(
-  client: Pick<PlatformClient, "getFindings" | "listComponents">,
+  client: Pick<PlatformClient, "getFindings">,
   db?: Database.Database,
 ): EntityAdapter {
   const migrationsByScope = new Map<string, Map<string, VexKeyMigration>>();
-  const declaredIdentities = new Map<string, ComponentIdentity>();
   return {
     kind: "vexDecision",
     klass: "OVERLAY",
@@ -727,22 +691,6 @@ export function createVexDecisionAdapter(
       const scopeKey = `${scope.projectId}\0${scope.projectVersionId}`;
       const migrations = new Map<string, VexKeyMigration>();
       migrationsByScope.set(scopeKey, migrations);
-      // FS-173 declares the findings-cache canonical space as the one target.
-      // Accepted cache evidence and the first observed index identity are
-      // retained, so later portfolio-index absence or drift cannot change it.
-      if (db !== undefined) {
-        for (const [id, identity] of loadPersistedComponentIdentities(
-          { db, platform: client },
-          scope,
-        )) {
-          if (!declaredIdentities.has(id)) declaredIdentities.set(id, identity);
-        }
-      }
-      const loaded = await loadComponentIdentities(client, PAGE_SIZE);
-      for (const [id, identity] of loaded) {
-        if (!declaredIdentities.has(id)) declaredIdentities.set(id, identity);
-      }
-      const identities = declaredIdentities;
       const pages = client.getFindings({
         projectVersionId: scope.projectVersionId,
         page: { pageSize: PAGE_SIZE },
@@ -753,17 +701,18 @@ export function createVexDecisionAdapter(
           page: pageNumber,
           of: page.total === null ? null : Math.ceil(page.total / PAGE_SIZE),
         });
+        const persistedKeys = persistedFindingKeys(db, scope, page.items);
         yield page.items.flatMap((row) => {
-          const projected = projectVexDecision(row, identities);
+          const projected = projectVexDecision(row);
           if (projected === null) {
             // Migration is best-effort for undecided rows: they are not VEX
             // entities and therefore must never make this pull key-dependent.
             try {
-              const canonical = findingIdentity(row, identities);
+              const canonical = findingIdentity(row);
               rememberMigration(migrations, legacyVexIdentity(row), canonical);
-              rememberMigration(
+              rememberPersistedKeyMigration(
                 migrations,
-                legacyCacheFindingIdentity(row, identities),
+                persistedKeys.get(requiredString(row, "id")),
                 canonical,
               );
             } catch {
@@ -771,11 +720,11 @@ export function createVexDecisionAdapter(
             }
             return [];
           }
-          const canonical = findingIdentity(row, identities);
+          const canonical = findingIdentity(row);
           rememberMigration(migrations, legacyVexIdentity(row), canonical);
-          rememberMigration(
+          rememberPersistedKeyMigration(
             migrations,
-            legacyCacheFindingIdentity(row, identities),
+            persistedKeys.get(requiredString(row, "id")),
             canonical,
           );
           return [projected];

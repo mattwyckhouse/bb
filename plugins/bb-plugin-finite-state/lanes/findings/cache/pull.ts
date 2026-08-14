@@ -11,12 +11,7 @@ import {
   canonicalizeFindingIdentity,
   selectFindingCve,
 } from "../stable-key/canonical.js";
-import {
-  jsonRecord,
-  loadComponentIdentities,
-  type ComponentIdentity,
-  wireString,
-} from "../stable-key/wire-identity.js";
+import { purlIdentity } from "../stable-key/wire-identity.js";
 
 const ENTITY_KIND = "finding";
 const DEFAULT_PAGE_SIZE = 200;
@@ -171,63 +166,7 @@ function payloadKeyDetail(
   return `payload keys [${topLevelKeys}]; component keys [${componentKeys}]`;
 }
 
-export function loadPersistedComponentIdentities(
-  deps: FindingsDeps,
-  scope: SyncScope,
-): Map<string, ComponentIdentity> {
-  const result = new Map<string, ComponentIdentity>();
-  const rows = deps.db
-    .prepare(
-      `SELECT finding.raw, finding.component_name AS name,
-              finding.component_group AS componentGroup,
-              finding.component_version AS version,
-              finding.component_purl AS purl
-         FROM findings AS finding
-         JOIN sync_state AS state
-           ON state.project_id = finding.project_id
-          AND state.project_version_id = finding.project_version_id
-          AND state.entity_kind = 'finding'
-          AND state.accepted_generation_id = finding.generation_id
-        WHERE finding.project_id = ? AND finding.project_version_id = ?
-        ORDER BY finding.finding_id COLLATE BINARY`,
-    )
-    .all(scope.projectId, scope.projectVersionId) as Array<{
-    raw: string;
-    name: string;
-    componentGroup: string | null;
-    version: string | null;
-    purl: string | null;
-  }>;
-  for (const persisted of rows) {
-    let raw: Json;
-    try {
-      raw = JSON.parse(persisted.raw) as Json;
-    } catch {
-      continue;
-    }
-    const row = jsonRecord(raw);
-    const component = row === null ? null : jsonRecord(row["component"]);
-    const id =
-      row === null
-        ? null
-        : (wireString(row, ["componentId", "componentUuid"]) ??
-          (component === null ? null : wireString(component, ["id"])));
-    if (id !== null && !result.has(id)) {
-      result.set(id, {
-        name: persisted.name,
-        group: persisted.componentGroup,
-        version: persisted.version,
-        purl: persisted.purl,
-      });
-    }
-  }
-  return result;
-}
-
-export function normalizeFinding(
-  value: Json,
-  identities: ReadonlyMap<string, ComponentIdentity>,
-): NormalizedFinding {
+export function normalizeFinding(value: Json): NormalizedFinding {
   const row = record(value);
   if (!row)
     throw new FindingsCacheError(
@@ -247,33 +186,25 @@ export function normalizeFinding(
       `Finding ${findingId} CVE is missing`,
     );
   const component = record(row["component"] ?? null);
-  const componentId =
-    stringValue(row, ["componentId", "componentUuid"]) ??
-    (component ? stringValue(component, ["id"]) : null);
-  const joined = componentId ? identities.get(componentId) : undefined;
-  const declaredPurl = stringValue(row, [
+  const componentPurl = stringValue(row, [
     "componentPurl",
     "purl",
     "packageUrl",
   ]);
-  const componentPurl = declaredPurl ?? joined?.purl ?? null;
-  const usesJoinedPurl = declaredPurl === null && joined?.purl != null;
+  const parsedPurl = purlIdentity(componentPurl);
   const componentName =
-    (usesJoinedPurl ? joined?.name : null) ??
     stringValue(row, ["componentName", "name"]) ??
     (component ? stringValue(component, ["name"]) : null) ??
-    joined?.name ??
+    parsedPurl?.name ??
     null;
   const componentGroup =
-    (usesJoinedPurl ? joined?.group : null) ??
     stringValue(row, ["componentGroup", "group", "namespace"]) ??
-    joined?.group ??
+    parsedPurl?.group ??
     null;
   const componentVersion =
-    (usesJoinedPurl ? joined?.version : null) ??
     stringValue(row, ["componentVersion", "version"]) ??
     (component ? stringValue(component, ["version"]) : null) ??
-    joined?.version ??
+    parsedPurl?.version ??
     null;
   if (!componentName) {
     throw new FindingsCacheError(
@@ -396,12 +327,9 @@ function writePage(
   generationId: string,
   pageNumber: number,
   page: RemotePage<Record<string, Json>>,
-  identities: ReadonlyMap<string, ComponentIdentity>,
   pulledAt: string,
 ): { inserted: number; deduplicated: number } {
-  const normalized = page.items.map((item) =>
-    normalizeFinding(item, identities),
-  );
+  const normalized = page.items.map((item) => normalizeFinding(item));
   const unique = new Map<string, NormalizedFinding>();
   let deduplicated = 0;
   for (const item of normalized) {
@@ -542,18 +470,6 @@ export async function pullFindings(
         deduplicated,
       };
     }
-    const identities = await loadComponentIdentities(
-      deps.platform,
-      deps.pageSize ?? DEFAULT_PAGE_SIZE,
-    );
-    // Once a component id has landed in the accepted cache, that declared
-    // canonical identity wins over later portfolio-index absence or drift.
-    for (const [id, identity] of loadPersistedComponentIdentities(
-      deps,
-      scope,
-    )) {
-      identities.set(id, identity);
-    }
     const iterable = deps.platform.getFindings({
       projectVersionId: scope.projectVersionId,
       page: {
@@ -574,7 +490,6 @@ export async function pullFindings(
         generationId,
         pages,
         page,
-        identities,
         pulledAt,
       );
       fetched += written.inserted;

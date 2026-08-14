@@ -38,7 +38,6 @@ import {
   projectVexDecisionKey,
   readVexWorking,
 } from "../entities/vex-decision.js";
-import type { ComponentIdentity } from "../../findings/stable-key/wire-identity.js";
 import type { EntityAdapter, ServerEntity, WorkingEntity } from "./adapter.js";
 import {
   PullFailedError,
@@ -158,41 +157,14 @@ function engine(
   };
 }
 
-function componentIdentities(
-  state: MockPlatformState,
-): Map<string, ComponentIdentity> {
-  return new Map(
-    [...state.components.entries()].flatMap(([id, row]) =>
-      typeof row["name"] === "string"
-        ? [
-            [
-              id,
-              {
-                name: row["name"],
-                group: typeof row["group"] === "string" ? row["group"] : null,
-                version:
-                  typeof row["version"] === "string" ? row["version"] : null,
-                purl: typeof row["purl"] === "string" ? row["purl"] : null,
-              },
-            ] as const,
-          ]
-        : [],
-    ),
-  );
-}
-
 function expectedVexRows(
   state: MockPlatformState,
   projectVersionId: string,
 ): ServerEntity[] {
   const rows = new Map<string, ServerEntity>();
-  const identities = componentIdentities(state);
   for (const value of state.findings.values()) {
     if (value["projectVersionId"] !== projectVersionId) continue;
-    const projected = projectVexDecision(
-      value as Record<string, Json>,
-      identities,
-    );
+    const projected = projectVexDecision(value as Record<string, Json>);
     if (projected !== null) rows.set(projected.key, projected);
   }
   return [...rows.values()];
@@ -292,10 +264,7 @@ describe("sync pull", () => {
     );
     if (undecided === undefined)
       throw new Error("fixture has no undecided finding");
-    const key = projectVexDecisionKey(
-      undecided as Record<string, Json>,
-      componentIdentities(fixture.state),
-    );
+    const key = projectVexDecisionKey(undecided as Record<string, Json>);
     const resolver = createVexDecisionResolver(fixture.client);
     await expect(resolver(key, fixture.scope)).resolves.toEqual({
       resolved: true,

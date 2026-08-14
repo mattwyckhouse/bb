@@ -49,10 +49,7 @@ export function registerSync(bb: BbPluginApi, ctx: PluginContext): void {
     throw new Error("Sync registration requires remote services");
   });
   registerAdapter(createVexDecisionAdapter(remote.platform, ctx.db()));
-  registerResolver(
-    "vexDecision",
-    createVexDecisionResolver(remote.platform, ctx.db()),
-  );
+  registerResolver("vexDecision", createVexDecisionResolver(remote.platform));
   const deps: EngineDeps = {
     db: ctx.db(),
     worktreeRoot: null,

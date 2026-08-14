@@ -24,6 +24,7 @@ import {
   fastForwardVexWorking,
   migrateVexWorkingKeys,
   projectVexDecision,
+  projectVexDecisionKey,
   readVexWorking,
   VexWorkingReadError,
 } from "./vex-decision.js";
@@ -85,12 +86,13 @@ describe("vexDecision adapter", () => {
     ) {
       throw new Error("finding fixture has no nested component");
     }
-    const flat = projectVexDecision({
-      ...finding,
-      component: null,
-      componentId: String(component["id"]),
-    });
-    expect(projected?.key).not.toBe(flat?.key);
+    expect(() =>
+      projectVexDecision({
+        ...finding,
+        component: null,
+        componentId: String(component["id"]),
+      }),
+    ).toThrow("Platform finding is missing canonical identity");
   });
 
   it("parses aggregate .fs/triage YAML into one working entity per decision", async () => {
@@ -460,6 +462,55 @@ decisions:
     ]);
   });
 
+  it("round-trips a purl-less multi-segment namespace without double encoding", async () => {
+    const root = await worktree();
+    const projectId = "project-multi-segment";
+    const directory = join(root, ".fs", "triage", projectId);
+    await mkdir(directory, { recursive: true });
+    const row = {
+      id: "finding-multi-segment",
+      findingId: "CVE-2016-4658",
+      component: { name: "a/b/c", version: "1.0%2B1" },
+    } satisfies Record<string, Json>;
+    const canonical = canonicalizeFindingIdentity({
+      cve: "CVE-2016-4658",
+      purl: null,
+      name: "a/b/c",
+      group: null,
+      version: "1.0%2B1",
+    });
+    await writeFile(
+      join(directory, "c.yaml"),
+      `schema: fs-triage/v1
+project: ${projectId}
+component:
+  purl: null
+  name: ${canonical.name}
+  group: ${canonical.group}
+  version: ${canonical.keyVersion}
+decisions:
+  CVE-2016-4658:
+    status: NOT_AFFECTED
+    justification: null
+    response: null
+    reason: null
+`,
+      "utf8",
+    );
+    const expectedKey = projectVexDecisionKey(row);
+    const first = await readVexWorking(root, {
+      projectId,
+      projectVersionId: "version-multi-segment",
+    });
+    const second = await readVexWorking(root, {
+      projectId,
+      projectVersionId: "version-multi-segment",
+    });
+    expect(first[0]?.key).toBe(expectedKey);
+    expect(second[0]?.key).toBe(expectedKey);
+    expect(canonical.group).toBe("a%2Fb");
+  });
+
   it("migrates a VEX-space legacy key through pull and keeps the new key stable", async () => {
     const specimen = JSON.parse(
       await readFile(
@@ -506,7 +557,6 @@ decisions:
     const migrationRow: Record<string, Json> = {
       ...specimen,
       cve: "cbdc8dc1-66ad-5264-b81b-67b2eaf1257e",
-      component: null,
       componentId: "df542a94-2571-5f0d-aaf9-3892e9d70ef5",
       componentFallbackIdentity: "Mbed TLS",
     };
@@ -563,7 +613,7 @@ decisions:
     expect((await workingKeys())[0]).toBe(firstKey);
   });
 
-  it("unifies persisted cache and VEX keys through a declared real-shape migration", async () => {
+  it("migrates a persisted index key to the index-free real-specimen key and stays stable", async () => {
     const specimen = JSON.parse(
       await readFile(
         resolve(
@@ -579,55 +629,24 @@ decisions:
     const directory = join(root, ".fs", "triage", projectId);
     await mkdir(directory, { recursive: true });
     const rawVersion = "2.9.4%2Bdfsg1-2.2%2Bdeb9u2";
-    const purl = "pkg:generic/libxml2@2.9.4";
-    const legacyCve = "97f077e8-fc05-5198-8ab6-9111fb37e83a";
     const file = join(directory, "libxml2.yaml");
-    await writeFile(
-      file,
-      `schema: fs-triage/v1
-project: ${projectId}
-component:
-  purl: ${purl}
-  name: libxml2
-  group: debian%2Fbase
-  version: ${rawVersion}
-decisions:
-  ${legacyCve}:
-    status: NOT_AFFECTED
-    justification: CODE_NOT_PRESENT
-    response: null
-    reason: reviewed evidence
-`,
-      "utf8",
+    const expectedKey = normalizeFinding(specimen).stableKey;
+    const oldCacheKey = canonicalFindingStableKey(
+      canonicalizeFindingIdentity({
+        cve: "CVE-2016-4658",
+        purl: null,
+        name: "libxml2",
+        group: "debian/stable/main",
+        version: rawVersion,
+      }),
     );
-    const component = {
-      id: "e1a048dc-9890-5333-9e97-cd5d6f429fcd",
-      name: "libxml2",
-      group: "debian%2Fbase",
-      version: rawVersion,
-      purl,
-    };
-    const identities = new Map([[component.id, component]]);
-    const expectedKey = normalizeFinding(specimen, identities).stableKey;
-    const oldCacheKey = ENTITIES.vexDecision.key({
-      cve: legacyCve,
-      purl,
-      name: component.name,
-      group: component.group,
-      version: rawVersion,
-    });
-    expect((await readVexWorking(root))[0]?.key).toBe(oldCacheKey);
+    expect(oldCacheKey).not.toBe(expectedKey);
 
     let componentIndexReads = 0;
     const platform = {
       listComponents() {
         componentIndexReads += 1;
-        return {
-          async *[Symbol.asyncIterator]() {
-            const items = componentIndexReads <= 2 ? [component] : [];
-            yield { items, total: items.length, next: null };
-          },
-        };
+        throw new Error("component index must not participate in identity");
       },
       getFindings() {
         return {
@@ -638,14 +657,14 @@ decisions:
       },
     };
     const host = createFakePluginHost({
-      pluginId: "finite-state-vex-cache-key-unification",
+      pluginId: "finite-state-vex-cache-key-migration",
     });
     hosts.push(host);
     const db = createPluginContext(host.bb).db();
     let generation = 0;
     const deps = {
       db,
-      adapters: [createVexDecisionAdapter(platform)],
+      adapters: [createVexDecisionAdapter(platform, db)],
       cachePullers: [
         {
           kind: "finding" as const,
@@ -667,36 +686,59 @@ decisions:
         },
       ],
       worktreeRoot: root,
-      createGenerationId: () => `unified-${++generation}`,
+      createGenerationId: () => `wire-only-${++generation}`,
       now: () => new Date("2026-08-14T02:00:00.000Z"),
     };
     const scope = { projectId, projectVersionId };
+
+    // Establish an accepted row, then model the exact key written by the old
+    // index-joined cache implementation. Migration reads this key directly by
+    // finding id; it never reconstructs identity from canonical cache fields.
     await pull(deps, scope, ["vexDecision", "finding"]);
+    db.prepare(
+      `UPDATE findings SET stable_key = ?
+        WHERE project_id = ? AND project_version_id = ?`,
+    ).run(oldCacheKey, projectId, projectVersionId);
+    await writeFile(
+      file,
+      `schema: fs-triage/v1
+project: ${projectId}
+component:
+  purl: null
+  name: libxml2
+  group: debian%2Fstable%2Fmain
+  version: ${rawVersion}
+decisions:
+  CVE-2016-4658:
+    status: NOT_AFFECTED
+    justification: CODE_NOT_PRESENT
+    response: null
+    reason: reviewed evidence
+`,
+      "utf8",
+    );
+    expect((await readVexWorking(root, scope))[0]?.key).toBe(oldCacheKey);
 
-    const persisted = db
-      .prepare(
-        `SELECT stable_key AS stableKey
-           FROM findings
-          WHERE project_id = ? AND project_version_id = ?`,
-      )
-      .get(projectId, projectVersionId) as { stableKey: string } | undefined;
-    expect(persisted?.stableKey).toBe(expectedKey);
-    expect((await readVexWorking(root, scope))[0]?.key).toBe(expectedKey);
+    await pull(deps, scope, ["vexDecision", "finding"]);
+    const afterMigration = (await readVexWorking(root, scope))[0]?.key;
+    expect(afterMigration).toBe(expectedKey);
     expect(await readFile(file, "utf8")).toContain(`version: ${rawVersion}`);
-    expect(await readFile(file, "utf8")).toContain("group: debian%2Fbase");
+    expect(await readFile(file, "utf8")).toContain("group: debian");
 
-    // Simulate a plugin reload plus a now-empty portfolio component index.
+    // A registered second pull proves canonical ingest and authored read-back
+    // are symmetric for the byte-frozen, purl-less tenant specimen.
     deps.adapters = [createVexDecisionAdapter(platform, db)];
     await pull(deps, scope, ["vexDecision", "finding"]);
-    expect(componentIndexReads).toBe(4);
-    expect((await readVexWorking(root, scope))[0]?.key).toBe(expectedKey);
+    expect((await readVexWorking(root, scope))[0]?.key).toBe(afterMigration);
+    expect(componentIndexReads).toBe(0);
     expect(
       (
         db
           .prepare(
             `SELECT stable_key AS stableKey
                FROM findings
-              WHERE project_id = ? AND project_version_id = ?`,
+              WHERE project_id = ? AND project_version_id = ?
+              ORDER BY generation_id DESC`,
           )
           .get(projectId, projectVersionId) as { stableKey: string } | undefined
       )?.stableKey,

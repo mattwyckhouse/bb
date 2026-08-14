@@ -166,10 +166,7 @@ function platformScope() {
   };
 }
 
-function findingComponentIdentity(
-  finding: Record<string, unknown>,
-  state: MockPlatformState,
-): {
+function findingComponentIdentity(finding: Record<string, unknown>): {
   purl: string | null;
   name: string;
   group: string | null;
@@ -186,16 +183,22 @@ function findingComponentIdentity(
     typeof component.version !== "string"
   )
     return null;
-  const id = "id" in component ? component.id : null;
-  const joined = typeof id === "string" ? state.components.get(id) : undefined;
   return {
-    purl: typeof joined?.["purl"] === "string" ? joined["purl"] : null,
+    purl:
+      typeof finding["componentPurl"] === "string"
+        ? finding["componentPurl"]
+        : null,
     name:
-      typeof joined?.["name"] === "string" ? joined["name"] : component.name,
-    group: typeof joined?.["group"] === "string" ? joined["group"] : null,
+      typeof finding["componentName"] === "string"
+        ? finding["componentName"]
+        : component.name,
+    group:
+      typeof finding["componentGroup"] === "string"
+        ? finding["componentGroup"]
+        : null,
     version:
-      typeof joined?.["version"] === "string"
-        ? joined["version"]
+      typeof finding["componentVersion"] === "string"
+        ? finding["componentVersion"]
         : component.version,
   };
 }
@@ -395,7 +398,7 @@ describe("sync registration", () => {
     await pull(deps, scope, ["vexDecision"]);
     const findings = [...state.findings.values()]
       .flatMap((row) => {
-        const component = findingComponentIdentity(row, state);
+        const component = findingComponentIdentity(row);
         return row["projectVersionId"] === scope.projectVersionId &&
           typeof row["vexStatus"] === "string" &&
           component !== null
