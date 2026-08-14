@@ -1,13 +1,23 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DeviceClaim } from "../../registry/claims.js";
 import type { CaptureArtifactSink } from "../driver.js";
-import { TransportError, type ProcessRequest } from "../transport.js";
+import {
+  runInstrumentProcess,
+  TransportError,
+  type ProcessRequest,
+} from "../transport.js";
 import { createPicoScopeDriver, PICOSCOPE_GENERATION } from "./picoscope.js";
 
 const directories: string[] = [];
+const pythonFixtures = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  "python",
+);
 
 afterEach(() => {
   for (const directory of directories.splice(0))
@@ -180,9 +190,80 @@ describe("PicoScope USB driver", () => {
     const request: unknown = JSON.parse(runner.mock.calls[0]![0].args.at(-1)!);
     expect(request).toMatchObject({
       serial: "PICO-001",
-      timebase: expect.any(Number),
     });
     expect(artifactSink.record).toHaveBeenCalledTimes(1);
+    await session.close();
+  });
+
+  it("executes ps2000a FFI calls with host-owned trigger timeout and read-back timing", async () => {
+    const protocolDirectory = directory();
+    const protocolLog = join(protocolDirectory, "picosdk.jsonl");
+    const driver = createPicoScopeDriver({
+      runner: runInstrumentProcess,
+      bridgeEnv: {
+        ...process.env,
+        PYTHONPATH: pythonFixtures,
+        FS_SCOPE_PROTOCOL_LOG: protocolLog,
+      },
+      verifyClaim: vi.fn(),
+      registeredSerials: () => ["PICO-001"],
+      serialForDeviceId: () => "PICO-001",
+    });
+    await expect(
+      driver.detect({ kind: "usb", serial: "PICO-001", path: null }),
+    ).resolves.toMatchObject({ kind: "scope", channels: 4 });
+    const session = await driver.open(
+      { kind: "usb", serial: "PICO-001", path: null },
+      claim(),
+      new AbortController().signal,
+    );
+    const artifact = await session.capture(
+      {
+        durationMs: 1,
+        sampleRateHz: 125_000_000,
+        channels: [0],
+        settings: {
+          "channel.A.rangeV": 2,
+          "channel.A.coupling": "dc",
+          "trigger.channel": "A",
+          "trigger.edge": "rising",
+          "trigger.levelV": 0.5,
+          "trigger.timeoutMs": 50,
+        },
+        artifactSink: sink(),
+      },
+      new AbortController().signal,
+    );
+    expect(artifact).toMatchObject({
+      sampleRateHz: 125_000_000,
+      samples: 125_000,
+      durationMs: 1,
+    });
+    const calls = readFileSync(protocolLog, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { call: string; args: number[] });
+    expect(calls.map(({ call }) => call)).toEqual([
+      "ps2000aEnumerateUnits",
+      "ps2000aOpenUnit",
+      "ps2000aSetChannel",
+      "ps2000aSetSimpleTrigger",
+      "ps2000aGetTimebase2",
+      "ps2000aSetDataBuffer",
+      "ps2000aRunBlock",
+      "ps2000aIsReady",
+      "ps2000aGetValues",
+      "ps2000aStop",
+      "ps2000aCloseUnit",
+    ]);
+    const triggerCall = calls.find(
+      ({ call }) => call === "ps2000aSetSimpleTrigger",
+    );
+    expect(triggerCall?.args.at(-1)).toBe(0);
+    const timebaseCall = calls.find(
+      ({ call }) => call === "ps2000aGetTimebase2",
+    );
+    expect(timebaseCall?.args).toEqual(expect.arrayContaining([3, 8]));
     await session.close();
   });
 
@@ -342,5 +423,19 @@ describe("PicoScope USB driver", () => {
     expect(
       driver.prerequisites().needsConfiguration.map((item) => item.key),
     ).toEqual(["scope.picosdk-python", "scope.picosdk-ps2000a-library"]);
+  });
+
+  it("runs the real bounded PicoSDK prerequisite probes without installing", () => {
+    const report = createPicoScopeDriver({
+      verifyClaim: vi.fn(),
+    }).prerequisites();
+    expect(report.configured).toBe(report.needsConfiguration.length === 0);
+    expect(
+      report.needsConfiguration.every((item) =>
+        ["scope.picosdk-python", "scope.picosdk-ps2000a-library"].includes(
+          item.key,
+        ),
+      ),
+    ).toBe(true);
   });
 });

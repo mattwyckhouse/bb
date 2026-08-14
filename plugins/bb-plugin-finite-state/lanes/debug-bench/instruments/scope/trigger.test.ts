@@ -1,13 +1,20 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DeviceClaim } from "../../registry/claims.js";
 import type { CaptureArtifactSink } from "../driver.js";
 import type { ProcessRequest } from "../transport.js";
+import { runInstrumentProcess } from "../transport.js";
 import { createPicoScopeDriver } from "./picoscope.js";
 
 const directories: string[] = [];
+const pythonFixtures = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  "python",
+);
 
 afterEach(() => {
   for (const directory of directories.splice(0))
@@ -129,6 +136,85 @@ describe("scope trigger semantics", () => {
       },
     });
     await session.close();
+  });
+
+  it("lets the host deadline report NO_TRIGGER instead of allowing a device auto-trigger", async () => {
+    const protocolDirectory = directory();
+    const protocolLog = join(protocolDirectory, "no-trigger.jsonl");
+    const driver = createPicoScopeDriver({
+      runner: runInstrumentProcess,
+      bridgeEnv: {
+        ...process.env,
+        PYTHONPATH: pythonFixtures,
+        FS_SCOPE_PROTOCOL_LOG: protocolLog,
+        FS_SCOPE_PICO_NO_TRIGGER: "1",
+      },
+      verifyClaim: vi.fn(),
+      serialForDeviceId: () => "PICO-001",
+    });
+    const session = await driver.open(
+      { kind: "usb", serial: "PICO-001", path: null },
+      claim(),
+      new AbortController().signal,
+    );
+    await expect(
+      session.capture(
+        {
+          ...captureConfig(sink()),
+          sampleRateHz: 125_000_000,
+          settings: {
+            ...captureConfig(sink()).settings,
+            "trigger.timeoutMs": 15,
+          },
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: "TRIGGER_TIMEOUT",
+      armedConfiguration: { sampleRateHz: 125_000_000 },
+    });
+    const calls = readFileSync(protocolLog, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { call: string; args: number[] });
+    expect(
+      calls.find(({ call }) => call === "ps2000aSetSimpleTrigger")?.args.at(-1),
+    ).toBe(0);
+    expect(
+      calls.filter(({ call }) => call === "ps2000aIsReady").length,
+    ).toBeGreaterThan(1);
+    await session.close();
+  });
+
+  it("releases a PicoScope claim when exit 42 has no armed trigger", async () => {
+    const releaseClaim = vi.fn();
+    const driver = createPicoScopeDriver({
+      runner: vi.fn(async () => ({
+        code: 42,
+        stdout: JSON.stringify({ sampleRateHz: 1_000, samples: 5 }),
+        stderr: "",
+      })),
+      verifyClaim: vi.fn(),
+      releaseClaim,
+      serialForDeviceId: () => "PICO-001",
+    });
+    const session = await driver.open(
+      { kind: "usb", serial: "PICO-001", path: null },
+      claim(),
+      new AbortController().signal,
+    );
+    await expect(
+      session.capture(
+        {
+          durationMs: 5,
+          sampleRateHz: 1_000,
+          channels: [0],
+          artifactSink: sink(),
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "INSTRUMENT_PROTOCOL_ERROR" });
+    expect(releaseClaim).toHaveBeenCalledTimes(1);
   });
 
   it("can re-arm the same claimed session after an honest trigger timeout", async () => {

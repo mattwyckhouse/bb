@@ -130,16 +130,33 @@ elif action == "capture":
             source = ps.PS2000A_CHANNEL["PS2000A_CHANNEL_" + trigger["channel"]]
             direction = ps.PS2000A_THRESHOLD_DIRECTION["PS2000A_" + trigger["edge"].upper()]
             threshold = mV2adc(trigger["levelV"] * 1000, ranges[trigger["channel"]], ctypes.c_int16(32767))
-            assert_pico_ok(ps.ps2000aSetSimpleTrigger(handle, 1, source, threshold, direction, 0, request["triggerTimeoutMs"]))
-        samples = request["samples"]
+            # The host deadline owns NO_TRIGGER. A non-zero auto-trigger value
+            # would make the device fabricate an edge at the deadline.
+            assert_pico_ok(ps.ps2000aSetSimpleTrigger(handle, 1, source, threshold, direction, 0, 0))
+        target_interval_ns = 1000000000.0 / request["sampleRateHz"]
+        if target_interval_ns <= 4:
+            timebase = max(0, int(__import__("math").ceil(__import__("math").log(target_interval_ns, 2))))
+        else:
+            timebase = max(3, int(__import__("math").ceil(target_interval_ns / 8.0)) + 2)
+        time_interval_ns = ctypes.c_float()
+        max_samples = ctypes.c_int32()
+        while True:
+            status = ps.ps2000aGetTimebase2(handle, timebase, request["samples"], ctypes.byref(time_interval_ns), ctypes.byref(max_samples), 0)
+            if status == 0 and time_interval_ns.value >= target_interval_ns:
+                break
+            timebase += 1
+            if timebase > 10000000:
+                raise ValueError("no ps2000a timebase satisfies the requested rate")
+        actual_sample_rate_hz = 1000000000.0 / time_interval_ns.value
+        samples = min(int(__import__("math").ceil(actual_sample_rate_hz * request["durationMs"] / 1000.0)), max_samples.value)
         buffers = {}
         for channel in request["channelConfigs"]:
             buffer = (ctypes.c_int16 * samples)()
             buffers[channel["channel"]] = buffer
             channel_id = ps.PS2000A_CHANNEL["PS2000A_CHANNEL_" + channel["channel"]]
             assert_pico_ok(ps.ps2000aSetDataBuffer(handle, channel_id, buffer, samples, 0, 0))
-        timebase = request["timebase"]
-        assert_pico_ok(ps.ps2000aRunBlock(handle, 0, samples, timebase, 0, None, 0, None, None))
+        time_indisposed_ms = ctypes.c_int32()
+        assert_pico_ok(ps.ps2000aRunBlock(handle, 0, samples, timebase, 0, ctypes.byref(time_indisposed_ms), 0, None, None))
         deadline = time.monotonic() + request["triggerTimeoutMs"] / 1000.0
         ready = ctypes.c_int16(0)
         while not ready.value and time.monotonic() < deadline:
@@ -147,7 +164,7 @@ elif action == "capture":
             time.sleep(0.005)
         if not ready.value:
             ps.ps2000aStop(handle)
-            print(json.dumps({"armedConfiguration": request}), flush=True)
+            print(json.dumps({"armedConfiguration": request, "sampleRateHz": actual_sample_rate_hz, "samples": samples}), flush=True)
             sys.exit(42)
         count = ctypes.c_int32(samples)
         overflow = ctypes.c_int16()
@@ -160,8 +177,9 @@ elif action == "capture":
         os.makedirs(request["outputDirectory"], exist_ok=True)
         path = os.path.join(request["outputDirectory"], "picoscope-waveform.json")
         with open(path, "w", encoding="utf-8") as handle_out:
-            json.dump({"schema": "finite-state-scope-v1", "sampleRateHz": request["sampleRateHz"], "channels": channels}, handle_out)
-        print(json.dumps({"path": path, "format": "finite-state-scope-json-v1", "durationMs": request["durationMs"], "channels": len(channels), "channelConfigs": request["channelConfigs"], "trigger": trigger, "sampleRateHz": request["sampleRateHz"], "samples": count.value}))
+            json.dump({"schema": "finite-state-scope-v1", "sampleRateHz": actual_sample_rate_hz, "channels": channels}, handle_out)
+        actual_duration_ms = count.value / actual_sample_rate_hz * 1000.0
+        print(json.dumps({"path": path, "format": "finite-state-scope-json-v1", "durationMs": actual_duration_ms, "channels": len(channels), "channelConfigs": request["channelConfigs"], "trigger": trigger, "sampleRateHz": actual_sample_rate_hz, "samples": count.value}))
     finally:
         try: ps.ps2000aStop(handle)
         finally: ps.ps2000aCloseUnit(handle)
@@ -173,6 +191,7 @@ export interface PicoScopeDriverDeps extends InstrumentDriverDeps {
   registeredSerials?: () => readonly string[];
   serialForDeviceId?: (deviceId: string) => string | null;
   authorizeSignalGenerator?: (claim: DeviceClaim) => void;
+  bridgeEnv?: NodeJS.ProcessEnv;
 }
 
 let configuredPrerequisites: PrerequisiteReport | null = null;
@@ -291,7 +310,6 @@ function captureConfiguration(config: CaptureConfig): {
   trigger: ScopeTrigger | null;
   triggerTimeoutMs: number;
   samples: number;
-  timebase: number;
   signalGenerator: {
     frequencyHz: number;
     pkToPkV: number;
@@ -353,11 +371,6 @@ function captureConfiguration(config: CaptureConfig): {
       "PicoScope capture exceeds timeout or sample bounds.",
     );
   }
-  // ps2000a timebase 2 and above approximates 1 GHz / 2^(timebase-2).
-  const timebase = Math.max(
-    2,
-    Math.ceil(2 + Math.log2(1_000_000_000 / config.sampleRateHz)),
-  );
   let signalGenerator: {
     frequencyHz: number;
     pkToPkV: number;
@@ -390,7 +403,6 @@ function captureConfiguration(config: CaptureConfig): {
     trigger,
     triggerTimeoutMs,
     samples,
-    timebase,
     signalGenerator,
   };
 }
@@ -470,7 +482,12 @@ async function artifactFromResponse(
     typeof durationMs !== "number" ||
     typeof channels !== "number" ||
     typeof sampleRateHz !== "number" ||
-    typeof samples !== "number"
+    !Number.isFinite(sampleRateHz) ||
+    sampleRateHz <= 0 ||
+    typeof samples !== "number" ||
+    !Number.isInteger(samples) ||
+    samples < 1 ||
+    samples > MAX_CAPTURE_SAMPLES
   ) {
     throw new PicoScopeInstrumentError(
       "INSTRUMENT_PROTOCOL_ERROR",
@@ -529,6 +546,7 @@ export function createPicoScopeDriver(
           args: ["-c", PICOSCOPE_BRIDGE, "detect", "{}"],
           timeoutMs: 5_000,
           maxOutputBytes: MAX_BRIDGE_OUTPUT_BYTES,
+          env: deps.bridgeEnv,
         },
         new AbortController().signal,
       );
@@ -593,6 +611,8 @@ export function createPicoScopeDriver(
           }
           captureSignal.throwIfAborted();
           await mkdir(config.artifactSink.directory, { recursive: true });
+          let completed = false;
+          let preserveAfterTriggerTimeout = false;
           try {
             const result = await runner(
               {
@@ -611,18 +631,34 @@ export function createPicoScopeDriver(
                 ],
                 timeoutMs: armed.triggerTimeoutMs + 15_000,
                 maxOutputBytes: MAX_BRIDGE_OUTPUT_BYTES,
+                env: deps.bridgeEnv,
               },
               captureSignal,
             );
             if (result.code === 42 && armed.trigger !== null) {
+              const timeout = objectResponse(result.stdout);
+              const sampleRateHz =
+                typeof timeout.sampleRateHz === "number"
+                  ? timeout.sampleRateHz
+                  : config.sampleRateHz;
+              const samples =
+                typeof timeout.samples === "number"
+                  ? timeout.samples
+                  : armed.samples;
               throw new ScopeTriggerTimeoutError(
                 "The armed PicoScope edge did not occur before the deadline.",
                 {
                   channelConfigs: armed.channelConfigs,
                   trigger: armed.trigger,
-                  sampleRateHz: config.sampleRateHz,
-                  samples: armed.samples,
+                  sampleRateHz,
+                  samples,
                 },
+              );
+            }
+            if (result.code === 42) {
+              throw new PicoScopeInstrumentError(
+                "INSTRUMENT_PROTOCOL_ERROR",
+                "PicoScope bridge reported NO_TRIGGER without an armed trigger.",
               );
             }
             if (result.code !== 0) bridgeFailure(result, "capture");
@@ -631,12 +667,18 @@ export function createPicoScopeDriver(
               config.artifactSink.directory,
             );
             await config.artifactSink.record(artifact);
+            completed = true;
             return artifact;
           } catch (error) {
-            if (!(error instanceof ScopeTriggerTimeoutError)) release();
+            preserveAfterTriggerTimeout =
+              error instanceof ScopeTriggerTimeoutError;
             throw error;
           } finally {
-            if (captureSignal.aborted) release();
+            if (
+              captureSignal.aborted ||
+              (!completed && !preserveAfterTriggerTimeout)
+            )
+              release();
           }
         },
         async close() {

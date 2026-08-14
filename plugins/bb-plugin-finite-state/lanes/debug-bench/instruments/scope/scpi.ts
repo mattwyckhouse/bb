@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { access, mkdir, realpath } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type {
   CaptureConfig,
@@ -52,13 +52,18 @@ export interface ScpiProfile {
 
 const SIGLENT_COMMANDS = Object.freeze({
   idn: "*IDN?",
+  responseHeadersOff: "CHDR OFF",
   stop: "STOP",
   run: "RUN",
   arm: "ARM",
   triggerStatus: "SAST?",
+  sampleRateQuery: "SARA?",
+  timebase: "TDIV {timeDiv}",
   channelDisplay: "C{channel}:TRA ON",
   channelScale: "C{channel}:VDIV {scaleV}V",
   channelCoupling: "C{channel}:CPL {coupling}",
+  channelScaleQuery: "C{channel}:VDIV?",
+  channelOffsetQuery: "C{channel}:OFST?",
   triggerType: "TRSE EDGE,SR,C{channel},HT,OFF",
   triggerSlope: "C{channel}:TRSL {edge}",
   triggerLevel: "C{channel}:TRLV {levelV}V",
@@ -67,19 +72,19 @@ const SIGLENT_COMMANDS = Object.freeze({
   waveformQuery: "C{channel}:WF? DAT2",
 } as const);
 
-function parseDefiniteBlock(raw: Uint8Array): Int8Array {
-  if (raw.length < 3 || raw[0] !== 35) {
+function parseDefiniteBlock(raw: Uint8Array, headerStart = 0): Int8Array {
+  if (raw.length < headerStart + 3 || raw[headerStart] !== 35) {
     throw new InstrumentError(
       "INSTRUMENT_PROTOCOL_ERROR",
       "SCPI waveform is not an IEEE 488.2 definite-length block.",
     );
   }
-  const digits = raw[1]! - 48;
+  const digits = raw[headerStart + 1]! - 48;
   if (
     !Number.isInteger(digits) ||
     digits < 1 ||
     digits > 9 ||
-    raw.length < 2 + digits
+    raw.length < headerStart + 2 + digits
   ) {
     throw new InstrumentError(
       "INSTRUMENT_PROTOCOL_ERROR",
@@ -89,7 +94,7 @@ function parseDefiniteBlock(raw: Uint8Array): Int8Array {
   let lengthText: string;
   try {
     lengthText = new TextDecoder("ascii", { fatal: true }).decode(
-      raw.slice(2, 2 + digits),
+      raw.slice(headerStart + 2, headerStart + 2 + digits),
     );
   } catch (error) {
     throw new InstrumentError(
@@ -105,7 +110,7 @@ function parseDefiniteBlock(raw: Uint8Array): Int8Array {
     );
   }
   const length = Number(lengthText);
-  const from = 2 + digits;
+  const from = headerStart + 2 + digits;
   if (
     length < 1 ||
     length > MAX_CAPTURE_SAMPLES ||
@@ -121,10 +126,28 @@ function parseDefiniteBlock(raw: Uint8Array): Int8Array {
 }
 
 export function parseSiglentWaveform(raw: Uint8Array): WaveformData {
-  const samples = parseDefiniteBlock(raw);
+  const marker = raw.indexOf(35);
+  if (marker < 1) {
+    throw new InstrumentError(
+      "INSTRUMENT_PROTOCOL_ERROR",
+      "Siglent DAT2 waveform lacks its channel response header.",
+    );
+  }
+  const prefix = new TextDecoder("ascii").decode(raw.slice(0, marker));
+  if (!/^C\d+:WF DAT2,$/u.test(prefix)) {
+    throw new InstrumentError(
+      "INSTRUMENT_PROTOCOL_ERROR",
+      "Siglent DAT2 waveform response header is malformed.",
+    );
+  }
+  const samples = parseDefiniteBlock(raw, marker);
   return {
-    sampleRateHz: 1,
-    channels: { C1: Array.from(samples, (sample) => sample / 25) },
+    // DAT2 carries no timebase. The production path replaces this sentinel
+    // with the instrument's SARA? read-back before writing the artifact.
+    sampleRateHz: 0,
+    // Profile parsers normalize vendor ADC codes into vertical divisions.
+    // The production path applies the instrument-read VDIV and OFST values.
+    channels: { divisions: Array.from(samples, (sample) => sample / 25) },
   };
 }
 
@@ -149,6 +172,7 @@ try:
     elif action == "capture":
         for command in request["setupCommands"]:
             instrument.write(command)
+        actual_sample_rate_hz = float(instrument.query(request["sampleRateQuery"]).strip())
         instrument.write(request["armCommand"])
         deadline = time.monotonic() + request["triggerTimeoutMs"] / 1000.0
         triggered = False
@@ -160,21 +184,21 @@ try:
             time.sleep(0.01)
         if not triggered:
             instrument.write(request["stopCommand"])
-            print(json.dumps({"armedConfiguration": request}), flush=True)
+            print(json.dumps({"armedConfiguration": request, "sampleRateHz": actual_sample_rate_hz, "samples": request["samples"]}), flush=True)
             sys.exit(42)
         os.makedirs(request["outputDirectory"], exist_ok=True)
-        channels = {}
+        raw_waveforms = {}
         for channel in request["channelConfigs"]:
-            raw = instrument.query_binary_values(
-                request["waveformQueries"][channel["channel"]],
-                datatype="b", is_big_endian=False, container=list,
-            )
-            scale = channel["rangeV"] / 100.0 * channel["attenuation"]
-            channels[channel["channel"]] = [sample * scale for sample in raw]
-        path = os.path.join(request["outputDirectory"], "scpi-waveform.json")
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"schema": "finite-state-scope-v1", "sampleRateHz": request["sampleRateHz"], "channels": channels}, handle)
-        print(json.dumps({"path": path, "format": "finite-state-scope-json-v1", "durationMs": request["durationMs"], "channels": len(channels), "channelConfigs": request["channelConfigs"], "trigger": request.get("trigger"), "sampleRateHz": request["sampleRateHz"], "samples": len(next(iter(channels.values())))}))
+            channel_name = channel["channel"]
+            vdiv_v = float(instrument.query(request["channelScaleQueries"][channel_name]).strip())
+            offset_v = float(instrument.query(request["channelOffsetQueries"][channel_name]).strip())
+            instrument.write(request["waveformQueries"][channel_name])
+            raw = instrument.read_raw()
+            raw_path = os.path.join(request["outputDirectory"], "scpi-" + channel_name + ".dat2")
+            with open(raw_path, "wb") as handle:
+                handle.write(raw)
+            raw_waveforms[channel_name] = {"path": raw_path, "vdivV": vdiv_v, "offsetV": offset_v}
+        print(json.dumps({"rawWaveforms": raw_waveforms, "durationMs": request["durationMs"], "channelConfigs": request["channelConfigs"], "trigger": request.get("trigger"), "sampleRateHz": actual_sample_rate_hz}))
     else:
         raise ValueError("unsupported action")
 finally:
@@ -185,6 +209,7 @@ finally:
 export interface ScpiScopeDriverDeps extends InstrumentDriverDeps {
   profiles?: readonly ScpiProfile[];
   resourceForDeviceId?: (deviceId: string) => string | null;
+  bridgeEnv?: NodeJS.ProcessEnv;
 }
 
 let configuredPrerequisites: PrerequisiteReport | null = null;
@@ -316,6 +341,32 @@ function stringSetting(
   return value;
 }
 
+const SIGLENT_TIME_DIVISIONS_SECONDS = [
+  1e-9, 2e-9, 5e-9, 1e-8, 2e-8, 5e-8, 1e-7, 2e-7, 5e-7, 1e-6, 2e-6, 5e-6, 1e-5,
+  2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 1e-1, 2e-1,
+  5e-1, 1, 2, 5, 10, 20, 50, 100,
+] as const;
+
+function siglentTimeDivision(durationMs: number): string {
+  const requested = durationMs / 14_000;
+  const selected =
+    SIGLENT_TIME_DIVISIONS_SECONDS.find((value) => value >= requested) ?? 100;
+  if (selected < 1e-6) return `${selected * 1e9}NS`;
+  if (selected < 1e-3) return `${selected * 1e6}US`;
+  if (selected < 1) return `${selected * 1e3}MS`;
+  return `${selected}S`;
+}
+
+function siglentMemoryDepth(samples: number): string {
+  const depths = [
+    [14_000, "14K"],
+    [140_000, "140K"],
+    [1_400_000, "1.4M"],
+    [14_000_000, "14M"],
+  ] as const;
+  return depths.find(([maximum]) => samples <= maximum)?.[1] ?? "14M";
+}
+
 function captureConfiguration(
   config: CaptureConfig,
   profile: ScpiProfile,
@@ -326,6 +377,8 @@ function captureConfiguration(
   samples: number;
   setupCommands: string[];
   waveformQueries: Record<string, string>;
+  channelScaleQueries: Record<string, string>;
+  channelOffsetQueries: Record<string, string>;
 } {
   const channelConfigs = config.channels.map((index): ScopeChannelConfig => {
     const channel = `C${index + 1}`;
@@ -381,12 +434,18 @@ function captureConfiguration(
       "SCPI capture exceeds timeout or sample bounds.",
     );
   }
-  const setupCommands = [requiredCommand(profile, "stop")];
+  const setupCommands = [
+    requiredCommand(profile, "responseHeadersOff"),
+    requiredCommand(profile, "stop"),
+    render(requiredCommand(profile, "timebase"), {
+      timeDiv: siglentTimeDivision(config.durationMs),
+    }),
+  ];
   for (const channel of channelConfigs) {
     const values = {
       channel: channel.channel.slice(1),
       scaleV: channel.rangeV / 8,
-      coupling: channel.coupling.toUpperCase(),
+      coupling: channel.coupling === "dc" ? "D1M" : "A1M",
     };
     setupCommands.push(
       render(requiredCommand(profile, "channelDisplay"), values),
@@ -395,7 +454,9 @@ function captureConfiguration(
     );
   }
   setupCommands.push(
-    render(requiredCommand(profile, "memoryDepth"), { samples }),
+    render(requiredCommand(profile, "memoryDepth"), {
+      samples: siglentMemoryDepth(samples),
+    }),
   );
   if (trigger) {
     const values = {
@@ -420,6 +481,22 @@ function captureConfiguration(
       }),
     ]),
   );
+  const channelScaleQueries = Object.fromEntries(
+    channelConfigs.map((channel) => [
+      channel.channel,
+      render(requiredCommand(profile, "channelScaleQuery"), {
+        channel: channel.channel.slice(1),
+      }),
+    ]),
+  );
+  const channelOffsetQueries = Object.fromEntries(
+    channelConfigs.map((channel) => [
+      channel.channel,
+      render(requiredCommand(profile, "channelOffsetQuery"), {
+        channel: channel.channel.slice(1),
+      }),
+    ]),
+  );
   return {
     channelConfigs,
     trigger,
@@ -427,6 +504,8 @@ function captureConfiguration(
     samples,
     setupCommands,
     waveformQueries,
+    channelScaleQueries,
+    channelOffsetQueries,
   };
 }
 
@@ -490,22 +569,23 @@ function parsedTrigger(value: unknown): ScopeTrigger | null {
 async function artifactFromResponse(
   response: Record<string, unknown>,
   directory: string,
+  profile: ScpiProfile,
 ): Promise<ScopeCapture> {
-  const path = response.path;
-  const format = response.format;
   const durationMs = response.durationMs;
-  const channels = response.channels;
   const channelConfigs = response.channelConfigs;
   const trigger = response.trigger;
   const sampleRateHz = response.sampleRateHz;
-  const samples = response.samples;
+  const rawWaveforms = response.rawWaveforms;
   if (
-    typeof path !== "string" ||
-    typeof format !== "string" ||
     typeof durationMs !== "number" ||
-    typeof channels !== "number" ||
+    !Number.isFinite(durationMs) ||
+    durationMs <= 0 ||
     typeof sampleRateHz !== "number" ||
-    typeof samples !== "number"
+    !Number.isFinite(sampleRateHz) ||
+    sampleRateHz <= 0 ||
+    typeof rawWaveforms !== "object" ||
+    rawWaveforms === null ||
+    Array.isArray(rawWaveforms)
   ) {
     throw new InstrumentError(
       "INSTRUMENT_PROTOCOL_ERROR",
@@ -513,25 +593,92 @@ async function artifactFromResponse(
     );
   }
   const root = await realpath(directory);
-  const artifactPath = await realpath(resolve(path));
-  const confined = relative(root, artifactPath);
-  if (
-    confined === ".." ||
-    confined.startsWith(`..${sep}`) ||
-    isAbsolute(confined)
-  ) {
-    throw new InstrumentError(
-      "INSTRUMENT_PROTOCOL_ERROR",
-      "SCPI artifact escaped its capture directory.",
+  const parsedConfigs = parsedChannelConfigs(channelConfigs);
+  const channels: Record<string, number[]> = {};
+  let samples: number | null = null;
+  for (const channelConfig of parsedConfigs) {
+    const metadata = Reflect.get(rawWaveforms, channelConfig.channel);
+    if (typeof metadata !== "object" || metadata === null) {
+      throw new InstrumentError(
+        "INSTRUMENT_PROTOCOL_ERROR",
+        `SCPI waveform metadata for ${channelConfig.channel} is malformed.`,
+      );
+    }
+    const rawPath = Reflect.get(metadata, "path");
+    const vdivV = Reflect.get(metadata, "vdivV");
+    const offsetV = Reflect.get(metadata, "offsetV");
+    if (
+      typeof rawPath !== "string" ||
+      typeof vdivV !== "number" ||
+      !Number.isFinite(vdivV) ||
+      vdivV <= 0 ||
+      typeof offsetV !== "number" ||
+      !Number.isFinite(offsetV)
+    ) {
+      throw new InstrumentError(
+        "INSTRUMENT_PROTOCOL_ERROR",
+        `SCPI waveform metadata for ${channelConfig.channel} is malformed.`,
+      );
+    }
+    const confinedPath = await realpath(resolve(rawPath));
+    const confined = relative(root, confinedPath);
+    if (
+      confined === ".." ||
+      confined.startsWith(`..${sep}`) ||
+      isAbsolute(confined)
+    ) {
+      throw new InstrumentError(
+        "INSTRUMENT_PROTOCOL_ERROR",
+        "SCPI raw waveform escaped its capture directory.",
+      );
+    }
+    const parsed = profile.parseWaveform(await readFile(confinedPath));
+    const series = Object.values(parsed.channels);
+    if (series.length !== 1 || series[0] === undefined) {
+      throw new InstrumentError(
+        "INSTRUMENT_PROTOCOL_ERROR",
+        `SCPI profile ${profile.vendor} returned an ambiguous waveform.`,
+      );
+    }
+    if (samples !== null && samples !== series[0].length) {
+      throw new InstrumentError(
+        "INSTRUMENT_PROTOCOL_ERROR",
+        "SCPI channels returned unequal waveform lengths.",
+      );
+    }
+    if (series[0].some((value) => !Number.isFinite(value))) {
+      throw new InstrumentError(
+        "INSTRUMENT_PROTOCOL_ERROR",
+        `SCPI profile ${profile.vendor} returned non-finite samples.`,
+      );
+    }
+    samples = series[0].length;
+    channels[channelConfig.channel] = series[0].map(
+      (divisions) => (divisions * vdivV - offsetV) * channelConfig.attenuation,
     );
   }
+  if (samples === null || samples < 1 || samples > MAX_CAPTURE_SAMPLES)
+    throw new InstrumentError(
+      "INSTRUMENT_PROTOCOL_ERROR",
+      "SCPI waveform contains no bounded samples.",
+    );
+  const artifactPath = resolve(directory, "scpi-waveform.json");
+  await writeFile(
+    artifactPath,
+    JSON.stringify({
+      schema: "finite-state-scope-v1",
+      sampleRateHz,
+      channels,
+    }),
+    "utf8",
+  );
   await access(artifactPath);
   return {
     path: artifactPath,
-    format,
-    durationMs,
-    channels,
-    channelConfigs: parsedChannelConfigs(channelConfigs),
+    format: "finite-state-scope-json-v1",
+    durationMs: (samples / sampleRateHz) * 1_000,
+    channels: parsedConfigs.length,
+    channelConfigs: parsedConfigs,
     trigger: parsedTrigger(trigger),
     sampleRateHz,
     samples,
@@ -541,18 +688,14 @@ async function artifactFromResponse(
 function bridgeFailure(result: ProcessResult, action: string): never {
   const detail =
     result.stderr.trim().slice(0, 2_000) || `exit ${result.code ?? "unknown"}`;
-  if (
-    /VisaIOError|VI_ERROR_CONN_LOST|connection.*(?:reset|closed|lost)/iu.test(
-      detail,
-    )
-  ) {
+  if (/VI_ERROR_CONN_LOST|connection.*(?:reset|closed|lost)/iu.test(detail)) {
     throw new DeviceLostError(
       `SCPI scope connection was lost during ${action}.`,
       null,
     );
   }
   throw new InstrumentError(
-    "INSTRUMENT_NOT_CONFIGURED",
+    "INSTRUMENT_PROTOCOL_ERROR",
     `SCPI ${action} failed: ${detail}`,
   );
 }
@@ -563,7 +706,6 @@ export function createScpiScopeDriver(
   const runner = deps.runner ?? runInstrumentProcess;
   const prerequisites = deps.prerequisiteReport ?? defaultPrerequisites;
   const profiles = deps.profiles ?? [SIGLENT_SDS_PROFILE];
-  const identified = new Map<string, ScpiProfile>();
   return {
     id: "scpi-lan-scope",
     async detect(transport) {
@@ -580,6 +722,7 @@ export function createScpiScopeDriver(
           args: ["-c", PYVISA_BRIDGE, "identify", JSON.stringify({ resource })],
           timeoutMs: 5_000,
           maxOutputBytes: MAX_BRIDGE_OUTPUT_BYTES,
+          env: deps.bridgeEnv,
         },
         new AbortController().signal,
       );
@@ -592,7 +735,6 @@ export function createScpiScopeDriver(
         );
       const profile = profileForIdn(idn, profiles);
       if (!profile) return null;
-      identified.set(resource, profile);
       return {
         kind: "scope",
         channels: 4,
@@ -622,8 +764,8 @@ export function createScpiScopeDriver(
           "SCPI claim is not bound by the registry to this PyVISA resource.",
         );
       }
-      let profile = identified.get(resource) ?? null;
-      if (!profile) {
+      let profile: ScpiProfile | null;
+      {
         const result = await runner(
           {
             command: "python3",
@@ -635,6 +777,7 @@ export function createScpiScopeDriver(
             ],
             timeoutMs: 5_000,
             maxOutputBytes: MAX_BRIDGE_OUTPUT_BYTES,
+            env: deps.bridgeEnv,
           },
           signal,
         );
@@ -646,7 +789,6 @@ export function createScpiScopeDriver(
             "INSTRUMENT_NOT_FOUND",
             "SCPI scope dialect is unsupported.",
           );
-        identified.set(resource, profile);
       }
       const capabilities: InstrumentCapabilities = {
         kind: "scope",
@@ -682,6 +824,8 @@ export function createScpiScopeDriver(
           const armed = captureConfiguration(config, profile);
           captureSignal.throwIfAborted();
           await mkdir(config.artifactSink.directory, { recursive: true });
+          let completed = false;
+          let preserveAfterTriggerTimeout = false;
           try {
             const result = await runner(
               {
@@ -702,36 +846,63 @@ export function createScpiScopeDriver(
                       profile,
                       "triggerStatus",
                     ),
+                    sampleRateQuery: requiredCommand(
+                      profile,
+                      "sampleRateQuery",
+                    ),
                   }),
                 ],
                 timeoutMs: armed.triggerTimeoutMs + 15_000,
                 maxOutputBytes: MAX_BRIDGE_OUTPUT_BYTES,
+                env: deps.bridgeEnv,
               },
               captureSignal,
             );
             if (result.code === 42 && armed.trigger !== null) {
+              const timeout = responseObject(result.stdout);
+              const sampleRateHz =
+                typeof timeout.sampleRateHz === "number"
+                  ? timeout.sampleRateHz
+                  : config.sampleRateHz;
+              const samples =
+                typeof timeout.samples === "number"
+                  ? timeout.samples
+                  : armed.samples;
               throw new ScopeTriggerTimeoutError(
                 "The armed SCPI edge did not occur before the deadline.",
                 {
                   channelConfigs: armed.channelConfigs,
                   trigger: armed.trigger,
-                  sampleRateHz: config.sampleRateHz,
-                  samples: armed.samples,
+                  sampleRateHz,
+                  samples,
                 },
+              );
+            }
+            if (result.code === 42) {
+              throw new InstrumentError(
+                "INSTRUMENT_PROTOCOL_ERROR",
+                "SCPI bridge reported NO_TRIGGER without an armed trigger.",
               );
             }
             if (result.code !== 0) bridgeFailure(result, "capture");
             const artifact = await artifactFromResponse(
               responseObject(result.stdout),
               config.artifactSink.directory,
+              profile,
             );
             await config.artifactSink.record(artifact);
+            completed = true;
             return artifact;
           } catch (error) {
-            if (!(error instanceof ScopeTriggerTimeoutError)) release();
+            preserveAfterTriggerTimeout =
+              error instanceof ScopeTriggerTimeoutError;
             throw error;
           } finally {
-            if (captureSignal.aborted) release();
+            if (
+              captureSignal.aborted ||
+              (!completed && !preserveAfterTriggerTimeout)
+            )
+              release();
           }
         },
         async close() {
