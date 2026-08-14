@@ -9,12 +9,11 @@ import { registerCanvasLinksBackend } from "./canvas/links/backend.js";
 import { registerCanvasNodesBackend } from "./canvas/nodes/backend.js";
 import { registerThreatOverlayBackend } from "./canvas/threat-overlay/backend.js";
 import type { CanvasTaraKind } from "./canvas/foundation/types.js";
-import {
-  architectureEntityPayload,
-} from "./canvas/editing/schema.js";
+import { architectureEntityPayload } from "./canvas/editing/schema.js";
 import {
   canvasDeletedMarkerPrefix,
   createSdkCanvasFileStore,
+  type CanvasFileDiagnostic,
   type CanvasProjectSource,
   type StoredCanvasEntity,
 } from "./canvas/editing/writer.js";
@@ -150,14 +149,40 @@ function compareTaraSlug(left: string, right: string): number {
 
 function workingDiagnosticMessage(
   baseMessage: string | null,
-  diagnostics: readonly { file: string; message: string }[],
+  diagnostics: readonly CanvasFileDiagnostic[],
 ): string | null {
-  const first = diagnostics[0];
-  const invalid = first
-    ? `Invalid working YAML quarantined at ${first.file}: ${first.message}${diagnostics.length > 1 ? ` And ${diagnostics.length - 1} more invalid file${diagnostics.length === 2 ? "" : "s"}.` : ""}`
-    : null;
-  const combined = [baseMessage, invalid].filter(Boolean).join(" ");
-  return combined.length > 0 ? combined.slice(0, 4_000) : null;
+  const diagnosticCodes: readonly CanvasFileDiagnostic["code"][] = [
+    "UNSUPPORTED_COMPONENT_TYPE",
+    "RETIRED_COMPONENT_TYPE",
+    "INVALID_AUTHORED_YAML",
+  ];
+  const groups = diagnosticCodes.flatMap((code) => {
+    const matching = diagnostics.filter(
+      (diagnostic) => diagnostic.code === code,
+    );
+    const first = matching[0];
+    if (!first) return [];
+    const more = matching.length - 1;
+    const additional =
+      more > 0
+        ? ` ${more} more authored file${more === 1 ? "" : "s"} have this diagnostic.`
+        : "";
+    if (code === "UNSUPPORTED_COMPONENT_TYPE") {
+      return [
+        `Unsupported component type “${first.value ?? "unknown"}” in authored file ${first.file}; excluded from canvas.${additional}`,
+      ];
+    }
+    if (code === "RETIRED_COMPONENT_TYPE") {
+      return [
+        `Retired component type “${first.value ?? "unknown"}” requires migration in authored file ${first.file}; excluded from canvas.${additional}`,
+      ];
+    }
+    return [
+      `Invalid working YAML quarantined at ${first.file}: ${first.message.slice(0, 120)}${additional}`,
+    ];
+  });
+  const combined = [baseMessage, ...groups].filter(Boolean).join(" ");
+  return combined.length > 0 ? combined.slice(0, 500) : null;
 }
 
 export async function listTara(
@@ -186,7 +211,7 @@ export async function listTara(
   const pageSize = input.pageSize ?? 50;
   const afterKey = decodeContinuation(input.continuation ?? null);
   let working: StoredCanvasEntity[] = [];
-  let diagnostics: { file: string; slug: string; message: string }[] = [];
+  let diagnostics: CanvasFileDiagnostic[] = [];
   let source: CanvasProjectSource | null = null;
   try {
     source = await projectSource(bb, input.projectId);

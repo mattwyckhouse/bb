@@ -122,6 +122,95 @@ function seedAccepted(
 }
 
 describe("WP-35 read-classified editing RPCs", () => {
+  it("surfaces five unsupported component types distinctly from retired and malformed authored files", async () => {
+    const directory = "/workspace/product-security/architecture/components";
+    const files = new Map<string, string>();
+    for (let index = 1; index <= 5; index += 1) {
+      const slug = `unknown-${index}`;
+      files.set(
+        `${directory}/${slug}.yaml`,
+        serializeCanvasEntity(component(slug, "hardware")).replace(
+          "component_type: hardware",
+          `component_type: mystery_${index}`,
+        ),
+      );
+    }
+    files.set(
+      `${directory}/retired-controller.yaml`,
+      serializeCanvasEntity(
+        component("retired-controller", "hardware"),
+      ).replace("component_type: hardware", "component_type: ecu"),
+    );
+    files.set(
+      `${directory}/malformed-controller.yaml`,
+      `${serializeCanvasEntity(component("malformed-controller"))}verification_status: passed\n`,
+    );
+    const host = createFakePluginHost({
+      pluginId: "finite-state-unsupported-component-diagnostics",
+      sdk: {
+        projects: {
+          get: ({ projectId }) => ({
+            id: projectId,
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
+        files: {
+          list: ({ path }) => ({
+            files: [...files.keys()]
+              .filter((candidate) => candidate.startsWith(`${path}/`))
+              .map((candidate) => ({
+                path: candidate,
+                name: candidate.slice(candidate.lastIndexOf("/") + 1),
+              })),
+            truncated: false,
+          }),
+          read: ({ path }) => {
+            const content = files.get(path);
+            if (content === undefined) {
+              throw Object.assign(new Error(`ENOENT: ${path}`), {
+                code: "ENOENT",
+              });
+            }
+            return {
+              content,
+              contentEncoding: "utf8" as const,
+              sha256: hash(content),
+            };
+          },
+        },
+      },
+    });
+    hosts.push(host);
+    const context = createPluginContext(host.bb);
+    seedAccepted(context, [component("accepted-controller")]);
+    registerProductSecurity(host.bb, context);
+
+    const page = rpcContract.taraList.output.parse(
+      await host.harness.callRpc("taraList", {
+        projectId: PROJECT,
+        projectVersionId: null,
+        kind: "component",
+        filters: {},
+        pageSize: 50,
+        continuation: null,
+      }),
+    );
+
+    expect(page.items.map((item) => item.key)).toEqual(["accepted-controller"]);
+    expect(page.cache).toMatchObject({ state: "stale" });
+    expect(page.cache.message).toMatch(
+      /Unsupported component type.*mystery_1.*authored file.*unknown-1\.yaml.*4 more authored files have this diagnostic/iu,
+    );
+    expect(page.cache.message).toMatch(
+      /Retired component type.*ecu.*requires migration in authored file.*retired-controller\.yaml/iu,
+    );
+    expect(page.cache.message).toMatch(
+      /Invalid working YAML quarantined at.*malformed-controller\.yaml.*verification_status/iu,
+    );
+  });
+
   it("authors a new component while a retired component is quarantined with an advisory", async () => {
     const legacy = component("legacy-controller", "hardware");
     const legacyContent = serializeCanvasEntity(legacy).replace(
@@ -223,7 +312,7 @@ describe("WP-35 read-classified editing RPCs", () => {
       cache: {
         state: "stale",
         message: expect.stringMatching(
-          /legacy-controller\.yaml.*component_type.*earlier canvas vocabulary/iu,
+          /Retired component type.*ecu.*requires migration.*legacy-controller\.yaml/iu,
         ),
       },
     });

@@ -441,9 +441,48 @@ describe("WP-31 bb panel qualification", () => {
       },
     );
     expect(
-      await stale.findByText("This canvas is stale", { exact: false }),
+      await stale.findByText("Accepted cache is stale.", { exact: false }),
     ).toBeTruthy();
     stale.lifecycle.unmount();
+
+    const unsupported = renderSlot(
+      panel,
+      { subPath: "tara" },
+      {
+        context: { projectId: "project-1", threadId: null },
+        rpc: {
+          connectionsStatus: connectedRemoteStatus,
+          taraList: (input) => {
+            const unsupportedComponent = inputKind(input) === "component";
+            const page = taraPage(input, unsupportedComponent);
+            return {
+              ...page,
+              cache: {
+                ...page.cache,
+                state: unsupportedComponent ? "stale" : "empty",
+                message: unsupportedComponent
+                  ? "Unsupported component type in authored file product-security/architecture/components/unknown-1.yaml: component_type “mystery_1” is not recognized."
+                  : "No accepted product-security cache is available.",
+              },
+            };
+          },
+        },
+      },
+    );
+    expect(
+      await unsupported.findByText("Unsupported component type", {
+        exact: false,
+      }),
+    ).toBeTruthy();
+    expect(
+      unsupported.getByText("unknown-1.yaml", { exact: false }),
+    ).toBeTruthy();
+    expect(
+      unsupported.queryByText("No accepted product-security cache", {
+        exact: false,
+      }),
+    ).toBeNull();
+    unsupported.lifecycle.unmount();
 
     const unconfigured = renderSlot(
       panel,

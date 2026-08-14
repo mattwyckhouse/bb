@@ -215,6 +215,7 @@ function TaraPanel({
     <div className="flex h-full min-h-0 flex-col">
       <CanvasCacheBanner
         error={data.error}
+        message={model.cache.message}
         pulledAt={model.cache.pulledAt}
         stale={model.cache.stale}
       />
