@@ -18,6 +18,7 @@ import {
   categoryFromVocabulary,
   methodologyVocabulary,
 } from "../threat-overlay/aggregate.js";
+import { assertWorkspacePlatformProjectBinding } from "../scope/identity.js";
 import {
   createCanvasEntityAdapters,
   type AdapterSlugResolver,
@@ -29,6 +30,7 @@ import {
   canvasEditingLoadInputSchema,
   canvasEditingLoadOutputSchema,
   canvasJsonValueSchema,
+  parseAcceptedArchitectureEntity,
   parseArchitectureEntity,
   stableSlugSchema,
   type CanvasEntityKind,
@@ -339,7 +341,7 @@ function acceptedCanvasRow(
   return rows[0] ?? null;
 }
 
-function parseAcceptedCanvasEntity(
+function parseAcceptedCanvasWritableEntity(
   kind: CanvasEntityKind,
   row: AcceptedCanvasRow,
 ) {
@@ -357,6 +359,32 @@ function parseAcceptedCanvasEntity(
     );
   }
   const entity = parseArchitectureEntity(kind, value);
+  if (ENTITIES[kind].key({ slug: entity.slug }) !== row.entity_key) {
+    throw new Error(
+      `INVALID_ACCEPTED_TARA: ${kind}/${entity.slug} has a mismatched stable key.`,
+    );
+  }
+  return entity;
+}
+
+function parseAcceptedCanvasReadableEntity(
+  kind: CanvasEntityKind,
+  row: AcceptedCanvasRow,
+) {
+  let value: unknown;
+  try {
+    value = JSON.parse(row.payload);
+  } catch {
+    throw new Error(
+      `INVALID_ACCEPTED_TARA: ${kind}/${row.entity_key} is not valid JSON.`,
+    );
+  }
+  if (!isUnknownRecord(value)) {
+    throw new Error(
+      `INVALID_ACCEPTED_TARA: ${kind}/${row.entity_key} must be a mapping.`,
+    );
+  }
+  const entity = parseAcceptedArchitectureEntity(kind, value);
   if (ENTITIES[kind].key({ slug: entity.slug }) !== row.entity_key) {
     throw new Error(
       `INVALID_ACCEPTED_TARA: ${kind}/${entity.slug} has a mismatched stable key.`,
@@ -388,7 +416,7 @@ async function materializeAcceptedCanvasKind(
     ...listing.diagnostics.map((diagnostic) => diagnostic.slug),
   ]);
   for (const row of acceptedCanvasRows(db, input, kind)) {
-    const entity = parseAcceptedCanvasEntity(kind, row);
+    const entity = parseAcceptedCanvasWritableEntity(kind, row);
     if (deleted.has(encodeURIComponent(entity.slug))) continue;
     const file = canvasEntityFile(kind, entity.slug);
     if (existing.has(entity.slug)) continue;
@@ -438,7 +466,7 @@ async function mergedCanvasEntities(
       const listing = await isolatedCanvasFileListing(files, kind);
       const merged = new Map(
         acceptedCanvasRows(db, input, kind).map((row) => {
-          const entity = parseAcceptedCanvasEntity(kind, row);
+          const entity = parseAcceptedCanvasReadableEntity(kind, row);
           return [entity.slug, entity] as const;
         }),
       );
@@ -502,7 +530,7 @@ export async function readCanvasWorkingOverlay(
   bb: BbPluginApi,
   input: {
     workspaceProjectId: string;
-    projectVersionId: string;
+    projectVersionId: string | null;
     kind: CanvasEntityKind;
   },
 ) {
@@ -810,7 +838,7 @@ export function registerCanvasEditingBackend(
         file,
       };
     }
-    const accepted = parseAcceptedCanvasEntity(input.kind, acceptedRow);
+    const accepted = parseAcceptedCanvasWritableEntity(input.kind, acceptedRow);
     const content = serializeCanvasEntity(accepted);
     return {
       projectId: input.projectId,
@@ -958,6 +986,11 @@ export function registerCanvasEditingBackend(
   });
   bb.rpc.register(versionedCanvasEditingRpcContract, {
     canvasVersionedEditingLoad(input) {
+      assertWorkspacePlatformProjectBinding(
+        db,
+        input.workspaceProjectId,
+        input.platformProjectId,
+      );
       return canvasEditingLoad({
         projectId: input.workspaceProjectId,
         platformProjectId: input.platformProjectId,
@@ -967,6 +1000,11 @@ export function registerCanvasEditingBackend(
       });
     },
     canvasVersionedCommandApply(input) {
+      assertWorkspacePlatformProjectBinding(
+        db,
+        input.workspaceProjectId,
+        input.platformProjectId,
+      );
       const { workspaceProjectId, platformProjectId, ...command } = input;
       return taraCommandApply({
         ...command,
@@ -975,6 +1013,11 @@ export function registerCanvasEditingBackend(
       });
     },
     canvasVersionedDeleteImpact(input) {
+      assertWorkspacePlatformProjectBinding(
+        db,
+        input.workspaceProjectId,
+        input.platformProjectId,
+      );
       const { workspaceProjectId, platformProjectId, ...impact } = input;
       return taraDeleteImpact({
         ...impact,

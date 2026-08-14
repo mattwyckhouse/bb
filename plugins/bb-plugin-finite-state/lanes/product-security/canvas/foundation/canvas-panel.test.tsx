@@ -301,7 +301,7 @@ describe("WP-31 bb panel qualification", () => {
     const ThreatScope = ({
       scope,
     }: {
-      scope?: { projectVersionId: string };
+      scope?: { projectVersionId: string | null };
     }) => (
       <output>
         {scope ? `overlay ${scope.projectVersionId}` : "no overlay"}
@@ -771,13 +771,35 @@ describe("WP-31 bb panel qualification", () => {
           taraScopeResolve: () => ({
             versions: [],
             selected: null,
-            source: "none",
+            source: "local",
             legacy: null,
+          }),
+          taraCanvasList: () => ({
+            items: [],
+            total: 0,
+            next: null,
+            cache,
           }),
         },
       },
     );
-    expect(await freshProject.findByText("Choose a project")).toBeTruthy();
+    expect(
+      await freshProject.findByText("No architecture model yet"),
+    ).toBeTruthy();
+    expect(
+      freshProject.getByRole("button", { name: "Open Sync" }),
+    ).toBeTruthy();
+    const continueLocal = freshProject.getByRole("button", {
+      name: "Continue local authoring",
+    });
+    expect(continueLocal).toBeTruthy();
+    const localVersion = freshProject.getByRole("combobox", {
+      name: "TARA version",
+    });
+    expect(localVersion).toBeInstanceOf(HTMLSelectElement);
+    expect((localVersion as HTMLSelectElement).value).toBe("");
+    fireEvent.click(continueLocal);
+    expect(await freshProject.findByLabelText("Create component")).toBeTruthy();
     expect(freshProject.queryByText("Loading accepted model…")).toBeNull();
     freshProject.lifecycle.unmount();
   });
@@ -808,7 +830,7 @@ describe("WP-31 bb panel qualification", () => {
               : {
                   versions: [],
                   selected: null,
-                  source: "none",
+                  source: "local",
                   legacy: {
                     platformProjectId: "platform-legacy",
                     kinds: ["component", "threat"],

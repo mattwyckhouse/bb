@@ -4,11 +4,8 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { PluginContext } from "../../../../lib/context.js";
 import { PROJECT_LEVEL_VERSION_ID } from "../../../../lib/store/index.js";
-import {
-  bindWorkspacePlatformProject,
-  WORKSPACE_PLATFORM_PROJECT_PREDICATE,
-} from "../../../../lib/store/project-scope.js";
 import { rpcContract } from "../../../../shared/contract.js";
+import { assertWorkspacePlatformProjectBinding } from "./identity.js";
 
 const TARA_ENTITY_KINDS = [
   "asset",
@@ -42,7 +39,7 @@ export const taraCanvasRpcContract = defineRpcContract({
       .object({
         workspaceProjectId: z.string().trim().min(1).max(512),
         platformProjectId: z.string().trim().min(1).max(512),
-        projectVersionId: z.string().trim().min(1).max(512),
+        projectVersionId: z.string().trim().min(1).max(512).nullable(),
         kind: z.enum(TARA_ENTITY_KINDS),
         pageSize: z.number().int().min(1).max(500).default(50),
         continuation: z.string().min(1).max(4096).nullable().default(null),
@@ -64,7 +61,7 @@ export const taraScopeRpcContract = defineRpcContract({
       .object({
         versions: z.array(versionSchema).max(1_000),
         selected: versionSchema.nullable(),
-        source: z.enum(["explicit", "latest", "none"]),
+        source: z.enum(["explicit", "latest", "local"]),
         legacy: legacySchema.nullable(),
       })
       .strict(),
@@ -122,7 +119,7 @@ function versionRows(
   db: Database.Database,
   workspaceProjectId: string,
 ): Version[] {
-  const exactRows = db
+  const rows = db
     .prepare<[string, string], VersionRow>(
       `SELECT s.project_id, s.project_version_id, MAX(s.last_pull) AS as_of
          FROM sync_state AS s
@@ -135,20 +132,6 @@ function versionRows(
         ORDER BY as_of DESC, s.project_id ASC, s.project_version_id DESC`,
     )
     .all(workspaceProjectId, PROJECT_LEVEL_VERSION_ID);
-  const rows =
-    exactRows.length > 0
-      ? exactRows
-      : db
-          .prepare<[string, string], VersionRow>(
-            `SELECT s.project_id, s.project_version_id, MAX(s.last_pull) AS as_of
-               FROM sync_state AS s
-              WHERE ${WORKSPACE_PLATFORM_PROJECT_PREDICATE}
-                AND s.project_version_id <> ?
-                AND s.accepted_generation_id IS NOT NULL
-              GROUP BY s.project_id, s.project_version_id
-              ORDER BY as_of DESC, s.project_id ASC, s.project_version_id DESC`,
-          )
-          .all(workspaceProjectId, PROJECT_LEVEL_VERSION_ID);
   return rows.map((row) => ({
     platformProjectId: row.project_id,
     projectVersionId: row.project_version_id,
@@ -164,8 +147,10 @@ function legacyTara(
     .prepare<[string, string], LegacyCatalogRow>(
       `SELECT s.project_id, s.entity_kind
          FROM sync_state AS s
-        WHERE ${WORKSPACE_PLATFORM_PROJECT_PREDICATE}
-          AND s.project_version_id = ?
+         JOIN workspace_platform_project_binding AS binding
+           ON binding.workspace_project_id = ?
+          AND binding.platform_project_id = s.project_id
+        WHERE s.project_version_id = ?
           AND s.entity_kind IN ('asset','component','dataflow','threat','zone')
           AND s.accepted_generation_id IS NOT NULL
         ORDER BY s.project_id, s.entity_kind`,
@@ -424,28 +409,25 @@ export function registerTaraScopeBackend(
             ? ("explicit" as const)
             : selected
               ? ("latest" as const)
-              : ("none" as const),
+              : ("local" as const),
         legacy: legacyTara(db, input.workspaceProjectId),
       };
     },
     async taraScopePromote(input) {
       await bb.sdk.projects.get({ projectId: input.workspaceProjectId });
       const db = ctx.db();
+      assertWorkspacePlatformProjectBinding(
+        db,
+        input.workspaceProjectId,
+        input.platformProjectId,
+      );
       const legacy = legacyTara(db, input.workspaceProjectId);
       if (!legacy || legacy.platformProjectId !== input.platformProjectId) {
         throw new Error(
           "The selected workspace has no unambiguous legacy TARA for that Platform project.",
         );
       }
-      const promotedKinds = db.transaction(() => {
-        const kinds = promoteLegacyProjectTara(db, input);
-        bindWorkspacePlatformProject(
-          db,
-          input.workspaceProjectId,
-          input.platformProjectId,
-        );
-        return kinds;
-      })();
+      const promotedKinds = promoteLegacyProjectTara(db, input);
       const selected = {
         platformProjectId: input.platformProjectId,
         projectVersionId: input.projectVersionId,

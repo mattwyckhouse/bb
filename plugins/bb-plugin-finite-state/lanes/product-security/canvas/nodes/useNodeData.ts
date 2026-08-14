@@ -404,7 +404,7 @@ function safeError(error: unknown): string {
 
 function payloadScope(payload: unknown): {
   projectId: string;
-  projectVersionId: string;
+  projectVersionId: string | null;
 } | null {
   if (
     typeof payload !== "object" ||
@@ -415,7 +415,8 @@ function payloadScope(payload: unknown): {
   }
   const projectId = Reflect.get(payload, "projectId");
   const projectVersionId = Reflect.get(payload, "projectVersionId");
-  return typeof projectId === "string" && typeof projectVersionId === "string"
+  return typeof projectId === "string" &&
+    (typeof projectVersionId === "string" || projectVersionId === null)
     ? { projectId, projectVersionId }
     : null;
 }
@@ -431,7 +432,7 @@ export function useArchitectureData(
         return rpc.call("taraCanvasList", {
           workspaceProjectId: scope.workspaceProjectId,
           platformProjectId: input.projectId,
-          projectVersionId: input.projectVersionId ?? scope.projectVersionId,
+          projectVersionId: input.projectVersionId,
           kind: input.kind,
           pageSize: input.pageSize,
           continuation: input.continuation,

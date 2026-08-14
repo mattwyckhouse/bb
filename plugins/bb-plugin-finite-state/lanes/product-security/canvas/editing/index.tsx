@@ -155,8 +155,10 @@ function referenceOptions(
 
 export function ProductSecurityEditingLayer({
   scope,
+  createRequest = 0,
 }: {
   scope?: ResolvedTaraScope;
+  createRequest?: number;
 } = {}): React.JSX.Element | null {
   const [appRuntime, setAppRuntime] = useState<EditingAppRuntime | null>(null);
   useEffect(() => {
@@ -169,16 +171,22 @@ export function ProductSecurityEditingLayer({
     };
   }, []);
   return appRuntime ? (
-    <ConfiguredEditingLayer appRuntime={appRuntime} scope={scope} />
+    <ConfiguredEditingLayer
+      appRuntime={appRuntime}
+      createRequest={createRequest}
+      scope={scope}
+    />
   ) : null;
 }
 
 function ConfiguredEditingLayer({
   appRuntime,
   scope,
+  createRequest,
 }: {
   appRuntime: EditingAppRuntime;
   scope?: ResolvedTaraScope;
+  createRequest: number;
 }): React.JSX.Element | null {
   const projectId = scope?.workspaceProjectId ?? readPersistedProjectId();
   if (!projectId) {
@@ -194,6 +202,7 @@ function ConfiguredEditingLayer({
       projectId={projectId}
       platformProjectId={scope?.platformProjectId ?? null}
       projectVersionId={scope?.projectVersionId ?? null}
+      createRequest={createRequest}
     />
   );
 }
@@ -203,11 +212,13 @@ function ProjectEditingLayer({
   projectId,
   platformProjectId,
   projectVersionId,
+  createRequest,
 }: {
   appRuntime: EditingAppRuntime;
   projectId: string;
   platformProjectId: string | null;
   projectVersionId: string | null;
+  createRequest: number;
 }): React.JSX.Element | null {
   const architecture = useOptionalArchitectureSelection();
   const navigate = appRuntime.useBbNavigate();
@@ -274,6 +285,17 @@ function ProjectEditingLayer({
   const [deleteImpact, setDeleteImpact] = useState<DeletionImpact | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  useEffect(() => {
+    if (createRequest <= 0) return;
+    setError(null);
+    setMessage(null);
+    setForm({
+      mode: "create",
+      kind: "component",
+      initial: null,
+      expectedSha256: null,
+    });
+  }, [createRequest]);
   const historyExecutor = useRef<CanvasHistoryExecutor | null>(null);
   const historyRef = useRef<CanvasEditHistory | null>(null);
   const [, setHistoryRevision] = useState(0);

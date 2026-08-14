@@ -249,14 +249,24 @@ const discoveredEdgeSchema = z
   .object({ source: stableSlugSchema, target: stableSlugSchema })
   .strict();
 
+const workspaceProjectIdSchema = z.string().trim().min(1).max(512);
 const projectScopeFields = {
-  projectId: z.string().trim().min(1).max(512),
+  workspaceProjectId: workspaceProjectIdSchema,
+  platformProjectId: z.string().trim().min(1).max(512).nullable(),
   projectVersionId: z.string().trim().min(1).max(512).nullable(),
 } as const;
 
 const familyInputSchema = z
   .object({ ...projectScopeFields, sourceSlug: stableSlugSchema })
-  .strict();
+  .strict()
+  .refine(
+    (value) =>
+      (value.platformProjectId === null) === (value.projectVersionId === null),
+    {
+      message:
+        "Platform project and version identities must both be present or both be absent.",
+    },
+  );
 
 const canvasLayoutLoadResultSchema = z
   .object({
@@ -306,7 +316,7 @@ export const canvasLinksRpcContract = defineRpcContract({
   canvasLayoutLoad: {
     input: z
       .object({
-        projectId: projectScopeFields.projectId,
+        projectId: workspaceProjectIdSchema,
         nodes: z.array(discoveredNodeSchema).max(MAX_CANVAS_LAYOUT_NODES),
         edges: z.array(discoveredEdgeSchema).max(MAX_CANVAS_LAYOUT_EDGES),
       })
@@ -316,7 +326,7 @@ export const canvasLinksRpcContract = defineRpcContract({
   canvasLayoutSave: {
     input: z
       .object({
-        projectId: projectScopeFields.projectId,
+        projectId: workspaceProjectIdSchema,
         layout: canvasLayoutV1Schema,
         expectedSha256: sha256Schema.nullable(),
       })

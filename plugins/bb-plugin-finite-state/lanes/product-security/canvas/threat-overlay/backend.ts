@@ -27,35 +27,57 @@ import {
 } from "./path.js";
 import { readCanvasWorkingOverlay } from "../editing/backend.js";
 import { architectureEntityPayload } from "../editing/schema.js";
+import { assertWorkspacePlatformProjectBinding } from "../scope/identity.js";
 
 const MAX_THREATS = 2_000;
 const MAX_TARGETS_PER_THREAT = 100;
 const MAX_AGGREGATES = 10_000;
 const MAX_PATH_PAGE_SIZE = 100;
 
+const projectScopeFields = {
+  projectId: z.string().trim().min(1).max(512),
+  projectVersionId: z.string().trim().min(1).max(512).nullable(),
+  workspaceProjectId: z
+    .string()
+    .trim()
+    .min(1)
+    .max(512)
+    .nullable()
+    .default(null),
+} as const;
+
+function hasVersionWorkspace(input: {
+  projectVersionId: string | null;
+  workspaceProjectId: string | null;
+}): boolean {
+  return input.projectVersionId === null || input.workspaceProjectId !== null;
+}
+
+const versionWorkspaceIssue = {
+  message: "Version-scoped TARA requires a workspace project identity.",
+  path: ["workspaceProjectId"],
+};
+
 const projectScopeSchema = z
+  .object(projectScopeFields)
+  .strict()
+  .refine(hasVersionWorkspace, versionWorkspaceIssue);
+const pathPageInputSchema = z
   .object({
-    projectId: z.string().trim().min(1).max(512),
-    projectVersionId: z.string().trim().min(1).max(512).nullable(),
-    workspaceProjectId: z
-      .string()
-      .trim()
-      .min(1)
-      .max(512)
-      .nullable()
-      .default(null),
-  })
-  .strict();
-const pathPageInputSchema = projectScopeSchema
-  .extend({
+    ...projectScopeFields,
     threatSlug: z.string().trim().min(1).max(512),
     pageSize: z.number().int().min(1).max(MAX_PATH_PAGE_SIZE).default(50),
     continuation: z.string().min(1).max(4096).nullable().default(null),
   })
-  .strict();
-const pathInputSchema = projectScopeSchema
-  .extend({ routeSignature: z.string().trim().min(1).max(2048) })
-  .strict();
+  .strict()
+  .refine(hasVersionWorkspace, versionWorkspaceIssue);
+const pathInputSchema = z
+  .object({
+    ...projectScopeFields,
+    routeSignature: z.string().trim().min(1).max(2048),
+  })
+  .strict()
+  .refine(hasVersionWorkspace, versionWorkspaceIssue);
 const strideCategorySchema = z.enum([
   "spoofing",
   "tampering",
@@ -619,15 +641,37 @@ async function readMergedThreatSnapshot(
   scope: ProjectScope,
   snapshotCache: Map<string, ThreatSnapshot>,
 ): Promise<ThreatSnapshot> {
-  const base = readThreatSnapshot(db, scope, snapshotCache);
-  if (!scope.workspaceProjectId || !scope.projectVersionId) return base;
+  const localWorkingScope =
+    scope.workspaceProjectId !== null && scope.projectVersionId === null;
+  const localVocabulary = methodologyVocabulary(null);
+  const base = localWorkingScope
+    ? {
+        projectVersionId: null,
+        revision: `local:${scope.workspaceProjectId}`,
+        threats: [],
+        aggregates: [],
+        methodology: {
+          configured: false,
+          labels: labelsForOutput(localVocabulary),
+        },
+        total: 0,
+        truncated: false,
+        partialError: null,
+        cache: cacheState(undefined),
+      }
+    : readThreatSnapshot(db, scope, snapshotCache);
+  if (!scope.workspaceProjectId) return base;
   const working = await readCanvasWorkingOverlay(bb, {
     workspaceProjectId: scope.workspaceProjectId,
     projectVersionId: scope.projectVersionId,
     kind: "threat",
   });
-  const methodology = readMethodology(db, scope);
-  const pathGeneration = acceptedPathGeneration(db, scope).generationId;
+  const methodology = localWorkingScope
+    ? { vocabulary: localVocabulary }
+    : readMethodology(db, scope);
+  const pathGeneration = localWorkingScope
+    ? null
+    : acceptedPathGeneration(db, scope).generationId;
   const pathCounts = readPathCounts(db, scope, pathGeneration);
   const threatsBySlug = new Map(
     base.threats.map((threat) => [threat.slug, threat] as const),
@@ -808,14 +852,35 @@ export function registerThreatOverlayBackend(
     "product-security:threat-overlay:snapshots",
     () => new Map<string, ThreatSnapshot>(),
   );
+  const assertVersionScope = (input: {
+    workspaceProjectId: string | null;
+    projectId: string;
+    projectVersionId: string | null;
+  }) => {
+    if (input.projectVersionId === null) return;
+    if (!input.workspaceProjectId) {
+      throw new Error(
+        "Version-scoped TARA requires a workspace project identity.",
+      );
+    }
+    assertWorkspacePlatformProjectBinding(
+      ctx.db(),
+      input.workspaceProjectId,
+      input.projectId,
+    );
+  };
   bb.rpc.register(threatOverlayRpcContract, {
     threatOverlaySnapshot(input) {
-      return readMergedThreatSnapshot(bb, ctx.db(), input, snapshotCache);
+      const db = ctx.db();
+      assertVersionScope(input);
+      return readMergedThreatSnapshot(bb, db, input, snapshotCache);
     },
     threatOverlayPaths(input) {
+      assertVersionScope(input);
       return readPathPage(ctx.db(), input);
     },
     threatOverlayPath(input) {
+      assertVersionScope(input);
       return readPath(ctx.db(), input);
     },
   });

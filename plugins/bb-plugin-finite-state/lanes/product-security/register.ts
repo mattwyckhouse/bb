@@ -17,6 +17,7 @@ import {
   registerTaraScopeBackend,
   taraCanvasRpcContract,
 } from "./canvas/scope/backend.js";
+import { assertWorkspacePlatformProjectBinding } from "./canvas/scope/identity.js";
 import { registerThreatOverlayBackend } from "./canvas/threat-overlay/backend.js";
 import type { CanvasTaraKind } from "./canvas/foundation/types.js";
 import { architectureEntityPayload } from "./canvas/editing/schema.js";
@@ -349,6 +350,7 @@ export async function listTara(
   identities: {
     workspaceProjectId: string;
     platformProjectId: string;
+    includeAccepted?: boolean;
   } = {
     workspaceProjectId: input.projectId,
     platformProjectId: input.projectId,
@@ -357,13 +359,16 @@ export async function listTara(
   const kind = readTaraKind(input);
   assertFoundationFilters(input);
   const projectVersionId = toStorageProjectVersionId(input.projectVersionId);
-  const sync = db
-    .prepare<[string, string, string], TaraSyncRow>(
-      `SELECT accepted_generation_id, base_revision, last_pull, error
-         FROM sync_state
-        WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?`,
-    )
-    .get(identities.platformProjectId, projectVersionId, kind);
+  const sync =
+    identities.includeAccepted !== false
+      ? db
+          .prepare<[string, string, string], TaraSyncRow>(
+            `SELECT accepted_generation_id, base_revision, last_pull, error
+             FROM sync_state
+            WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?`,
+          )
+          .get(identities.platformProjectId, projectVersionId, kind)
+      : undefined;
 
   const pageSize = input.pageSize ?? 50;
   const afterKey = decodeContinuation(input.continuation ?? null);
@@ -559,6 +564,19 @@ export function registerProductSecurity(
   });
   bb.rpc.register(taraCanvasRpcContract, {
     taraCanvasList(input) {
+      if (input.projectVersionId === null) {
+        if (input.workspaceProjectId !== input.platformProjectId) {
+          throw new Error(
+            "Local TARA reads must use the selected workspace identity.",
+          );
+        }
+      } else {
+        assertWorkspacePlatformProjectBinding(
+          ctx.db(),
+          input.workspaceProjectId,
+          input.platformProjectId,
+        );
+      }
       return listTara(
         bb,
         ctx.db(),
@@ -573,6 +591,7 @@ export function registerProductSecurity(
         {
           workspaceProjectId: input.workspaceProjectId,
           platformProjectId: input.platformProjectId,
+          includeAccepted: input.projectVersionId !== null,
         },
       );
     },

@@ -15,7 +15,8 @@ const VERSION_SCOPE_STORAGE_PREFIX =
 export interface ResolvedTaraScope {
   workspaceProjectId: string;
   platformProjectId: string;
-  projectVersionId: string;
+  projectVersionId: string | null;
+  mode: "version" | "local";
 }
 
 interface StoredSelection {
@@ -174,14 +175,22 @@ export function useResolvedTaraScope(
   const selected = current?.selected ?? null;
   const scope = useMemo(
     () =>
-      workspaceProjectId && selected
-        ? {
-            workspaceProjectId,
-            platformProjectId: selected.platformProjectId,
-            projectVersionId: selected.projectVersionId,
-          }
+      workspaceProjectId && current
+        ? selected
+          ? {
+              workspaceProjectId,
+              platformProjectId: selected.platformProjectId,
+              projectVersionId: selected.projectVersionId,
+              mode: "version" as const,
+            }
+          : {
+              workspaceProjectId,
+              platformProjectId: workspaceProjectId,
+              projectVersionId: null,
+              mode: "local" as const,
+            }
         : null,
-    [selected, workspaceProjectId],
+    [current, selected, workspaceProjectId],
   );
   const select = useCallback(
     (key: string) => {

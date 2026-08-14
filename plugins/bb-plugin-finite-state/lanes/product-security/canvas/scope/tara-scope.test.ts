@@ -6,6 +6,7 @@ import { registerThreatOverlayBackend } from "../threat-overlay/backend.js";
 import { registerTaraScopeBackend, taraScopeRpcContract } from "./backend.js";
 
 const WORKSPACE = "workspace-fs202";
+const FOREIGN_WORKSPACE = "workspace-foreign";
 const PLATFORM = "platform-fs202";
 const VERSION_1 = "version-1";
 const VERSION_2 = "version-2";
@@ -80,13 +81,28 @@ describe("registered version-scoped TARA resolution", () => {
         projects: {
           get: async ({ projectId }) => {
             if (projectId !== WORKSPACE) throw new Error("unknown workspace");
-            return { id: projectId, sources: [] };
+            return {
+              id: projectId,
+              sources: [
+                { hostId: "host-1", path: "/workspace", isDefault: true },
+              ],
+            };
+          },
+        },
+        files: {
+          list: () => {
+            throw new Error("ENOENT: directory does not exist");
           },
         },
       },
     });
     const ctx = createPluginContext(bb);
     const db = ctx.db();
+    db.prepare(
+      `INSERT INTO workspace_platform_project_binding
+         (workspace_project_id, platform_project_id)
+       VALUES (?, ?)`,
+    ).run(WORKSPACE, PLATFORM);
     acceptedGeneration(
       db,
       PROJECT_LEVEL_VERSION_ID,
@@ -112,6 +128,7 @@ describe("registered version-scoped TARA resolution", () => {
       },
     );
     registerTaraScopeBackend(bb, ctx);
+    registerThreatOverlayBackend(bb, ctx);
 
     const before = db
       .prepare("SELECT COUNT(*) AS count FROM pull_generation")
@@ -124,7 +141,7 @@ describe("registered version-scoped TARA resolution", () => {
     ).resolves.toMatchObject({
       versions: [],
       selected: null,
-      source: "none",
+      source: "local",
       legacy: { platformProjectId: PLATFORM, kinds: ["component"] },
     });
     expect(
@@ -148,6 +165,96 @@ describe("registered version-scoped TARA resolution", () => {
     ).toEqual([{ entity_key: "api" }]);
   });
 
+  it("refuses an unbound workspace attempting to discover or promote another workspace's legacy TARA", async () => {
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "finite-state-foreign-promotion",
+      sdk: {
+        projects: {
+          get: async ({ projectId }) => {
+            if (![WORKSPACE, FOREIGN_WORKSPACE].includes(projectId)) {
+              throw new Error("unknown workspace");
+            }
+            return { id: projectId, sources: [] };
+          },
+        },
+      },
+    });
+    const ctx = createPluginContext(bb);
+    const db = ctx.db();
+    db.prepare(
+      `INSERT INTO workspace_platform_project_binding
+         (workspace_project_id, platform_project_id)
+       VALUES (?, ?)`,
+    ).run(WORKSPACE, PLATFORM);
+    acceptedGeneration(
+      db,
+      PROJECT_LEVEL_VERSION_ID,
+      LEGACY_GENERATION,
+      "2026-08-14T10:00:00.000Z",
+    );
+    acceptedState(
+      db,
+      PROJECT_LEVEL_VERSION_ID,
+      LEGACY_GENERATION,
+      "component",
+      "2026-08-14T10:00:00.000Z",
+    );
+    snapshot(
+      db,
+      PROJECT_LEVEL_VERSION_ID,
+      LEGACY_GENERATION,
+      "component",
+      "api",
+      { slug: "api", name: "API" },
+    );
+    registerTaraScopeBackend(bb, ctx);
+    registerThreatOverlayBackend(bb, ctx);
+
+    await expect(
+      harness.behavior.callRpc("taraScopeResolve", {
+        workspaceProjectId: FOREIGN_WORKSPACE,
+        explicit: null,
+      }),
+    ).resolves.toEqual({
+      versions: [],
+      selected: null,
+      source: "local",
+      legacy: null,
+    });
+    await expect(
+      harness.behavior.callRpc("taraScopePromote", {
+        workspaceProjectId: FOREIGN_WORKSPACE,
+        platformProjectId: PLATFORM,
+        projectVersionId: "hijacked-version",
+      }),
+    ).rejects.toThrow(/not associated/iu);
+    await expect(
+      harness.behavior.callRpc("threatOverlaySnapshot", {
+        workspaceProjectId: FOREIGN_WORKSPACE,
+        projectId: PLATFORM,
+        projectVersionId: "hijacked-version",
+      }),
+    ).rejects.toThrow(/not associated/iu);
+    expect(
+      db
+        .prepare(
+          `SELECT workspace_project_id, platform_project_id
+             FROM workspace_platform_project_binding`,
+        )
+        .all(),
+    ).toEqual([
+      { workspace_project_id: WORKSPACE, platform_project_id: PLATFORM },
+    ]);
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM base_snapshot
+            WHERE project_id = ? AND project_version_id = ?`,
+        )
+        .get(PLATFORM, "hijacked-version"),
+    ).toEqual({ count: 0 });
+  });
+
   it("promotes legacy keys deterministically and never leaks threats across a version switch", async () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "finite-state",
@@ -155,7 +262,17 @@ describe("registered version-scoped TARA resolution", () => {
         projects: {
           get: async ({ projectId }) => {
             if (projectId !== WORKSPACE) throw new Error("unknown workspace");
-            return { id: projectId, sources: [] };
+            return {
+              id: projectId,
+              sources: [
+                { hostId: "host-1", path: "/workspace", isDefault: true },
+              ],
+            };
+          },
+        },
+        files: {
+          list: () => {
+            throw new Error("ENOENT: directory does not exist");
           },
         },
       },
@@ -385,10 +502,12 @@ describe("registered version-scoped TARA resolution", () => {
         .get(PLATFORM, VERSION_1),
     ).toEqual({ count: 0 });
     const versionOne = await harness.behavior.callRpc("threatOverlaySnapshot", {
+      workspaceProjectId: WORKSPACE,
       projectId: PLATFORM,
       projectVersionId: VERSION_1,
     });
     const versionTwo = await harness.behavior.callRpc("threatOverlaySnapshot", {
+      workspaceProjectId: WORKSPACE,
       projectId: PLATFORM,
       projectVersionId: VERSION_2,
     });

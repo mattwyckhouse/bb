@@ -106,6 +106,50 @@ interface LoadedArchitectureCanvasProps {
   onRepairSourceFile(sourceFile: string, slug: string): void;
 }
 
+function LegacyPromotionNotice({
+  scopeState,
+  versionId,
+  onVersionIdChange,
+}: {
+  scopeState: TaraScopeState;
+  versionId: string;
+  onVersionIdChange(value: string): void;
+}): React.JSX.Element | null {
+  if (!scopeState.legacy) return null;
+  return (
+    <div className="border-b border-border bg-card px-4 py-3">
+      <p className="text-sm font-medium text-foreground">
+        Promote legacy TARA to a version
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        The associated Platform project {scopeState.legacy.platformProjectId}{" "}
+        has a project-scoped snapshot. Promotion copies every accepted kind
+        together and refuses a non-empty target.
+      </p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <label className="sr-only" htmlFor="tara-promotion-version">
+          Target version ID
+        </label>
+        <input
+          className="h-9 min-w-52 rounded-md border border-input bg-background px-3 text-sm"
+          id="tara-promotion-version"
+          onChange={(event) => onVersionIdChange(event.target.value)}
+          placeholder="Target version ID"
+          value={versionId}
+        />
+        <button
+          className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          disabled={scopeState.promoting || versionId.trim().length === 0}
+          onClick={() => void scopeState.promote(versionId.trim())}
+          type="button"
+        >
+          {scopeState.promoting ? "Promoting…" : "Promote complete snapshot"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TaraPanel({
   features,
   workspaceProjectId,
@@ -119,6 +163,7 @@ function TaraPanel({
 }): React.JSX.Element {
   const navigate = useBbNavigate();
   const [promotionVersionId, setPromotionVersionId] = useState("");
+  const [localAuthoringRequest, setLocalAuthoringRequest] = useState(0);
   const scope = scopeState.scope;
   const data = useArchitectureData(scope);
   const focusId = focusIdFromRoute(detail);
@@ -204,45 +249,7 @@ function TaraPanel({
   }
   if (scopeState.status === "loading") return <CanvasLoadingState />;
   if (scopeState.status === "unconfigured") {
-    if (!scopeState.legacy) return <CanvasUnconfiguredState />;
-    return (
-      <div className="flex h-full items-center justify-center p-6">
-        <div className="w-full max-w-lg rounded-lg border border-border bg-card p-5 shadow-sm">
-          <h2 className="text-base font-semibold text-foreground">
-            Promote legacy TARA to a version
-          </h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            A project-scoped snapshot exists for{" "}
-            {scopeState.legacy.platformProjectId}. Promotion copies every
-            accepted kind as one version baseline; it does not run during canvas
-            reads and refuses a non-empty target.
-          </p>
-          <label
-            className="mt-4 block text-sm font-medium"
-            htmlFor="tara-promotion-version"
-          >
-            Target version ID
-          </label>
-          <input
-            className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-            id="tara-promotion-version"
-            onChange={(event) => setPromotionVersionId(event.target.value)}
-            placeholder="version-1"
-            value={promotionVersionId}
-          />
-          <button
-            className="mt-4 h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
-            disabled={
-              scopeState.promoting || promotionVersionId.trim().length === 0
-            }
-            onClick={() => void scopeState.promote(promotionVersionId.trim())}
-            type="button"
-          >
-            {scopeState.promoting ? "Promoting…" : "Promote complete snapshot"}
-          </button>
-        </div>
-      </div>
-    );
+    return <CanvasUnconfiguredState />;
   }
   if (scopeState.status === "error" || !scope) {
     return <CanvasErrorState onRetry={scopeState.retry} />;
@@ -263,6 +270,11 @@ function TaraPanel({
     const cacheSignals = architectureCacheSignals(data.model.cache.message);
     return (
       <div className="relative h-full min-h-0">
+        <LegacyPromotionNotice
+          onVersionIdChange={setPromotionVersionId}
+          scopeState={scopeState}
+          versionId={promotionVersionId}
+        />
         {scopeState.promotionMessage ? (
           <div
             className="border-b border-border bg-muted px-4 py-2 text-sm text-muted-foreground"
@@ -282,9 +294,14 @@ function TaraPanel({
         ) : cacheSignals.refreshFailed ? (
           <CanvasRefreshFailureState onRetry={data.retry} />
         ) : (
-          <CanvasEmptyState onRetry={data.retry} />
+          <CanvasEmptyState
+            onContinueLocalAuthoring={() =>
+              setLocalAuthoringRequest((request) => request + 1)
+            }
+            onRetry={data.retry}
+          />
         )}
-        <EditingLayer scope={scope} />
+        <EditingLayer createRequest={localAuthoringRequest} scope={scope} />
       </div>
     );
   }
@@ -295,6 +312,11 @@ function TaraPanel({
   const graph = data.graph;
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <LegacyPromotionNotice
+        onVersionIdChange={setPromotionVersionId}
+        scopeState={scopeState}
+        versionId={promotionVersionId}
+      />
       {scopeState.promotionMessage ? (
         <div
           className="border-b border-border bg-muted px-4 py-2 text-sm text-muted-foreground"
@@ -460,6 +482,9 @@ export function ProductSecurityPanel({
               >
                 {taraScope.status === "loading" ? (
                   <option value="">Resolving accepted version…</option>
+                ) : null}
+                {taraScope.scope?.mode === "local" ? (
+                  <option value="">Local working model</option>
                 ) : null}
                 {taraScope.versions.map((version) => (
                   <option

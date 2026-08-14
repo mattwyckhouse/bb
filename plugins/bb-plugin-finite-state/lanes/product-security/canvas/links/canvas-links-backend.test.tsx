@@ -26,6 +26,7 @@ import {
 import { canvasLinksRpcContract, type CanvasLayoutV1 } from "./schema.js";
 
 const PROJECT_ID = "project-wp34";
+const WORKSPACE_PROJECT_ID = "workspace-wp34";
 const VERSION_ID = "version-current";
 const SOURCE_SLUG = "component-gateway";
 const WORKSPACE_ROOT = "/workspace";
@@ -98,11 +99,16 @@ describe("WP-34 production link RPC boundary", () => {
       pluginId: "finite-state",
       sdk: {
         projects: {
-          get: () => ({
-            sources: [
-              { hostId: "host-1", path: WORKSPACE_ROOT, isDefault: true },
-            ],
-          }),
+          get: ({ projectId }) => {
+            if (projectId !== WORKSPACE_PROJECT_ID) {
+              throw new Error(`unknown workspace project: ${projectId}`);
+            }
+            return {
+              sources: [
+                { hostId: "host-1", path: WORKSPACE_ROOT, isDefault: true },
+              ],
+            };
+          },
         },
         files: {
           read: ({ path }) => {
@@ -201,11 +207,20 @@ describe("WP-34 production link RPC boundary", () => {
     });
     const context = createPluginContext(host.bb);
     seedAcceptedVersion(context);
+    context
+      .db()
+      .prepare(
+        `INSERT INTO workspace_platform_project_binding
+           (workspace_project_id, platform_project_id)
+         VALUES (?, ?)`,
+      )
+      .run(WORKSPACE_PROJECT_ID, PROJECT_ID);
     registerCanvasLinksBackend(host.bb, context);
 
     const input = {
-      projectId: PROJECT_ID,
-      projectVersionId: null,
+      workspaceProjectId: WORKSPACE_PROJECT_ID,
+      platformProjectId: PROJECT_ID,
+      projectVersionId: VERSION_ID,
       sourceSlug: SOURCE_SLUG,
     };
     const [sbom, firmware, requirement, verification] = await Promise.all([
@@ -253,7 +268,7 @@ describe("WP-34 production link RPC boundary", () => {
     });
     expect(captured.requirements).toHaveBeenCalledWith({
       projectId: PROJECT_ID,
-      projectVersionId: null,
+      projectVersionId: VERSION_ID,
       pageSize: 200,
       continuation: null,
       filters: { view: "traceability", threat: SOURCE_SLUG },
@@ -269,6 +284,10 @@ describe("WP-34 production link RPC boundary", () => {
             call.method === "verificationsMatrix",
         ),
     ).toBe(false);
+    expect(host.harness.sdk.callsTo("projects.get")).toEqual([
+      [{ projectId: WORKSPACE_PROJECT_ID }],
+      [{ projectId: WORKSPACE_PROJECT_ID }],
+    ]);
     await host.harness.lifecycle.dispose();
   });
 

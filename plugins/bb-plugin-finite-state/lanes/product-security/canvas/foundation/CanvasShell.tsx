@@ -26,6 +26,7 @@ import type { ResolvedTaraScope } from "../scope/index.js";
 
 export interface CanvasLayerScopeProps {
   scope?: ResolvedTaraScope;
+  createRequest?: number;
 }
 
 export interface CanvasFoundationFeatures {

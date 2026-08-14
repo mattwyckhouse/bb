@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { basename, dirname } from "node:path";
 import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
 import { createPluginContext } from "../../../../lib/context.js";
@@ -6,10 +8,11 @@ import { registerProductSecurity } from "../../register.js";
 import { taraCanvasRpcContract } from "../scope/backend.js";
 import { versionedCanvasEditingRpcContract } from "../editing/backend.js";
 import { parseArchitectureEntity } from "../editing/schema.js";
-import {
-  canvasDeletedMarkerKey,
-  serializeCanvasEntity,
-} from "../editing/writer.js";
+import { serializeCanvasEntity } from "../editing/writer.js";
+
+function contentHash(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
 
 function seedAcceptedTara(
   db: ReturnType<ReturnType<typeof createPluginContext>["db"]>,
@@ -110,6 +113,12 @@ describe("WP-31 product-security RPC composition", () => {
         stores_data: false,
       }),
     );
+    const files = new Map([
+      [
+        "/workspace/product-security/architecture/components/authored-gateway.yaml",
+        authored,
+      ],
+    ]);
     const { bb, harness } = createFakePluginHost({
       pluginId: "finite-state-strict-identities",
       sdk: {
@@ -126,21 +135,50 @@ describe("WP-31 product-security RPC composition", () => {
           },
         },
         files: {
-          list: () => ({
-            files: [
-              { name: "authored-gateway.yaml", path: "authored-gateway.yaml" },
-            ],
+          list: ({ path }) => ({
+            files: [...files.keys()]
+              .filter((candidate) => dirname(candidate) === path)
+              .map((candidate) => ({
+                name: basename(candidate),
+                path: candidate,
+              })),
             truncated: false,
           }),
           read: ({ path }) => {
-            if (!path.endsWith("authored-gateway.yaml")) {
+            const content = files.get(path);
+            if (content === undefined) {
               throw new Error("ENOENT: file does not exist");
             }
             return {
-              content: authored,
+              content,
               contentEncoding: "utf8" as const,
-              sha256: "a".repeat(64),
+              sha256: contentHash(content),
             };
+          },
+          write: ({ path, content, expectedSha256 }) => {
+            const current = files.get(path);
+            const currentSha256 = current ? contentHash(current) : null;
+            if (currentSha256 !== expectedSha256) {
+              return { outcome: "conflict" as const, currentSha256 };
+            }
+            files.set(path, content);
+            return {
+              outcome: "written" as const,
+              sha256: contentHash(content),
+              sizeBytes: content.length,
+            };
+          },
+          move: ({ sourcePath, destinationPath }) => {
+            const content = files.get(sourcePath);
+            if (content === undefined) throw new Error("ENOENT: not found");
+            if (files.has(destinationPath)) throw new Error("path_exists");
+            files.delete(sourcePath);
+            files.set(destinationPath, content);
+            return { ok: true as const };
+          },
+          remove: ({ path }) => {
+            if (!files.delete(path)) throw new Error("ENOENT: not found");
+            return { ok: true as const };
           },
         },
       },
@@ -191,12 +229,12 @@ describe("WP-31 product-security RPC composition", () => {
          (project_id, project_version_id, entity_kind, generation_id, entity_key,
           payload, content_hash, pulled_at)
        VALUES ('platform-1', 'version-1', 'threat', 'generation-1',
-               'accepted-threat',
-               '{"title":"Accepted threat","category":"spoofing","status":"open"}',
+               'fs1.c2x1Zw.YWNjZXB0ZWQtdGhyZWF0',
+               '{"slug":"accepted-threat","title":"Accepted threat","category":"spoofing","status":"open"}',
                'hash-threat', '2026-08-14T10:00:00.000Z'),
               ('platform-1', 'version-1', 'asset', 'generation-1',
-               'accepted-remote-asset',
-               '{"name":"Remote asset","asset_type":"remote-only-value"}',
+               'fs1.c2x1Zw.cmVtb3RlLWFzc2V0',
+               '{"slug":"remote-asset","name":"Remote asset"}',
                'hash-asset', '2026-08-14T10:00:00.000Z')`,
     ).run();
 
@@ -231,15 +269,43 @@ describe("WP-31 product-security RPC composition", () => {
       slug: "accepted-api",
     });
     expect(harness.inspection.sdk.callsTo("projects.get")).toHaveLength(2);
-    await bb.storage.kv.set(
-      canvasDeletedMarkerKey(
-        "workspace-1",
-        "version-1",
-        "component",
-        "accepted-api",
+    await expect(
+      harness.behavior.callRpc("canvasVersionedDeleteImpact", {
+        workspaceProjectId: "workspace-1",
+        platformProjectId: "platform-1",
+        projectVersionId: "version-1",
+        kind: "component",
+        stableKey: "accepted-api",
+      }),
+    ).resolves.toMatchObject({
+      stableKey: "accepted-api",
+      allowedActions: ["cascade", "detach"],
+    });
+    if (acceptedEdit.state !== "ready") {
+      throw new Error("accepted component did not load for deletion");
+    }
+    await expect(
+      harness.behavior.callRpc("canvasVersionedCommandApply", {
+        workspaceProjectId: "workspace-1",
+        platformProjectId: "platform-1",
+        projectVersionId: "version-1",
+        operation: "delete",
+        kind: "component",
+        stableKey: "accepted-api",
+        mode: "detach",
+        expectedContentSha256: acceptedEdit.sha256,
+      }),
+    ).resolves.toMatchObject({
+      projectId: "workspace-1",
+      projectVersionId: "version-1",
+      stableKey: "accepted-api",
+      afterSha256: null,
+    });
+    expect(
+      files.has(
+        "/workspace/product-security/architecture/components/accepted-api.yaml",
       ),
-      true,
-    );
+    ).toBe(false);
     const afterDeletion = await harness.behavior.callRpc("taraCanvasList", {
       workspaceProjectId: "workspace-1",
       platformProjectId: "platform-1",
@@ -260,7 +326,12 @@ describe("WP-31 product-security RPC composition", () => {
     expect(overlay).toMatchObject({
       projectVersionId: "version-1",
       total: 1,
-      threats: [{ slug: "accepted-threat", rawCategory: "spoofing" }],
+      threats: [
+        {
+          slug: "fs1.c2x1Zw.YWNjZXB0ZWQtdGhyZWF0",
+          rawCategory: "spoofing",
+        },
+      ],
     });
     await harness.lifecycle.dispose();
   });
@@ -329,6 +400,85 @@ describe("WP-31 product-security RPC composition", () => {
     expect(page.items).toEqual([
       expect.objectContaining({ kind: "dataflow", key: "FLOW-https" }),
     ]);
+    await harness.lifecycle.dispose();
+  });
+
+  it("renders registered authored YAML in the local working scope before any pull", async () => {
+    const local = serializeCanvasEntity(
+      parseArchitectureEntity("component", {
+        slug: "local-controller",
+        name: "Local controller",
+        component_type: "software",
+        criticality: "medium",
+        interfaces: [],
+        technologies: [],
+        is_entry_point: false,
+        stores_data: false,
+      }),
+    );
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "finite-state-local-authoring",
+      sdk: {
+        projects: {
+          get: ({ projectId }) => {
+            if (projectId !== "workspace-local") {
+              throw new Error("unknown workspace");
+            }
+            return {
+              id: projectId,
+              sources: [
+                { hostId: "host-local", path: "/workspace", isDefault: true },
+              ],
+            };
+          },
+        },
+        files: {
+          list: ({ path }) => ({
+            files: path.endsWith("/components")
+              ? [{ name: "local-controller.yaml", path }]
+              : [],
+            truncated: false,
+          }),
+          read: ({ path }) => {
+            if (!path.endsWith("/local-controller.yaml")) {
+              throw new Error("ENOENT: file does not exist");
+            }
+            return {
+              content: local,
+              contentEncoding: "utf8" as const,
+              sha256: contentHash(local),
+            };
+          },
+        },
+      },
+    });
+    registerProductSecurity(bb, createPluginContext(bb));
+
+    await expect(
+      harness.behavior.callRpc("taraScopeResolve", {
+        workspaceProjectId: "workspace-local",
+        explicit: null,
+      }),
+    ).resolves.toMatchObject({
+      versions: [],
+      selected: null,
+      source: "local",
+      legacy: null,
+    });
+    await expect(
+      harness.behavior.callRpc("taraCanvasList", {
+        workspaceProjectId: "workspace-local",
+        platformProjectId: "workspace-local",
+        projectVersionId: null,
+        kind: "component",
+        pageSize: 50,
+        continuation: null,
+      }),
+    ).resolves.toMatchObject({
+      items: [{ key: "local-controller", label: "Local controller" }],
+      total: 1,
+      cache: { state: "empty", acceptedGenerationId: null },
+    });
     await harness.lifecycle.dispose();
   });
 

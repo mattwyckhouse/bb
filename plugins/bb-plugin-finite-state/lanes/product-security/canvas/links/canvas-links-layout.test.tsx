@@ -314,6 +314,7 @@ describe("WP-34 inspector links", () => {
                 workspaceProjectId,
                 platformProjectId: PROJECT_ID,
                 projectVersionId: "version-wp34",
+                mode: "version",
               }}
             />
           </ArchitectureHarness>
@@ -356,7 +357,8 @@ describe("WP-34 inspector links", () => {
       (call) => call.method === "canvasSbomLinks",
     );
     expect(linkCall?.input).toMatchObject({
-      projectId: PROJECT_ID,
+      workspaceProjectId,
+      platformProjectId: PROJECT_ID,
       projectVersionId: "version-wp34",
     });
     slot.lifecycle.unmount();
