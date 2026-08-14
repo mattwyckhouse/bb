@@ -21,7 +21,10 @@ import { componentSubPath, parseBomSubPath } from "./sbom/routes.js";
 import { SbomTable } from "./sbom/sbom-table.js";
 import { bomAppRpcContract } from "../rpc.js";
 
-function scopeValue(platformProjectId: string, projectVersionId: string): string {
+function scopeValue(
+  platformProjectId: string,
+  projectVersionId: string,
+): string {
   return `${encodeURIComponent(platformProjectId)}/${encodeURIComponent(projectVersionId)}`;
 }
 
@@ -66,12 +69,16 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     null,
   );
-  const [versions, setVersions] = useState<Array<{
-    platformProjectId: string;
-    projectVersionId: string;
-    state: "fresh" | "stale";
-  }>>([]);
-  const [platformProjectId, setPlatformProjectId] = useState<string | null>(null);
+  const [versions, setVersions] = useState<
+    Array<{
+      platformProjectId: string;
+      projectVersionId: string;
+      state: "fresh" | "stale";
+    }>
+  >([]);
+  const [platformProjectId, setPlatformProjectId] = useState<string | null>(
+    null,
+  );
   const [projectVersionId, setProjectVersionId] = useState<string | null>(null);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [versionsError, setVersionsError] = useState<string | null>(null);
@@ -100,14 +107,17 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
     let active = true;
     setVersionsLoading(true);
     setVersionsError(null);
-    void rpc.call("bomCachedProjectVersions", { projectId: workspaceProjectId })
+    void rpc
+      .call("bomCachedProjectVersions", { projectId: workspaceProjectId })
       .then((result) => {
         if (!active) return;
         setVersions(result.versions);
-        const selected = result.versions.find((version) =>
-          version.platformProjectId === result.selectedPlatformProjectId &&
-          version.projectVersionId === result.selectedProjectVersionId
-        ) ?? result.versions[0];
+        const selected =
+          result.versions.find(
+            (version) =>
+              version.platformProjectId === result.selectedPlatformProjectId &&
+              version.projectVersionId === result.selectedProjectVersionId,
+          ) ?? result.versions[0];
         setPlatformProjectId(selected?.platformProjectId ?? null);
         setProjectVersionId(selected?.projectVersionId ?? null);
       })
@@ -125,7 +135,9 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
       .finally(() => {
         if (active) setVersionsLoading(false);
       });
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [route?.tab, rpc, versionRequest, workspaceProjectId]);
   if (!route) return <BadBomRoute />;
   const routeTabs = (
@@ -192,25 +204,39 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
             disabled={!workspaceProjectId || versionsLoading}
             id="bom-project-version"
             onChange={(event) => {
-              const selected = versions.find((version) =>
-                scopeValue(version.platformProjectId, version.projectVersionId) === event.target.value
+              const selected = versions.find(
+                (version) =>
+                  scopeValue(
+                    version.platformProjectId,
+                    version.projectVersionId,
+                  ) === event.target.value,
               );
               setPlatformProjectId(selected?.platformProjectId ?? null);
               setProjectVersionId(selected?.projectVersionId ?? null);
             }}
-            value={platformProjectId && projectVersionId
-              ? scopeValue(platformProjectId, projectVersionId)
-              : ""}
+            value={
+              platformProjectId && projectVersionId
+                ? scopeValue(platformProjectId, projectVersionId)
+                : ""
+            }
           >
             <option value="">
               {versionsLoading
                 ? "Loading cached versions…"
-                : versionsError ? "Version lookup failed" : "Select cached version"}
+                : versionsError
+                  ? "Version lookup failed"
+                  : "Select cached version"}
             </option>
             {versions.map((version) => (
               <option
-                key={scopeValue(version.platformProjectId, version.projectVersionId)}
-                value={scopeValue(version.platformProjectId, version.projectVersionId)}
+                key={scopeValue(
+                  version.platformProjectId,
+                  version.projectVersionId,
+                )}
+                value={scopeValue(
+                  version.platformProjectId,
+                  version.projectVersionId,
+                )}
               >
                 {version.platformProjectId} / {version.projectVersionId}
                 {version.state === "stale" ? " · stale" : ""}
@@ -243,7 +269,9 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
               name="PackageReceive"
             />
             <h2 className="mt-4 text-lg font-semibold">
-              {versionsError ? "Project versions unavailable" : "Choose an inventory scope"}
+              {versionsError
+                ? "Project versions unavailable"
+                : "Choose an inventory scope"}
             </h2>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
               {versionsError

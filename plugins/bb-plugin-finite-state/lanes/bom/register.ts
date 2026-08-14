@@ -45,9 +45,9 @@ const bomRpcContract = {
 export interface BomCommandServices {
   pull(
     input: SbomPullInput & {
-      worktreeRoot: string;
+      stagingRoot: string;
       signal?: AbortSignal;
-      externalGenerationId?: string;
+      generationId: string;
       onProgress?: (progress: { pages: number }) => void;
     },
   ): Promise<SbomPullResult>;
@@ -59,22 +59,17 @@ export function createBomCommandServices(
   platform: () => Pick<PlatformClient, "listComponents">,
 ): BomCommandServices {
   return {
-    pull({ worktreeRoot, signal, externalGenerationId, onProgress, ...input }) {
+    pull({ stagingRoot, signal, generationId, onProgress, ...input }) {
       return pullSbom(
         {
           db,
           platform: platform(),
-          worktreeRoot,
+          stagingRoot,
+          generationId,
           ...(signal ? { signal } : {}),
-          ...(externalGenerationId ? { externalGenerationId } : {}),
           publishProgress(hint) {
             bb.realtime.publish("bom:progress", hint);
             onProgress?.({ pages: hint.pages });
-          },
-          publishChanged(hint) {
-            if (externalGenerationId === undefined) {
-              bb.realtime.publish("bom:changed", hint);
-            }
           },
           warn(message, details) {
             bb.log.warn(
@@ -250,47 +245,61 @@ export function registerBom(bb: BbPluginApi, ctx: PluginContext): void {
         }).platform,
     ),
   );
-  registerCachePuller("sbomComponent", async (scope, generationId, onProgress) => {
-    if (scope.projectVersionId === null) {
-      throw new Error("SBOM_PROJECT_VERSION_REQUIRED: software inventory is version-scoped");
-    }
-    if (db.memory || !isAbsolute(db.name)) {
-      throw new Error("SBOM_STAGING_ROOT_UNAVAILABLE");
-    }
-    await commands.pull({
-      projectId: scope.projectId,
-      projectVersionId: scope.projectVersionId,
-      worktreeRoot: dirname(db.name),
-      resume: true,
-      externalGenerationId: generationId,
-      onProgress: ({ pages }) => onProgress({ page: pages, of: null }),
-    });
-  });
+  registerCachePuller(
+    "sbomComponent",
+    async (scope, generationId, onProgress) => {
+      if (scope.projectVersionId === null) {
+        throw new Error(
+          "SBOM_PROJECT_VERSION_REQUIRED: software inventory is version-scoped",
+        );
+      }
+      if (db.memory || !isAbsolute(db.name)) {
+        throw new Error("SBOM_STAGING_ROOT_UNAVAILABLE");
+      }
+      await commands.pull({
+        projectId: scope.projectId,
+        projectVersionId: scope.projectVersionId,
+        stagingRoot: dirname(db.name),
+        resume: true,
+        generationId,
+        onProgress: ({ pages }) => onProgress({ page: pages, of: null }),
+      });
+    },
+  );
   bb.rpc.register(bomCachedVersionsContract, {
     async bomCachedProjectVersions(input) {
       const project = await bb.sdk.projects.get({ projectId: input.projectId });
       if (project.sources.length === 0) {
         throw new Error("BOM_PROJECT_SOURCE_REQUIRED");
       }
-      const rows = db.prepare<[], {
-        project_id: string;
-        project_version_id: string;
-        as_of: string | null;
-        stale: number;
-      }>(
-        `SELECT project_id, project_version_id, MAX(last_pull) AS as_of,
-                MAX(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS stale
+      const rows = db
+        .prepare<
+          [],
+          {
+            project_id: string;
+            project_version_id: string;
+            as_of: string | null;
+            stale: number;
+          }
+        >(
+          `SELECT project_id, project_version_id,
+                MAX(CASE WHEN entity_kind = 'sbomComponent' THEN last_pull END) AS as_of,
+                MAX(CASE
+                      WHEN entity_kind = 'sbomComponent' AND error IS NOT NULL THEN 1
+                      ELSE 0
+                    END) AS stale
            FROM sync_state
           WHERE entity_kind IN ('finding', 'sbomComponent')
             AND accepted_generation_id IS NOT NULL
           GROUP BY project_id, project_version_id
-          ORDER BY as_of DESC, project_id ASC, project_version_id ASC`,
-      ).all();
+          ORDER BY MAX(last_pull) DESC, project_id ASC, project_version_id ASC`,
+        )
+        .all();
       const versions = rows.map((row) => ({
         platformProjectId: row.project_id,
         projectVersionId: row.project_version_id,
         asOf: row.as_of,
-        state: row.stale === 1 ? "stale" as const : "fresh" as const,
+        state: row.stale === 1 ? ("stale" as const) : ("fresh" as const),
       }));
       return {
         versions,
@@ -405,13 +414,17 @@ export function registerBom(bb: BbPluginApi, ctx: PluginContext): void {
     },
   });
 
-  bb.http.route("GET", "/sbom/export", createSbomHttpHandler({
-    get platform() {
-      return ctx.service<RemoteServices>("remote-services", () => {
-        throw new Error("REMOTE_SERVICES_NOT_REGISTERED");
-      }).platform;
-    },
-  }));
+  bb.http.route(
+    "GET",
+    "/sbom/export",
+    createSbomHttpHandler({
+      get platform() {
+        return ctx.service<RemoteServices>("remote-services", () => {
+          throw new Error("REMOTE_SERVICES_NOT_REGISTERED");
+        }).platform;
+      },
+    }),
+  );
   bb.http.route("GET", "/hbom/export.xlsx", handleHbomXlsxExport);
   bb.http.route("GET", "/hbom/export.cdx.json", handleHbomCycloneDxExport);
 }

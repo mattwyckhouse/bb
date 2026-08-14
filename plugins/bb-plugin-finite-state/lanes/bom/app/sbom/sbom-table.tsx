@@ -415,13 +415,15 @@ export function SbomTable({
           <Button
             className="mt-4"
             disabled={pulling}
-            onClick={() => cache?.state === "empty"
-              ? void pullInventory()
-              : void refresh()}
+            onClick={() =>
+              cache?.state === "empty" ? void pullInventory() : void refresh()
+            }
             variant="outline"
           >
             {cache?.state === "empty"
-              ? pulling ? "Pulling SBOM…" : "Pull SBOM"
+              ? pulling
+                ? "Pulling SBOM…"
+                : "Pull SBOM"
               : "Retry query"}
           </Button>
         </div>
@@ -431,10 +433,10 @@ export function SbomTable({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {cache?.state === "stale" || error ? (
+      {cache?.state === "stale" || error || pullError ? (
         <div
           className="flex items-center gap-2 border-b border-destructive/40 bg-muted px-3 py-2 text-sm"
-          role="status"
+          role={pullError ? "alert" : "status"}
         >
           <Icon
             aria-hidden="true"
@@ -442,7 +444,10 @@ export function SbomTable({
             name="AlertTriangle"
           />
           <span className="min-w-0 flex-1 truncate">
-            {error ?? cache?.message ?? "Showing the last complete SBOM cache."}
+            {pullError ??
+              error ??
+              cache?.message ??
+              "Showing the last complete SBOM cache."}
           </span>
           {cache?.state === "stale" ? (
             <Button
