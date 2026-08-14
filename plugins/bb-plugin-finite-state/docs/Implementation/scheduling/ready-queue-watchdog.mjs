@@ -136,9 +136,17 @@ function main() {
       maxBuffer: 16 * 1024 * 1024,
     });
 
-  const { tasks } = JSON.parse(
-    bb(["tasks", "list", "--limit", "500", "--json"]),
-  );
+  // Page at 100: a single 500-row response with full descriptions exceeds
+  // the 1 MiB plugin CLI output cap once the board is large enough.
+  const tasks = [];
+  let cursor;
+  do {
+    const args = ["tasks", "list", "--limit", "100", "--json"];
+    if (cursor) args.push("--cursor", cursor);
+    const page = JSON.parse(bb(args));
+    tasks.push(...page.tasks);
+    cursor = page.nextCursor || undefined;
+  } while (cursor);
   const statusByKey = new Map(tasks.map((t) => [t.key, t.status]));
 
   const ready = computeReady(manifest, statusByKey, { exclude });
