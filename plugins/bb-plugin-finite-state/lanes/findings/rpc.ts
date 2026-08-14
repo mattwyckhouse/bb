@@ -807,33 +807,29 @@ export function registerFindingsRpc(
     findingsUiList(input) {
       return findingsListResult(db, input);
     },
-    cachedProjectVersions(input) {
-      // The input is a bb workspace project id; validate that local project
-      // boundary, then derive remote cache scopes from SQLite. Never reuse a
-      // bb id as the Platform project id stored in sync_state.
-      const project = projectSource(bb, input.projectId);
+    async cachedProjectVersions(input) {
+      await projectSource(bb, input.projectId);
       const rows = db.prepare(
         `SELECT project_id, project_version_id, MAX(last_pull) AS as_of,
                 MAX(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS stale
            FROM sync_state
-          WHERE entity_kind = 'finding'
+          WHERE project_id = ?
+            AND entity_kind = 'finding'
             AND accepted_generation_id IS NOT NULL
           GROUP BY project_id, project_version_id
-          ORDER BY as_of DESC, project_id ASC, project_version_id ASC`,
-      ).all() as Array<{ project_id: string; project_version_id: string; as_of: string | null; stale: number }>;
-      return project.then(() => {
-        const versions = rows.map(row => ({
-          platformProjectId: row.project_id,
-          projectVersionId: row.project_version_id,
-          asOf: row.as_of,
-          state: row.stale === 1 ? "stale" as const : "fresh" as const,
-        }));
-        return {
-          versions,
-          selectedPlatformProjectId: versions[0]?.platformProjectId ?? null,
-          selectedProjectVersionId: versions[0]?.projectVersionId ?? null,
-        };
-      });
+          ORDER BY as_of DESC, project_version_id ASC`,
+      ).all(input.projectId) as Array<{ project_id: string; project_version_id: string; as_of: string | null; stale: number }>;
+      const versions = rows.map(row => ({
+        platformProjectId: row.project_id,
+        projectVersionId: row.project_version_id,
+        asOf: row.as_of,
+        state: row.stale === 1 ? "stale" as const : "fresh" as const,
+      }));
+      return {
+        versions,
+        selectedPlatformProjectId: versions[0]?.platformProjectId ?? null,
+        selectedProjectVersionId: versions[0]?.projectVersionId ?? null,
+      };
     },
     findingsSavedViewsGet(input) {
       return readSavedViews(bb, input.projectId);

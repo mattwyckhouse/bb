@@ -223,19 +223,43 @@ describe("registered SBOM pull surfaces", () => {
                  '2026-08-13T23:00:00.000Z', 'finding refresh failed')`,
         )
         .run(projectId, projectVersionId);
+      ctx
+        .db()
+        .prepare(
+          `INSERT INTO pull_generation
+           (project_id, project_version_id, generation_id, status,
+            requested_kinds_json, started_at, completed_at, accepted_at)
+         VALUES ('foreign-project', 'foreign-version', 'foreign-generation',
+                 'accepted', '["sbomComponent"]',
+                 '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z',
+                 '2026-08-14T00:00:00.000Z')`,
+        )
+        .run();
+      ctx
+        .db()
+        .prepare(
+          `INSERT INTO sync_state
+           (project_id, project_version_id, entity_kind,
+            accepted_generation_id, last_pull)
+         VALUES ('foreign-project', 'foreign-version', 'sbomComponent',
+                 'foreign-generation', '2026-08-14T00:00:00.000Z')`,
+        )
+        .run();
       expect(
         await host.harness.behavior.callRpc("bomCachedProjectVersions", {
-          projectId: "bb-project-fs172",
+          projectId,
         }),
-      ).toMatchObject({
+      ).toEqual({
         versions: [
-          expect.objectContaining({
+          {
             platformProjectId: projectId,
             projectVersionId,
             asOf: sbomAsOf,
             state: "fresh",
-          }),
+          },
         ],
+        selectedPlatformProjectId: projectId,
+        selectedProjectVersionId: projectVersionId,
       });
 
       const page = bomAppRpcContract.bomSoftwareList.output.parse(

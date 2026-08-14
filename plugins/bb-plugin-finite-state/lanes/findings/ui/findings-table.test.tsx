@@ -213,6 +213,7 @@ describe("findings table panel", () => {
     expect((picker as HTMLSelectElement).value).toBe(
       "platform-project-1/version-1",
     );
+    fireEvent.click(slot.getByRole("button", { name: "Select page" }));
 
     await slot.behavior.emitRealtime("findings:changed", {
       projectId: "platform-project-1",
@@ -228,6 +229,7 @@ describe("findings table panel", () => {
         name: "platform-project-1 / version-3",
       }),
     ).toBeTruthy();
+    expect(slot.getByLabelText("1 findings selected")).toBeTruthy();
   });
 
   it("clears row selection whenever the selected version changes", async () => {

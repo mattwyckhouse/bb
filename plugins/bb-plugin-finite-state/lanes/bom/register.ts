@@ -275,7 +275,7 @@ export function registerBom(bb: BbPluginApi, ctx: PluginContext): void {
       }
       const rows = db
         .prepare<
-          [],
+          [string],
           {
             project_id: string;
             project_version_id: string;
@@ -290,12 +290,13 @@ export function registerBom(bb: BbPluginApi, ctx: PluginContext): void {
                       ELSE 0
                     END) AS stale
            FROM sync_state
-          WHERE entity_kind IN ('finding', 'sbomComponent')
+          WHERE project_id = ?
+            AND entity_kind IN ('finding', 'sbomComponent')
             AND accepted_generation_id IS NOT NULL
           GROUP BY project_id, project_version_id
-          ORDER BY MAX(last_pull) DESC, project_id ASC, project_version_id ASC`,
+          ORDER BY MAX(last_pull) DESC, project_version_id ASC`,
         )
-        .all();
+        .all(input.projectId);
       const versions = rows.map((row) => ({
         platformProjectId: row.project_id,
         projectVersionId: row.project_version_id,
