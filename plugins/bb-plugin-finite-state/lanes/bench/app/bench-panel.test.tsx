@@ -48,6 +48,7 @@ async function renderBench(
     state: "fresh" | "stale";
   }>,
   subPath = "",
+  benchRunsList = vi.fn(() => ({ items: [], total: 0, next: null, cache })),
 ) {
   const { BenchPanel } = await import("./bench-panel.js");
   return renderSlot(
@@ -60,12 +61,12 @@ async function renderBench(
         projects: [{ id: "project-1", name: "Project One", isPersonal: false }],
       },
       rpc: {
-        cachedProjectVersions: () => ({
+        benchProjectVersions: () => ({
           versions,
           selectedPlatformProjectId: versions[0]?.platformProjectId ?? null,
           selectedProjectVersionId: versions[0]?.projectVersionId ?? null,
         }),
-        benchRunsList: () => ({ items: [], total: 0, next: null, cache }),
+        benchRunsList,
         benchOtaVerdictGet: () => ({
           pvId: "pv-1",
           firmwareDigest: "a".repeat(64),
@@ -106,14 +107,24 @@ describe("BenchPanel", () => {
   });
 
   it("selects the accepted cached version and makes the honest verdict card reachable", async () => {
-    const slot = await renderBench([
-      {
-        platformProjectId: "platform-1",
-        projectVersionId: "pv-1",
-        asOf: "2026-08-13T12:00:00.000Z",
-        state: "fresh",
-      },
-    ]);
+    const benchRunsList = vi.fn(() => ({
+      items: [],
+      total: 0,
+      next: null,
+      cache,
+    }));
+    const slot = await renderBench(
+      [
+        {
+          platformProjectId: "platform-1",
+          projectVersionId: "pv-1",
+          asOf: "2026-08-13T12:00:00.000Z",
+          state: "fresh",
+        },
+      ],
+      "",
+      benchRunsList,
+    );
     expect(
       await slot.findByRole("option", { name: "platform-1 / pv-1" }),
     ).toBeTruthy();
@@ -124,23 +135,32 @@ describe("BenchPanel", () => {
       await slot.findByLabelText("OTA verdict: Inconclusive"),
     ).toBeTruthy();
     expect(slot.getByText(/No requirement matrix is cached/u)).toBeTruthy();
+    expect(benchRunsList).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "platform-1",
+        projectVersionId: "pv-1",
+      }),
+    );
   });
 
   it("clears stale run detail when the selected version changes", async () => {
-    const slot = await renderBench([
-      {
-        platformProjectId: "platform-1",
-        projectVersionId: "pv-1",
-        asOf: "2026-08-13T12:00:00.000Z",
-        state: "fresh",
-      },
-      {
-        platformProjectId: "platform-1",
-        projectVersionId: "pv-2",
-        asOf: "2026-08-13T12:00:00.000Z",
-        state: "fresh",
-      },
-    ], "run-from-pv-1");
+    const slot = await renderBench(
+      [
+        {
+          platformProjectId: "platform-1",
+          projectVersionId: "pv-1",
+          asOf: "2026-08-13T12:00:00.000Z",
+          state: "fresh",
+        },
+        {
+          platformProjectId: "platform-1",
+          projectVersionId: "pv-2",
+          asOf: "2026-08-13T12:00:00.000Z",
+          state: "fresh",
+        },
+      ],
+      "run-from-pv-1",
+    );
     fireEvent.change(await slot.findByLabelText("Bench project version"), {
       target: { value: "pv-2" },
     });
