@@ -1,13 +1,51 @@
 // @vitest-environment jsdom
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import Database from "better-sqlite3";
 import { fireEvent, waitFor } from "@testing-library/react";
+import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import {
   installTestPluginRuntime,
   renderSlot,
 } from "@bb/plugin-sdk/testing/app";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { MIGRATIONS } from "../../../lib/store/schema.js";
 import type { BenchDeviceRecord } from "../registry/families.js";
+import { upsertCandidate } from "../registry/store.js";
+import { registerSerialRpc, serialRpcContract } from "../serial/fs-serial.js";
+import { createSerialRuntime, type SerialRuntime } from "../serial/session.js";
+import type { SerialPortRef, SerialTransport } from "../serial/transport.js";
 
 let SerialConsole: (typeof import("./serial-console.js"))["SerialConsole"];
+
+class BackendTransport implements SerialTransport {
+  async open(_port: SerialPortRef, _options: { baud: number }): Promise<void> {}
+  async write(_data: Uint8Array): Promise<void> {}
+  async close(): Promise<void> {}
+  onData(_handler: (chunk: Uint8Array) => void): void {}
+  onClosed(_handler: (reason: string) => void): void {}
+}
+
+const backendDatabases: Database.Database[] = [];
+const backendDirectories: string[] = [];
+const backendHosts: Array<ReturnType<typeof createFakePluginHost>> = [];
+const backendRuntimes: SerialRuntime[] = [];
+
+afterEach(async () => {
+  await Promise.allSettled(
+    backendRuntimes.splice(0).map((runtime) => runtime.dispose()),
+  );
+  await Promise.all(
+    backendHosts.splice(0).map((host) => host.harness.lifecycle.dispose()),
+  );
+  for (const db of backendDatabases.splice(0)) db.close();
+  await Promise.all(
+    backendDirectories
+      .splice(0)
+      .map((path) => rm(path, { recursive: true, force: true })),
+  );
+});
 
 beforeAll(async () => {
   installTestPluginRuntime();
@@ -361,6 +399,115 @@ describe("serial console", () => {
     fireEvent.click(slot.getByRole("button", { name: "Connect" }));
     await waitFor(() => expect(open).toHaveBeenCalledOnce());
     expect(slot.queryByText(/SERIAL_SESSION_NOT_OPEN/u)).toBeNull();
+    slot.lifecycle.unmount();
+  });
+
+  it("renders and reconnects a kill-9 residue through registered real-runtime RPCs", async () => {
+    const db = new Database(":memory:");
+    backendDatabases.push(db);
+    db.transaction(() => {
+      for (const statement of MIGRATIONS) db.exec(statement);
+    })();
+    const artifactRoot = await mkdtemp(join(tmpdir(), "fs161-console-"));
+    backendDirectories.push(artifactRoot);
+    const device = upsertCandidate(
+      db,
+      scope,
+      "serial-ports",
+      "serial",
+      {
+        stableIdentity: "abc",
+        make: "Acme",
+        model: "UART",
+        connection: "tty:/dev/fixture",
+        transport: "local-usb",
+      },
+      "2026-08-13T12:00:00.000Z",
+    );
+    const runtimeOptions = {
+      db,
+      artifactRoot,
+      publish: () => undefined,
+      helperStatus: async () => ({ configured: true, message: null }),
+      transportFactory: () => new BackendTransport(),
+      claimRefreshMs: 1_000_000,
+    };
+    const killedRuntime = createSerialRuntime(runtimeOptions);
+    backendRuntimes.push(killedRuntime);
+    await killedRuntime.open(scope, device.deviceId);
+
+    // Starting another runtime without disposing the first preserves the row
+    // and claim exactly as an ungraceful process exit would.
+    const restartedRuntime = createSerialRuntime(runtimeOptions);
+    backendRuntimes.push(restartedRuntime);
+    const host = createFakePluginHost({
+      pluginId: "fs161-console-registered-runtime",
+    });
+    backendHosts.push(host);
+    registerSerialRpc(host.bb, restartedRuntime);
+    const slot = renderSlot(
+      serialConsole([device]),
+      {},
+      {
+        context: { projectId: scope.projectId, threadId: "thread-1" },
+        rpc: {
+          benchDevSerialSessionCurrent: async (input) =>
+            serialRpcContract.benchDevSerialSessionCurrent.output.parse(
+              await host.harness.callRpc("benchDevSerialSessionCurrent", input),
+            ),
+          benchDevSerialSessionOpen: async (input) =>
+            serialRpcContract.benchDevSerialSessionOpen.output.parse(
+              await host.harness.callRpc("benchDevSerialSessionOpen", input),
+            ),
+          benchDevSerialLinesRead: async (input) =>
+            serialRpcContract.benchDevSerialLinesRead.output.parse(
+              await host.harness.callRpc("benchDevSerialLinesRead", input),
+            ),
+        },
+      },
+    );
+
+    expect(await slot.findByText("Closed")).toBeTruthy();
+    expect(slot.getByText(/plugin stopped unexpectedly/u)).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Connect" }));
+    expect(await slot.findByText("Connected")).toBeTruthy();
+    expect(slot.queryByRole("alert")).toBeNull();
+    expect(
+      db
+        .prepare<
+          [string],
+          { claimed_by: string | null }
+        >(`SELECT claimed_by FROM bench_device WHERE device_id = ?`)
+        .get(device.deviceId)?.claimed_by,
+    ).toMatch(/^serial-session:serial-/u);
+    slot.lifecycle.unmount();
+  });
+
+  it("renders typed recovery guidance instead of raw action errors", async () => {
+    const slot = renderSlot(
+      serialConsole(),
+      {},
+      {
+        context: { projectId: "project-1", threadId: "thread-1" },
+        rpc: {
+          benchDevSerialSessionCurrent: () => null,
+          benchDevSerialAutoConnectStatus: () => null,
+          benchDevSerialSessionOpen: () => {
+            throw new Error(
+              "DEVICE_CLAIMED: Device serial-ports:abc is claimed by serial-session:dead.",
+            );
+          },
+        },
+      },
+    );
+
+    expect(await slot.findByText("Closed")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Connect" }));
+    expect(
+      await slot.findByText(/serial port is in use by another session/u),
+    ).toBeTruthy();
+    expect(slot.queryByText(/DEVICE_CLAIMED/u)).toBeNull();
+    expect(slot.queryByText(/serial-session:dead/u)).toBeNull();
     slot.lifecycle.unmount();
   });
 });

@@ -12,6 +12,7 @@ import {
 } from "../../authoring/build/flash.js";
 import {
   claimDevice,
+  DeviceClaimError,
   refreshClaim,
   releaseDevice,
 } from "../registry/claims.js";
@@ -175,7 +176,10 @@ export function getSerialSession(
     )
     .get(projectId, toStorageProjectVersionId(projectVersionValue), sessionId);
   if (!row) throw new Error(`SERIAL_SESSION_NOT_FOUND:${sessionId}`);
-  return sessionRecord(row);
+  const runtime = runtimeByDatabase.get(db);
+  return runtime
+    ? runtime.qualifyPersistedSession(sessionRecord(row))
+    : sessionRecord(row);
 }
 
 function sessionKey(scope: RegistryScope, deviceId: string): string {
@@ -644,7 +648,11 @@ export class SerialSession {
 
   async write(data: string): Promise<{ bytes: number }> {
     if (this.stateValue !== "connected" || !this.transport) {
-      throw new Error(`SERIAL_SESSION_NOT_CONNECTED:${this.deviceId}`);
+      throw new SerialSessionError(
+        "SERIAL_SESSION_NOT_CONNECTED",
+        this.deviceId,
+        "The serial session is not connected. Wait for reconnection or connect a new session before sending.",
+      );
     }
     const encoded = new TextEncoder().encode(data);
     await this.transport.write(encoded);
@@ -734,6 +742,22 @@ interface AutoConnectRow {
 const runtimeByDatabase = new WeakMap<Database.Database, SerialRuntime>();
 const STALE_SESSION_MESSAGE =
   "The serial session ended when the plugin stopped unexpectedly. Connect to start a new session.";
+
+export type SerialSessionErrorCode =
+  | "SERIAL_SESSION_ALREADY_CLOSED"
+  | "SERIAL_SESSION_NOT_CONNECTED"
+  | "SERIAL_SESSION_NOT_OPEN";
+
+export class SerialSessionError extends Error {
+  constructor(
+    readonly code: SerialSessionErrorCode,
+    readonly deviceId: string,
+    message: string,
+  ) {
+    super(`${code}: ${message}`);
+    this.name = "SerialSessionError";
+  }
+}
 
 export class SerialRuntime {
   readonly options: ResolvedRuntimeOptions;
@@ -853,34 +877,80 @@ export class SerialRuntime {
         deviceId,
       );
     if (!row) return null;
-    if (row.state !== "connected" && row.state !== "reconnecting")
-      return sessionRecord(row);
+    return this.qualifyPersistedSession(sessionRecord(row));
+  }
+
+  qualifyPersistedSession(record: SerialSessionRecord): SerialSessionRecord {
+    const active = this.sessions.get(sessionKey(record, record.deviceId));
+    if (active?.record().sessionId === record.sessionId) return active.record();
+    if (record.state !== "connected" && record.state !== "reconnecting") {
+      return record;
+    }
 
     const closedAt = this.options.now().toISOString();
-    this.options.db
-      .prepare(
-        `UPDATE bench_serial_session
-          SET state = 'closed', closed_at = ?, message = ?
-        WHERE project_id = ? AND project_version_id = ? AND session_id = ?
-          AND state IN ('connected', 'reconnecting')`,
-      )
-      .run(
+    let transitioned = false;
+    const qualified = this.options.db.transaction((): SerialSessionRecord => {
+      const changed = this.options.db
+        .prepare(
+          `UPDATE bench_serial_session
+            SET state = 'closed', closed_at = ?, message = ?
+          WHERE project_id = ? AND project_version_id = ? AND session_id = ?
+            AND state IN ('connected', 'reconnecting')`,
+        )
+        .run(
+          closedAt,
+          STALE_SESSION_MESSAGE,
+          record.projectId,
+          toStorageProjectVersionId(record.projectVersionId),
+          record.sessionId,
+        ).changes;
+      if (changed === 0) {
+        const latest = this.options.db
+          .prepare<[string, string, string], SessionRow>(
+            `SELECT * FROM bench_serial_session
+            WHERE project_id = ? AND project_version_id = ? AND session_id = ?`,
+          )
+          .get(
+            record.projectId,
+            toStorageProjectVersionId(record.projectVersionId),
+            record.sessionId,
+          );
+        if (!latest)
+          throw new Error(`SERIAL_SESSION_NOT_FOUND:${record.sessionId}`);
+        return sessionRecord(latest);
+      }
+
+      transitioned = true;
+      try {
+        releaseDevice(
+          this.options.db,
+          record.deviceId,
+          `serial-session:${record.sessionId}`,
+          { scope: record },
+        );
+      } catch (error) {
+        if (
+          !(error instanceof DeviceClaimError) ||
+          (error.code !== "DEVICE_NOT_FOUND" &&
+            error.code !== "DEVICE_NOT_HELD")
+        ) {
+          throw error;
+        }
+      }
+      return {
+        ...record,
+        state: "closed",
         closedAt,
-        STALE_SESSION_MESSAGE,
-        scope.projectId,
-        toStorageProjectVersionId(scope.projectVersionId),
-        row.session_id,
-      );
-    this.options.publish("serial:changed", {
-      deviceId,
-      cursor: row.latest_cursor,
-    });
-    return sessionRecord({
-      ...row,
-      state: "closed",
-      closed_at: closedAt,
-      message: STALE_SESSION_MESSAGE,
-    });
+        message: STALE_SESSION_MESSAGE,
+      };
+    })();
+    if (transitioned) {
+      this.options.publish("serial:changed", {
+        deviceId: record.deviceId,
+        cursor: record.latestCursor,
+      });
+    }
+    return qualified;
   }
 
   async read(
@@ -910,7 +980,13 @@ export class SerialRuntime {
     data: string,
   ): Promise<{ bytes: number }> {
     const session = this.sessions.get(sessionKey(scope, deviceId));
-    if (!session) throw new Error(`SERIAL_SESSION_NOT_OPEN:${deviceId}`);
+    if (!session) {
+      throw new SerialSessionError(
+        "SERIAL_SESSION_NOT_OPEN",
+        deviceId,
+        "The serial session is no longer open. Connect to start a new session before sending.",
+      );
+    }
     return session.write(data);
   }
 
@@ -922,8 +998,10 @@ export class SerialRuntime {
     if (session) return session.close();
     const persisted = this.current(scope, deviceId);
     if (persisted) return persisted;
-    throw new Error(
-      `SERIAL_SESSION_ALREADY_CLOSED:${deviceId}: Connect to start a new session.`,
+    throw new SerialSessionError(
+      "SERIAL_SESSION_ALREADY_CLOSED",
+      deviceId,
+      "The serial session is already closed. Connect to start a new session.",
     );
   }
 

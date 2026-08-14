@@ -2,7 +2,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PluginContext } from "../../../lib/context.js";
 import { MIGRATIONS } from "../../../lib/store/schema.js";
 import {
   confirmationFixture,
@@ -11,6 +13,7 @@ import {
 } from "../../authoring/build/test-fixture.js";
 import { runBuild } from "../../authoring/build/runner.js";
 import { runFlash } from "../../authoring/build/flash.js";
+import { registerDebugBench } from "../register.js";
 import { listClaimEvents } from "../registry/claims.js";
 import { recordFamilyStatus, upsertCandidate } from "../registry/store.js";
 import { associateSerialDevice, createSerialRuntime } from "./session.js";
@@ -44,8 +47,12 @@ class FakeTransport implements SerialTransport {
 const databases: Database.Database[] = [];
 const directories: string[] = [];
 const fixtures: AuthoringFixture[] = [];
+const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
 afterEach(async () => {
+  await Promise.all(
+    hosts.splice(0).map((host) => host.harness.lifecycle.dispose()),
+  );
   for (const db of databases.splice(0)) db.close();
   await Promise.all(
     directories
@@ -238,8 +245,97 @@ describe("serial session lifecycle", () => {
     await expect(restartedRuntime.close(scope, deviceId)).resolves.toEqual(
       recovered,
     );
+    expect(
+      db
+        .prepare<
+          [string],
+          { claimed_by: string | null }
+        >(`SELECT claimed_by FROM bench_device WHERE device_id = ?`)
+        .get(deviceId)?.claimed_by,
+    ).toBeNull();
+
+    await expect(restartedRuntime.open(scope, deviceId)).resolves.toMatchObject(
+      {
+        state: "connected",
+      },
+    );
+    expect(restartedRuntime.current(scope, deviceId)).toMatchObject({
+      state: "connected",
+      message: null,
+    });
 
     await restartedRuntime.dispose();
+    await firstRuntime.dispose();
+  });
+
+  it("returns an actionable typed error when send has no live session", async () => {
+    const db = database();
+    const deviceId = seedSerial(db);
+    const runtime = createSerialRuntime({
+      db,
+      artifactRoot: await root(),
+      publish: () => undefined,
+      helperStatus: async () => ({ configured: true, message: null }),
+    });
+
+    await expect(runtime.send(scope, deviceId, "AT\n")).rejects.toMatchObject({
+      name: "SerialSessionError",
+      code: "SERIAL_SESSION_NOT_OPEN",
+      deviceId,
+      message: expect.stringContaining("Connect to start a new session"),
+    });
+    await runtime.dispose();
+  });
+
+  it("liveness-qualifies the frozen registered session read", async () => {
+    const db = database();
+    const deviceId = seedSerial(db);
+    const firstRuntime = createSerialRuntime({
+      db,
+      artifactRoot: await root(),
+      publish: () => undefined,
+      helperStatus: async () => ({ configured: true, message: null }),
+      transportFactory: () => new FakeTransport(),
+      claimRefreshMs: 1_000_000,
+    });
+    const staleSession = await firstRuntime.open(scope, deviceId);
+
+    const host = createFakePluginHost({
+      pluginId: "fs161-frozen-session-read",
+    });
+    hosts.push(host);
+    const services = new Map<string, unknown>();
+    const context: PluginContext = {
+      bb: host.bb,
+      log: host.bb.log,
+      db: () => db,
+      service<T>(key: string, factory: () => T): T {
+        if (!services.has(key)) services.set(key, factory());
+        return services.get(key) as T;
+      },
+    };
+    registerDebugBench(host.bb, context);
+
+    await expect(
+      host.harness.behavior.callRpc("benchDevSerialSessionGet", {
+        ...scope,
+        sessionId: staleSession.sessionId,
+      }),
+    ).resolves.toMatchObject({
+      sessionId: staleSession.sessionId,
+      state: "closed",
+      closedAt: expect.any(String),
+      message: expect.stringContaining("Connect to start a new session"),
+    });
+    expect(
+      db
+        .prepare<
+          [string],
+          { claimed_by: string | null }
+        >(`SELECT claimed_by FROM bench_device WHERE device_id = ?`)
+        .get(deviceId)?.claimed_by,
+    ).toBeNull();
+
     await firstRuntime.dispose();
   });
 
