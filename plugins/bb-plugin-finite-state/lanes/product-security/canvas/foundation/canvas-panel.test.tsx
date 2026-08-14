@@ -402,6 +402,34 @@ describe("WP-31 bb panel qualification", () => {
     slot.lifecycle.unmount();
   });
 
+  it("surfaces a failed background read when the retained canvas is empty", async () => {
+    const panel = await productSecurityPanel();
+    let offline = false;
+    const slot = renderSlot(
+      panel,
+      { subPath: "tara" },
+      {
+        context: { projectId: "project-1", threadId: null },
+        rpc: {
+          connectionsStatus: connectedRemoteStatus,
+          taraList: () => {
+            if (offline) throw new Error("offline");
+            return { items: [], total: 0, next: null, cache };
+          },
+        },
+      },
+    );
+    expect(await slot.findByText("No architecture model yet")).toBeTruthy();
+    offline = true;
+    await slot.behavior.emitRealtime("tara:changed", {
+      projectId: "project-1",
+    });
+    expect(
+      await slot.findByText("Product-security cache unavailable"),
+    ).toBeTruthy();
+    slot.lifecycle.unmount();
+  });
+
   it("renders empty, error, stale, and unconfigured states", async () => {
     const panel = await productSecurityPanel();
     const empty = renderSlot(
@@ -522,6 +550,75 @@ describe("WP-31 bb panel qualification", () => {
       }),
     ).toBeNull();
     unsupported.lifecycle.unmount();
+
+    const refreshFailure = renderSlot(
+      panel,
+      { subPath: "tara" },
+      {
+        context: { projectId: "project-1", threadId: null },
+        rpc: {
+          connectionsStatus: connectedRemoteStatus,
+          taraList: () => ({
+            items: [],
+            total: 0,
+            next: null,
+            cache: {
+              ...cache,
+              state: "stale",
+              message:
+                "The last product-security refresh failed; showing accepted cache.",
+            },
+          }),
+        },
+      },
+    );
+    expect(
+      await refreshFailure.findByText("Product-security refresh failed"),
+    ).toBeTruthy();
+    expect(refreshFailure.getByText("Open Sync")).toBeTruthy();
+    expect(
+      refreshFailure.queryByText("Architecture files need attention"),
+    ).toBeNull();
+    refreshFailure.lifecycle.unmount();
+
+    const refreshAndDiagnostics = renderSlot(
+      panel,
+      { subPath: "tara" },
+      {
+        context: { projectId: "project-1", threadId: null },
+        rpc: {
+          connectionsStatus: connectedRemoteStatus,
+          taraList: (input) => ({
+            items: [],
+            total: 0,
+            next: null,
+            cache: {
+              ...cache,
+              state: "stale",
+              message:
+                inputKind(input) === "component"
+                  ? "The last product-security refresh failed; showing accepted cache. Invalid working YAML quarantined at broken-controller.yaml. Reason: verification_status cannot be authored."
+                  : "The last product-security refresh failed; showing accepted cache.",
+            },
+          }),
+        },
+      },
+    );
+    expect(
+      await refreshAndDiagnostics.findByText(
+        "Architecture files need attention",
+      ),
+    ).toBeTruthy();
+    expect(
+      refreshAndDiagnostics.getByText("broken-controller.yaml", {
+        exact: false,
+      }),
+    ).toBeTruthy();
+    expect(
+      refreshAndDiagnostics.getByText("refresh also failed", { exact: false }),
+    ).toBeTruthy();
+    expect(refreshAndDiagnostics.getByText("Open Sync")).toBeTruthy();
+    refreshAndDiagnostics.lifecycle.unmount();
 
     const unconfigured = renderSlot(
       panel,

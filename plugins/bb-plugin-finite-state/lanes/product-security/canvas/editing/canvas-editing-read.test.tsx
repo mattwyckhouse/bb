@@ -67,8 +67,11 @@ function dataflow(
 function seedAccepted(
   context: ReturnType<typeof createPluginContext>,
   entities: readonly ArchitectureYamlEntity[],
+  acceptedKinds: readonly CanvasEntityKind[] = [
+    ...new Set(entities.map((entity) => entity.kind)),
+  ],
 ): void {
-  const kinds = [...new Set(entities.map((entity) => entity.kind))];
+  const kinds = acceptedKinds;
   const db = context.db();
   db.prepare(
     `INSERT INTO pull_generation
@@ -126,6 +129,7 @@ async function registeredComponentPage(
   files: ReadonlyMap<string, string>,
   options: {
     acceptedEntities?: readonly ArchitectureYamlEntity[];
+    acceptedEmpty?: boolean;
     syncError?: string;
   } = {},
 ) {
@@ -169,7 +173,11 @@ async function registeredComponentPage(
   const acceptedEntities = options.acceptedEntities ?? [
     component("accepted-controller"),
   ];
-  if (acceptedEntities.length > 0) seedAccepted(context, acceptedEntities);
+  if (options.acceptedEmpty) {
+    seedAccepted(context, [], ["component"]);
+  } else if (acceptedEntities.length > 0) {
+    seedAccepted(context, acceptedEntities);
+  }
   if (options.syncError) {
     context
       .db()
@@ -359,11 +367,117 @@ describe("WP-35 read-classified editing RPCs", () => {
     expect(page.cache).toMatchObject({ state: "stale" });
     expect(page.cache.message).toContain("Unsupported component type");
     expect(page.cache.message).toContain("[redacted]");
-    expect(page.cache.message).toContain("manager.yaml");
+    expect(page.cache.message).toMatch(/\[redacted\]-[a-f0-9]{8}\.yaml/u);
     expect(page.cache.message).not.toMatch(
       /(?:authorization|bearer\s|api[_-]?key|token=|https?:\/\/[^\s]*[?@])/iu,
     );
     expect(page.cache.message?.length).toBeLessThanOrEqual(500);
+  });
+
+  it("redacts a credential value after a URL token indicator through registered taraList", async () => {
+    const directory = "/workspace/product-security/architecture/components";
+    const page = await registeredComponentPage(
+      new Map([
+        [
+          `${directory}/forge-splice.yaml`,
+          serializeCanvasEntity(component("forge-splice", "hardware")).replace(
+            "component_type: hardware",
+            `component_type: ${JSON.stringify(
+              `http://wiki/${"a".repeat(60)}?token=SUPERSECRET`,
+            )}`,
+          ),
+        ],
+      ]),
+      { acceptedEntities: [] },
+    );
+
+    expect(page).toMatchObject({
+      total: 0,
+      items: [],
+      cache: { state: "stale" },
+    });
+    expect(page.cache.message).toContain("Unsupported component type");
+    expect(page.cache.message).toContain("[redacted]");
+    expect(page.cache.message).not.toContain("SUPERSECRET");
+    expect(
+      cacheStateSchema.shape.message.safeParse(page.cache.message).success,
+    ).toBe(true);
+  });
+
+  it.each([
+    "Authorization: Bearer SUPERSECRET",
+    "Bearer SUPERSECRET",
+    "api_key=SUPERSECRET",
+    "token=SUPERSECRET",
+  ])(
+    "consumes the value after a credential indicator through registered taraList: %s",
+    async (componentType) => {
+      const directory = "/workspace/product-security/architecture/components";
+      const page = await registeredComponentPage(
+        new Map([
+          [
+            `${directory}/credential-value-probe.yaml`,
+            serializeCanvasEntity(
+              component("credential-value-probe", "hardware"),
+            ).replace(
+              "component_type: hardware",
+              `component_type: ${JSON.stringify(componentType)}`,
+            ),
+          ],
+        ]),
+        { acceptedEntities: [] },
+      );
+
+      expect(page.cache.message).toContain("[redacted]");
+      expect(page.cache.message).not.toContain("SUPERSECRET");
+      expect(
+        cacheStateSchema.shape.message.safeParse(page.cache.message).success,
+      ).toBe(true);
+    },
+  );
+
+  it("distinguishes an empty accepted cache refresh failure from file diagnostics through registered taraList", async () => {
+    const refreshOnly = await registeredComponentPage(new Map(), {
+      acceptedEmpty: true,
+      syncError: "Forge returned 503 Service Unavailable.",
+    });
+    expect(refreshOnly).toMatchObject({
+      total: 0,
+      items: [],
+      cache: {
+        state: "stale",
+        message:
+          "The last product-security refresh failed; showing accepted cache.",
+      },
+    });
+
+    const directory = "/workspace/product-security/architecture/components";
+    const both = await registeredComponentPage(
+      new Map([
+        [
+          `${directory}/broken-controller.yaml`,
+          `${serializeCanvasEntity(component("broken-controller"))}verification_status: passed\n`,
+        ],
+      ]),
+      {
+        acceptedEmpty: true,
+        syncError: "Forge returned 503 Service Unavailable.",
+      },
+    );
+    expect(both).toMatchObject({
+      total: 0,
+      items: [],
+      cache: { state: "stale" },
+    });
+    expect(both.cache.message).toContain(
+      "The last product-security refresh failed; showing accepted cache.",
+    );
+    expect(both.cache.message).toContain(
+      "Invalid working YAML quarantined at broken-controller.yaml.",
+    );
+    expect(
+      cacheStateSchema.shape.message.safeParse(both.cache.message).success,
+    ).toBe(true);
   });
 
   it.each([
