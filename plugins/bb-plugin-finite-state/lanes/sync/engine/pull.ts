@@ -117,6 +117,14 @@ export class PullFailedError extends Error {
   }
 }
 
+/** A kind failure whose staged generation must not be resumed. */
+export class TerminalPullError extends Error {
+  constructor(cause: Error) {
+    super(cause.message, { cause });
+    this.name = "TerminalPullError";
+  }
+}
+
 interface StagingState {
   generationId: string;
   stagedPages: number;
@@ -773,6 +781,7 @@ function recordKindFailure(
   generationId: string,
   kind: EntityKind,
   message: string,
+  terminal: boolean,
 ): void {
   db.transaction(() => {
     db.prepare(
@@ -787,10 +796,13 @@ function recordKindFailure(
       generationId,
     );
     db.prepare(
-      `UPDATE pull_generation SET error = ?
+      `UPDATE pull_generation
+          SET status = CASE WHEN ? THEN 'failed' ELSE status END,
+              error = ?
         WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
-          AND status = 'staging'`,
+          AND status IN ('staging', 'failed')`,
     ).run(
+      terminal ? 1 : 0,
       `${kind}: ${message}`.slice(0, 2_000),
       scope.projectId,
       storageVersionId,
@@ -883,7 +895,8 @@ function publishGeneration(
 /**
  * Pulls every selected adapter page into staging, then atomically publishes
  * the generation. A failed kind is recorded and isolated; no partial
- * generation becomes visible, and the next call resumes after whole pages.
+ * generation becomes visible. Retryable failures resume after whole pages,
+ * while terminal failures start a fresh generation on the next call.
  */
 export async function pull(
   deps: EngineDeps,
@@ -934,6 +947,7 @@ export async function pull(
         generationId,
         adapter.kind,
         message,
+        error instanceof TerminalPullError,
       );
     }
   }
@@ -991,6 +1005,7 @@ export async function pull(
         generationId,
         cache.kind,
         message,
+        error instanceof TerminalPullError,
       );
     }
   }

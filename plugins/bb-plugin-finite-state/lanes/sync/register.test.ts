@@ -831,9 +831,23 @@ decisions:
       await expect(allQuarantinedPull()).rejects.toMatchObject(
         allQuarantinedFailure,
       );
-      await expect(allQuarantinedPull()).rejects.toMatchObject(
-        allQuarantinedFailure,
-      );
+      const failedGeneration = context
+        .db()
+        .prepare(
+          `SELECT state.staging_generation_id AS generationId, generation.status
+             FROM sync_state AS state
+             JOIN pull_generation AS generation
+               ON generation.project_id = state.project_id
+              AND generation.project_version_id = state.project_version_id
+              AND generation.generation_id = state.staging_generation_id
+            WHERE state.project_id = ? AND state.project_version_id = ?
+              AND state.entity_kind = 'finding'`,
+        )
+        .get(scope.projectId, mixedVersion) as
+        | { generationId: string; status: string }
+        | undefined;
+      expect(failedGeneration).toMatchObject({ status: "failed" });
+      expect(failedGeneration?.generationId).not.toBe(mixed.generationId);
       const acceptedAfterFailure = context
         .db()
         .prepare(
@@ -856,6 +870,130 @@ decisions:
       expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
         "remote-authored-secret",
       );
+
+      state.findings.clear();
+      state.findings.set("fs193-repaired", {
+        id: "fs193-repaired",
+        projectVersionId: mixedVersion,
+        findingId: "CVE-2026-19320",
+        component: {
+          id: "fs193-repaired-component",
+          name: "repaired-library",
+          version: "2",
+        },
+      });
+      const recovered = await allQuarantinedPull();
+      expect(recovered).toMatchObject({
+        kinds: { finding: { fetched: 1, baseRows: 1 } },
+      });
+      if (
+        typeof recovered !== "object" ||
+        recovered === null ||
+        !("generationId" in recovered) ||
+        typeof recovered.generationId !== "string"
+      ) {
+        throw new Error("syncPull returned no recovered generation id");
+      }
+      expect(recovered.generationId).not.toBe(failedGeneration?.generationId);
+      expect(
+        context
+          .db()
+          .prepare(
+            `SELECT state.accepted_generation_id AS acceptedGenerationId,
+                    COUNT(findings.finding_id) AS visibleRows
+               FROM sync_state AS state
+               LEFT JOIN findings
+                 ON findings.project_id = state.project_id
+                AND findings.project_version_id = state.project_version_id
+                AND findings.generation_id = state.accepted_generation_id
+              WHERE state.project_id = ? AND state.project_version_id = ?
+                AND state.entity_kind = 'finding'
+              GROUP BY state.accepted_generation_id`,
+          )
+          .get(scope.projectId, mixedVersion),
+      ).toEqual({
+        acceptedGenerationId: recovered.generationId,
+        visibleRows: 1,
+      });
+
+      state.findings.clear();
+      state.findings.set("fs193-stranded", {
+        id: "fs193-stranded",
+        projectVersionId: mixedVersion,
+        findingId: "CVE-2026-19321",
+        component: { id: "fs193-stranded-component", version: "" },
+      });
+      await expect(allQuarantinedPull()).rejects.toMatchObject({
+        code: "handler_error",
+        message: expect.stringContaining(
+          "finding: FINDING_ALL_ROWS_QUARANTINED: quarantined 1 fetched finding rows; reasons [FINDING_COMPONENT_IDENTITY_MISSING=1]",
+        ),
+      });
+      const strandedGenerationId = context
+        .db()
+        .prepare(
+          `SELECT staging_generation_id
+             FROM sync_state
+            WHERE project_id = ? AND project_version_id = ?
+              AND entity_kind = 'finding'`,
+        )
+        .pluck()
+        .get(scope.projectId, mixedVersion) as string;
+      state.findings.clear();
+      state.findings.set("fs193-repaired-again", {
+        id: "fs193-repaired-again",
+        projectVersionId: mixedVersion,
+        findingId: "CVE-2026-19322",
+        component: {
+          id: "fs193-repaired-again-component",
+          name: "repaired-again-library",
+          version: "3",
+        },
+      });
+      context
+        .db()
+        .prepare(
+          `UPDATE pull_generation SET status = 'staging'
+            WHERE project_id = ? AND project_version_id = ? AND generation_id = ?`,
+        )
+        .run(scope.projectId, mixedVersion, strandedGenerationId);
+      await expect(allQuarantinedPull()).rejects.toMatchObject({
+        code: "handler_error",
+        message: expect.stringContaining(
+          "finding: FINDING_ALL_ROWS_QUARANTINED: quarantined 1 fetched finding rows; reasons [FINDING_COMPONENT_IDENTITY_MISSING=1]",
+        ),
+      });
+      expect(
+        context
+          .db()
+          .prepare("SELECT status FROM pull_generation WHERE generation_id = ?")
+          .pluck()
+          .get(strandedGenerationId),
+      ).toBe("failed");
+      expect(
+        context
+          .db()
+          .prepare(
+            `SELECT accepted_generation_id
+               FROM sync_state
+              WHERE project_id = ? AND project_version_id = ? AND entity_kind = 'finding'`,
+          )
+          .pluck()
+          .get(scope.projectId, mixedVersion),
+      ).toBe(recovered.generationId);
+      const recoveredAgain = await allQuarantinedPull();
+      expect(recoveredAgain).toMatchObject({
+        kinds: { finding: { fetched: 1, baseRows: 1 } },
+      });
+      if (
+        typeof recoveredAgain !== "object" ||
+        recoveredAgain === null ||
+        !("generationId" in recoveredAgain) ||
+        typeof recoveredAgain.generationId !== "string"
+      ) {
+        throw new Error("syncPull returned no second recovered generation id");
+      }
+      expect(recoveredAgain.generationId).not.toBe(strandedGenerationId);
     } finally {
       state.findings.clear();
       for (const [id, row] of originalFindings) state.findings.set(id, row);

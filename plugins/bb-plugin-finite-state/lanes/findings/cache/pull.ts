@@ -1,5 +1,6 @@
 import type { Json, RemotePage } from "../../../lib/remote/types.js";
 import type { SyncScope } from "../../sync/engine/adapter.js";
+import { TerminalPullError } from "../../sync/engine/pull.js";
 import {
   FindingsCacheError,
   type FindingsDeps,
@@ -500,7 +501,9 @@ export async function pullFindings(
         state.rows === 0 &&
         state.error?.startsWith(`${ALL_ROWS_QUARANTINED}:`) === true
       ) {
-        throw new FindingsCacheError(ALL_ROWS_QUARANTINED, state.error);
+        throw new TerminalPullError(
+          new FindingsCacheError(ALL_ROWS_QUARANTINED, state.error),
+        );
       }
       onProgress({ page: pages, of: pages, phase: "done" });
       return {
@@ -554,7 +557,9 @@ export async function pullFindings(
     }
     const published = state.rows + staged;
     if (fetched > 0 && published === 0) {
-      throw allRowsQuarantinedError(quarantined, quarantineReasons);
+      throw new TerminalPullError(
+        allRowsQuarantinedError(quarantined, quarantineReasons),
+      );
     }
     onProgress({ page: pages, of: latestOf, phase: "done" });
     return {
