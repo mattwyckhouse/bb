@@ -212,12 +212,6 @@ export function normalizeFinding(value: Json): NormalizedFinding {
       `Finding ${findingId} has no component name for canonical identity; ${payloadKeyDetail(row, component)}`,
     );
   }
-  if (!componentPurl && !componentVersion) {
-    throw new FindingsCacheError(
-      "FINDING_COMPONENT_IDENTITY_MISSING",
-      `Finding ${findingId} has neither purl nor exact component version; ${payloadKeyDetail(row, component)}`,
-    );
-  }
   let stableKey: string;
   let canonicalIdentity;
   try {
@@ -328,8 +322,17 @@ function writePage(
   pageNumber: number,
   page: RemotePage<Record<string, Json>>,
   pulledAt: string,
-): { inserted: number; deduplicated: number } {
-  const normalized = page.items.map((item) => normalizeFinding(item));
+): { inserted: number; deduplicated: number; quarantined: number } {
+  const normalized: NormalizedFinding[] = [];
+  let quarantined = 0;
+  for (const item of page.items) {
+    try {
+      normalized.push(normalizeFinding(item));
+    } catch (error: unknown) {
+      if (!(error instanceof FindingsCacheError)) throw error;
+      quarantined += 1;
+    }
+  }
   const unique = new Map<string, NormalizedFinding>();
   let deduplicated = 0;
   for (const item of normalized) {
@@ -437,7 +440,7 @@ function writePage(
         "Finding staging checkpoint moved",
       );
   })();
-  return { inserted, deduplicated };
+  return { inserted, deduplicated, quarantined };
 }
 
 export async function pullFindings(
@@ -457,6 +460,8 @@ export async function pullFindings(
   const pulledAt = state.pulledAt;
   let pages = state.pages;
   let fetched = 0;
+  let staged = 0;
+  let quarantined = 0;
   let deduplicated = 0;
   let latestOf: number | null = null;
   try {
@@ -468,6 +473,7 @@ export async function pullFindings(
         pages,
         pulledAt,
         deduplicated,
+        quarantined,
       };
     }
     const iterable = deps.platform.getFindings({
@@ -492,7 +498,12 @@ export async function pullFindings(
         page,
         pulledAt,
       );
-      fetched += written.inserted;
+      fetched += page.items.length;
+      staged += written.inserted;
+      quarantined += written.quarantined;
+      if (written.quarantined > 0) {
+        deps.quarantine?.({ count: written.quarantined });
+      }
       deduplicated += written.deduplicated;
       onProgress({ page: pages, of: latestOf, phase: "write" });
     }
@@ -505,10 +516,11 @@ export async function pullFindings(
     onProgress({ page: pages, of: latestOf, phase: "done" });
     return {
       fetched,
-      published: state.rows + fetched,
+      published: state.rows + staged,
       pages,
       pulledAt,
       deduplicated,
+      quarantined,
     };
   } catch (error: unknown) {
     onProgress({ page: pages, of: latestOf, phase: "error" });

@@ -632,7 +632,7 @@ decisions:
     });
     expect(first.exitCode).toBe(0);
     expect(JSON.parse(first.stdout)).toMatchObject({
-      kinds: { finding: { fetched: 4_000, baseRows: 4_000 } },
+      kinds: { finding: { fetched: 4_001, baseRows: 4_000 } },
     });
     const repeated = await host.harness.behavior.runCli(argv, {
       cwd: root,
@@ -641,7 +641,7 @@ decisions:
     });
     expect(repeated.exitCode).toBe(0);
     expect(JSON.parse(repeated.stdout)).toMatchObject({
-      kinds: { finding: { fetched: 4_000, baseRows: 4_000 } },
+      kinds: { finding: { fetched: 4_001, baseRows: 4_000 } },
     });
 
     for (const captured of [
@@ -716,6 +716,88 @@ decisions:
       expect(parseFindingStableKey(persisted?.stableKey ?? "").cve).toBe(
         captured.cve,
       );
+    }
+
+    const originalFindings = [...state.findings.entries()];
+    state.findings.clear();
+    const mixedVersion = scope.projectVersionId;
+    const mixedRows = [
+      {
+        id: "fs193-binary-sast",
+        projectVersionId: mixedVersion,
+        findingId: "FS-500-006",
+        component: {
+          id: "fs193-component",
+          name: "/update/firmware-root/etc/ssl/certs/ca-certificates.crt",
+          version: "",
+        },
+        type: "binary-sast",
+      },
+      {
+        id: "fs193-exact",
+        projectVersionId: mixedVersion,
+        findingId: "CVE-2026-19300",
+        component: {
+          id: "fs193-exact-component",
+          name: "library",
+          version: "1",
+        },
+      },
+      {
+        id: "fs193-quarantined",
+        projectVersionId: mixedVersion,
+        findingId: "CVE-2026-19301",
+        title: "https://remote.invalid/?token=must-not-reach-diagnostics",
+        component: { id: "fs193-invalid-component", version: "" },
+      },
+    ];
+    for (const row of mixedRows) state.findings.set(row.id, row);
+    try {
+      const mixed = await host.harness.behavior.callRpc("syncPull", {
+        projectId: scope.projectId,
+        projectVersionId: mixedVersion,
+        kinds: ["finding"],
+      });
+      expect(mixed).toMatchObject({
+        kinds: { finding: { fetched: 3, baseRows: 2 } },
+      });
+      if (
+        typeof mixed !== "object" ||
+        mixed === null ||
+        !("generationId" in mixed) ||
+        typeof mixed.generationId !== "string"
+      ) {
+        throw new Error("syncPull returned no mixed-corpus generation id");
+      }
+      const persisted = context
+        .db()
+        .prepare(
+          `SELECT finding_id AS findingId, stable_key AS stableKey
+             FROM findings
+            WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
+            ORDER BY finding_id`,
+        )
+        .all(scope.projectId, mixedVersion, mixed.generationId) as Array<{
+        findingId: string;
+        stableKey: string;
+      }>;
+      expect(persisted.map((row) => row.findingId)).toEqual([
+        "fs193-binary-sast",
+        "fs193-exact",
+      ]);
+      expect(parseFindingStableKey(persisted[0]?.stableKey ?? "").tier).toBe(
+        "name-group-any-version",
+      );
+      expect(host.harness.inspection.logEntries).toContainEqual({
+        level: "warn",
+        message: "Quarantined individually unkeyable Platform finding rows: 1",
+      });
+      expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
+        "must-not-reach-diagnostics",
+      );
+    } finally {
+      state.findings.clear();
+      for (const [id, row] of originalFindings) state.findings.set(id, row);
     }
   });
 
