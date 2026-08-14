@@ -16,7 +16,7 @@ const TRIAGE_USAGE = `usage:
   bb finite-state triage import-vex preview <file> --vendor NAME --project ID --version ID [--json]
   bb finite-state triage import-vex apply --import-id ID --expected-document-sha256 SHA256 --project ID --version ID [--json]
   bb finite-state triage orphans list --project ID --version ID [--json]
-  bb finite-state triage orphans prune --stable-key KEY [--stable-key KEY ...] --expected-base SHA256 --project ID --version ID [--json]`;
+  bb finite-state triage orphans prune --stable-key KEY [--stable-key KEY ... (max 500 per invocation)] --expected-base SHA256 --project ID --version ID [--json]`;
 
 type DriftCliVerb = "drift" | "import-vex" | "orphans";
 
@@ -382,36 +382,25 @@ export function createFindingsCliRunner(
           input.json,
         );
       }
-      let expectedBaseStateSha256 = input.expectedBaseStateSha256!;
-      let selected = 0;
-      let pruned = 0;
-      const files = new Set<string>();
-      for (let offset = 0; offset < input.stableKeys.length; offset += 500) {
-        const stableKeys = input.stableKeys.slice(offset, offset + 500);
-        const result = await drift.pruneOrphans({
-          root: execution.root,
-          projectId: input.projectId,
-          pvId: input.projectVersionId,
-          stableKeys,
-          expectedBaseStateSha256,
-        });
-        selected += result.selected;
-        pruned += result.pruned;
-        result.files.forEach((file) => files.add(file));
-        if (offset + 500 < input.stableKeys.length) {
-          expectedBaseStateSha256 = drift.orphanState({
-            projectId: input.projectId,
-            pvId: input.projectVersionId,
-          }).baseStateSha256;
-        }
+      if (input.stableKeys.length > 500) {
+        throw new Error(
+          "ORPHAN_PRUNE_CHUNK_REQUIRED: submit at most 500 stable keys, then list orphans again and explicitly supply the refreshed digest for the next chunk",
+        );
       }
+      const result = await drift.pruneOrphans({
+        root: execution.root,
+        projectId: input.projectId,
+        pvId: input.projectVersionId,
+        stableKeys: input.stableKeys,
+        expectedBaseStateSha256: input.expectedBaseStateSha256!,
+      });
       return output(
         {
-          selected,
-          pruned,
-          files: [...files].sort(),
-          chunks: Math.ceil(input.stableKeys.length / 500),
-          message: `Pruned ${pruned} of ${selected} selected orphaned decisions in ${Math.ceil(input.stableKeys.length / 500)} CAS-guarded chunk(s).`,
+          selected: result.selected,
+          pruned: result.pruned,
+          files: [...result.files].sort(),
+          chunks: 1,
+          message: `Pruned ${result.pruned} of ${result.selected} selected orphaned decisions in one explicitly digest-fenced chunk.`,
         },
         input.json,
       );
@@ -444,7 +433,12 @@ export function createFindingsCliRunner(
       file.contentEncoding === "utf8"
         ? Buffer.from(file.content, "utf8")
         : Buffer.from(file.content, "base64");
-    const staged = drift.stageVendorDocument({ file: input.file!, bytes });
+    const staged = drift.stageVendorDocument({
+      projectId: input.projectId,
+      pvId: input.projectVersionId,
+      file: input.file!,
+      bytes,
+    });
     return output(
       await drift.previewVendorVex({
         root: execution.root,

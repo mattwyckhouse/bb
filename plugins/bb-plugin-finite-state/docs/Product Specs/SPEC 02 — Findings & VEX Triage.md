@@ -544,7 +544,7 @@ bb finite-state triage                          # surface group — domain verbs
   pull | status | plan | push        # scoped aliases; push is the same non-mutating panel handoff
 ```
 
-`drift report` is a zero-write persisted-index read and returns freshness metadata plus a keyset cursor. Vendor import is fenced by the preview's `importId` and document SHA-256. The CLI apply verb always preserves existing local decisions; the panel alone exposes the truthful overwrite mode, and agent tools expose neither import mode. Orphan pruning edits local YAML only for explicit stable keys behind a fresh base-state digest; the CLI and panel split selections above 500 into sequential CAS-guarded chunks.
+`drift report` is a zero-write persisted-index read and returns freshness metadata plus a keyset cursor. Vendor import is durably fenced by the preview's `importId` and document SHA-256 across plugin reloads. The CLI apply verb always preserves existing local decisions; the panel alone exposes the truthful overwrite mode, and agent tools expose neither import mode. Orphan pruning edits local YAML only for explicit stable keys behind a fresh base-state digest. Each CLI invocation accepts at most 500 keys and requires a new list/digest before another chunk; the panel preserves committed progress and separately confirms every additional chunk against its refreshed visible digest.
 
 The four sync verbs are **verb-first at top level** (SPEC 00 §9, SPEC 06 §2.4) — deliberately git/Terraform-shaped. The `triage`-scoped forms are retained as documented aliases with no behavior difference. In v1 both `push` spellings are non-mutating review-panel handoffs; only the panel can apply or resolve conflicts.
 

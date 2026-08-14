@@ -111,7 +111,7 @@ bb finite-state
     import-vex preview <file> --vendor <name> --project <id> --version <pv> [--json]
     import-vex apply --import-id <id> --expected-document-sha256 <sha256> --project <id> --version <pv> [--json]
     orphans list --project <id> --version <pv> [--json]
-    orphans prune --stable-key <key> --expected-base <sha256> --project <id> --version <pv> [--json]
+    orphans prune --stable-key <key> --expected-base <sha256> --project <id> --version <pv> [--json] # max 500 keys; list again for each next digest
     pull | status | plan | push             # aliases of the top-level verbs, scoped ⚑6
 
   tara    show <slug>                       # SPEC 03 §6.5

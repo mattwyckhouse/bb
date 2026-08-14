@@ -1101,7 +1101,7 @@ function vendorVexReport(
   const page = result.proposals.slice(offset, offset + input.pageSize);
   const nextOffset = offset + page.length;
   return {
-    projectId: input.projectId,
+    projectId: platformProjectId,
     projectVersionId,
     importId: result.importId,
     format: result.source.format,
@@ -1109,7 +1109,7 @@ function vendorVexReport(
     items: page.map((proposal) => {
       const sourceKey = proposal.stableKey ?? proposal.sourceRef;
       return {
-        projectId: input.projectId,
+        projectId: platformProjectId,
         projectVersionId,
         kind: "vendorVexProposal",
         key:
@@ -1334,12 +1334,8 @@ export function registerFindingsRpc(
         runId: `orphan-prune-${result.baseStateSha256.slice(0, 24)}`,
         total: result.selected,
         applied: result.pruned,
-        failed: 0,
-        results: extended.stableKeys.map((stableKey) => ({
-          stableKey,
-          success: true,
-          error: null,
-        })),
+        failed: result.selected - result.pruned,
+        results: result.results,
       };
     },
   });

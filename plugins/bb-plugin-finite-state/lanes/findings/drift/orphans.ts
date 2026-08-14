@@ -25,6 +25,16 @@ export interface OrphanPruneResult {
   selected: number;
   pruned: number;
   files: string[];
+  results: Array<{
+    stableKey: string;
+    success: boolean;
+    error: {
+      code: string;
+      message: string;
+      artifactId: string | null;
+      line: number | null;
+    } | null;
+  }>;
 }
 
 interface OrphanRow {
@@ -114,6 +124,14 @@ export async function pruneOrphans(
   }
   const chainedSha = new Map<string, string>();
   const files = new Set<string>();
+  const actions: Array<{
+    stableKey: string;
+    project: string;
+    component: (typeof overlays.files)[number]["overlay"]["component"];
+    cve: string;
+    file: string;
+    sha256: string;
+  }> = [];
   for (const row of proven) {
     const entry = authored.get(row.stable_key);
     if (
@@ -123,29 +141,64 @@ export async function pruneOrphans(
     ) {
       throw new Error("ORPHAN_OVERLAY_CHANGED");
     }
-    const expected = chainedSha.get(entry.file) ?? entry.sha256;
-    const result = await removeDecision(
-      deps.root,
-      {
-        project: entry.project,
-        component: entry.component,
-        cve: entry.cve,
-        stableKey: row.stable_key,
-      },
-      expected,
-    );
-    chainedSha.set(entry.file, result.afterSha256);
-    files.add(result.file);
+    actions.push({
+      stableKey: row.stable_key,
+      project: entry.project,
+      component: entry.component,
+      cve: entry.cve,
+      file: entry.file,
+      sha256: entry.sha256,
+    });
   }
-  await rebuildOverlayIndex(deps.db, deps.root);
-  classifyDrift(
-    { db: deps.db, root: deps.root, projectId: deps.projectId },
-    deps.pvId,
-  );
+  const results: OrphanPruneResult["results"] = [];
+  for (const action of actions) {
+    try {
+      const expected = chainedSha.get(action.file) ?? action.sha256;
+      const result = await removeDecision(
+        deps.root,
+        {
+          project: action.project,
+          component: action.component,
+          cve: action.cve,
+          stableKey: action.stableKey,
+        },
+        expected,
+      );
+      chainedSha.set(action.file, result.afterSha256);
+      files.add(result.file);
+      results.push({ stableKey: action.stableKey, success: true, error: null });
+    } catch (cause) {
+      const code =
+        typeof cause === "object" &&
+        cause !== null &&
+        typeof Reflect.get(cause, "code") === "string"
+          ? String(Reflect.get(cause, "code")).slice(0, 512)
+          : "ORPHAN_PRUNE_FAILED";
+      results.push({
+        stableKey: action.stableKey,
+        success: false,
+        error: {
+          code,
+          message: "The local YAML decision could not be pruned",
+          artifactId: action.file,
+          line: null,
+        },
+      });
+    }
+  }
+  const pruned = results.filter((result) => result.success).length;
+  if (pruned > 0) {
+    await rebuildOverlayIndex(deps.db, deps.root);
+    classifyDrift(
+      { db: deps.db, root: deps.root, projectId: deps.projectId },
+      deps.pvId,
+    );
+  }
   return {
     baseStateSha256: state.sha256,
     selected: proven.length,
-    pruned: proven.length,
+    pruned,
     files: [...files].sort(),
+    results,
   };
 }

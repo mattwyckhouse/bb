@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 describe("orphan pruning", () => {
-  it("is dry-run and confirmation gated, then removes only explicitly selected proven orphans", async () => {
+  it("is digest gated and removes only explicitly selected proven orphans", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "fs-orphans-")));
     roots.push(root);
     const host = createFakePluginHost({ pluginId: "orphan-prune" });
@@ -92,7 +92,11 @@ describe("orphan pruning", () => {
         stableKeys: [keys[0] ?? ""],
         expectedBaseStateSha256: state.sha256,
       }),
-    ).resolves.toMatchObject({ selected: 1, pruned: 1 });
+    ).resolves.toMatchObject({
+      selected: 1,
+      pruned: 1,
+      results: [{ stableKey: keys[0], success: true, error: null }],
+    });
     expect(
       Object.keys(
         (await readOverlayFiles(root)).files[0]?.overlay.decisions ?? {},

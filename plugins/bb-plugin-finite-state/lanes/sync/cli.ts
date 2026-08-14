@@ -368,7 +368,7 @@ export function registerSyncCli(
         summary:
           "Read or refresh finding drift, preview/apply vendor VEX, and CAS-prune orphans",
         usage:
-          "triage --help\ntriage drift report --project ID --version ID [--cursor CURSOR] [--limit N] [--json]\ntriage drift refresh --project ID --version ID [--limit N] [--json]\ntriage import-vex preview <file> --vendor NAME --project ID --version ID [--json]\ntriage import-vex apply --import-id ID --expected-document-sha256 SHA256 --project ID --version ID [--json]\ntriage orphans list --project ID --version ID [--json]\ntriage orphans prune --stable-key KEY [--stable-key KEY ...] --expected-base SHA256 --project ID --version ID [--json]",
+          "triage --help\ntriage drift report --project ID --version ID [--cursor CURSOR] [--limit N] [--json]\ntriage drift refresh --project ID --version ID [--limit N] [--json]\ntriage import-vex preview <file> --vendor NAME --project ID --version ID [--json]\ntriage import-vex apply --import-id ID --expected-document-sha256 SHA256 --project ID --version ID [--json]\ntriage orphans list --project ID --version ID [--json]\ntriage orphans prune --stable-key KEY [--stable-key KEY ... (max 500 per invocation)] --expected-base SHA256 --project ID --version ID [--json]",
       },
     ],
     async run(argv, context) {

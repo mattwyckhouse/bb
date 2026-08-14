@@ -479,7 +479,13 @@ describe("findings UI RPC seams", () => {
         needsCompletion: 0,
         keptLocal: 0,
         written: 0,
-        proposals: [],
+        proposals: [
+          {
+            stableKey: "stable-vendor-1",
+            state: "proposal",
+            sourceRef: "supplier.json#statement-1",
+          },
+        ],
         errors: [],
       })),
       applyVendorVex: vi.fn(async () => ({
@@ -502,6 +508,7 @@ describe("findings UI RPC seams", () => {
         selected: 0,
         pruned: 0,
         files: [],
+        results: [],
       })),
     };
     registerFindingsRpc(host.bb, db, { drift });
@@ -524,13 +531,20 @@ describe("findings UI RPC seams", () => {
       limit: 100,
     });
 
-    await host.harness.behavior.callRpc("triageVendorVexPreview", {
-      projectId: "workspace-1",
-      projectVersionId: "version-1",
-      pageSize: 100,
-      continuation: null,
-      documentSha256: "b".repeat(64),
-      vendor: "Supplier",
+    const vendorPreview = await host.harness.behavior.callRpc(
+      "triageVendorVexPreview",
+      {
+        projectId: "workspace-1",
+        projectVersionId: "version-1",
+        pageSize: 100,
+        continuation: null,
+        documentSha256: "b".repeat(64),
+        vendor: "Supplier",
+      },
+    );
+    expect(vendorPreview).toMatchObject({
+      projectId: "platform-1",
+      items: [{ projectId: "platform-1", key: "stable-vendor-1" }],
     });
     expect(drift.previewVendorVex).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -18,6 +18,8 @@ interface PrunePreview {
   baseStateSha256: string;
   stableKeys: string[];
   selected: number;
+  pruned: number;
+  chunks: number;
 }
 
 interface VendorPreview {
@@ -186,7 +188,13 @@ export function DriftReportPanel({
         "/api/v1/plugins/finite-state/http/findings/vendor-vex/document",
         {
           method: "POST",
-          headers: { "x-fs-vendor-file": encodeURIComponent(file.name) },
+          headers: {
+            "content-type": "application/json",
+            "x-fs-vendor-file": encodeURIComponent(file.name),
+            "x-fs-workspace-project": workspaceProjectId,
+            "x-fs-platform-project": platformProjectId,
+            "x-fs-project-version": projectVersionId,
+          },
           body: file,
         },
       );
@@ -293,6 +301,8 @@ export function DriftReportPanel({
         baseStateSha256: state.baseStateSha256,
         stableKeys: orphanKeys,
         selected: orphanKeys.length,
+        pruned: 0,
+        chunks: 0,
       });
     } catch (cause) {
       setError(message(cause));
@@ -316,33 +326,45 @@ export function DriftReportPanel({
     }
     setError(null);
     try {
-      let expectedBaseStateSha256 = prunePreview.baseStateSha256;
-      let pruned = 0;
-      const chunks = Math.ceil(prunePreview.stableKeys.length / 500);
-      for (
-        let offset = 0;
-        offset < prunePreview.stableKeys.length;
-        offset += 500
-      ) {
-        const result = await rpc.call("triageOrphansPrune", {
-          projectId: workspaceProjectId,
+      const chunk = prunePreview.stableKeys.slice(0, 500);
+      const result = await rpc.call("triageOrphansPrune", {
+        projectId: workspaceProjectId,
+        projectVersionId,
+        stableKeys: chunk,
+        expectedBaseStateSha256: prunePreview.baseStateSha256,
+      });
+      const pruned = prunePreview.pruned + result.applied;
+      const chunks = prunePreview.chunks + 1;
+      const failedKeys = result.results
+        .filter((item) => !item.success)
+        .map((item) => item.stableKey);
+      const remaining = [
+        ...failedKeys,
+        ...prunePreview.stableKeys.slice(chunk.length),
+      ];
+      if (remaining.length > 0) {
+        setPrunePreview(null);
+        setAction(
+          `Pruned ${pruned.toLocaleString()} of ${prunePreview.selected.toLocaleString()} orphaned decisions in ${chunks.toLocaleString()} chunk(s) · ${remaining.length.toLocaleString()} remain and require a refreshed digest plus confirmation`,
+        );
+        const state = await rpc.call("findingsDriftOrphanState", {
+          workspaceProjectId,
+          platformProjectId,
           projectVersionId,
-          stableKeys: prunePreview.stableKeys.slice(offset, offset + 500),
-          expectedBaseStateSha256,
         });
-        pruned += result.applied;
-        if (offset + 500 < prunePreview.stableKeys.length) {
-          const state = await rpc.call("findingsDriftOrphanState", {
-            workspaceProjectId,
-            platformProjectId,
-            projectVersionId,
-          });
-          expectedBaseStateSha256 = state.baseStateSha256;
-        }
+        setPrunePreview({
+          baseStateSha256: state.baseStateSha256,
+          stableKeys: remaining,
+          selected: prunePreview.selected,
+          pruned,
+          chunks,
+        });
+        await loadReport();
+        return;
       }
       setPrunePreview(null);
       setAction(
-        `Pruned ${pruned.toLocaleString()} orphaned decisions in ${chunks.toLocaleString()} CAS-guarded chunk(s)`,
+        `Pruned ${pruned.toLocaleString()} orphaned decisions in ${chunks.toLocaleString()} explicitly confirmed CAS-guarded chunk(s)`,
       );
       await loadReport();
     } catch (cause) {
@@ -536,8 +558,17 @@ export function DriftReportPanel({
             {prunePreview ? (
               <div className="rounded border border-destructive/40 p-2">
                 <p>
-                  Remove {prunePreview.selected.toLocaleString()} proven
-                  orphaned decisions?
+                  Remove up to{" "}
+                  {Math.min(
+                    500,
+                    prunePreview.stableKeys.length,
+                  ).toLocaleString()}{" "}
+                  of {prunePreview.selected.toLocaleString()} proven orphaned
+                  decisions using digest{" "}
+                  <code className="break-all font-mono text-xs">
+                    {prunePreview.baseStateSha256}
+                  </code>
+                  ?
                 </p>
                 <button
                   className="mt-2 rounded border border-destructive/60 px-2 py-1 text-destructive"

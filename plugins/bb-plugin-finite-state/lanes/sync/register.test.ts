@@ -1500,13 +1500,30 @@ decisions:
       "@id": "https://vendor.test/vex/fs-147",
       statements: [],
     });
+    const unscopedUpload = await host.harness.behavior.fetchHttp(
+      "POST",
+      "/findings/vendor-vex/document",
+      {
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(Buffer.byteLength(vendorDocument)),
+          "x-fs-vendor-file": encodeURIComponent("vendor/openvex.json"),
+        },
+        body: vendorDocument,
+      },
+    );
+    expect(unscopedUpload.status).toBe(400);
     const uploaded = await host.harness.behavior.fetchHttp(
       "POST",
       "/findings/vendor-vex/document",
       {
         headers: {
+          "content-type": "application/json",
           "content-length": String(Buffer.byteLength(vendorDocument)),
           "x-fs-vendor-file": encodeURIComponent("vendor/openvex.json"),
+          "x-fs-workspace-project": "bb-project-sync",
+          "x-fs-platform-project": scope.projectId,
+          "x-fs-project-version": scope.projectVersionId,
         },
         body: vendorDocument,
       },
@@ -1529,7 +1546,7 @@ decisions:
       written: number;
     };
     expect(preview).toMatchObject({
-      projectId: "bb-project-sync",
+      projectId: scope.projectId,
       projectVersionId: scope.projectVersionId,
       documentSha256: staged.documentSha256,
       written: 0,

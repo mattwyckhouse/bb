@@ -163,6 +163,27 @@ export function registerFindings(bb: BbPluginApi, ctx: PluginContext): void {
     "POST",
     "/findings/vendor-vex/document",
     async (http) => {
+      const workspaceProjectId =
+        http.req.header("x-fs-workspace-project")?.trim() ?? "";
+      const platformProjectId =
+        http.req.header("x-fs-platform-project")?.trim() ?? "";
+      const projectVersionId =
+        http.req.header("x-fs-project-version")?.trim() ?? "";
+      if (
+        !workspaceProjectId ||
+        !platformProjectId ||
+        !projectVersionId ||
+        workspaceProjectId.length > 512 ||
+        platformProjectId.length > 512 ||
+        projectVersionId.length > 512
+      ) {
+        return http.json({ error: "FINDINGS_SCOPE_REQUIRED" }, 400);
+      }
+      assertAcceptedFindingsScope(db, {
+        workspaceProjectId,
+        platformProjectId,
+        projectVersionId,
+      });
       const declaredLength = Number(http.req.header("content-length") ?? "0");
       if (
         !Number.isSafeInteger(declaredLength) ||
@@ -184,7 +205,14 @@ export function registerFindings(bb: BbPluginApi, ctx: PluginContext): void {
       if (file.length > 1_024) {
         return http.json({ error: "VENDOR_FILE_INVALID" }, 400);
       }
-      return http.json(drift.stageVendorDocument({ file, bytes }));
+      return http.json(
+        drift.stageVendorDocument({
+          projectId: platformProjectId,
+          pvId: projectVersionId,
+          file,
+          bytes,
+        }),
+      );
     },
     { auth: "local" },
   );
