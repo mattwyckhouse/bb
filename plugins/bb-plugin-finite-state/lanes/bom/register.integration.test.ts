@@ -231,8 +231,12 @@ describe("registered SBOM pull surfaces", () => {
             requested_kinds_json, started_at, completed_at, accepted_at)
          VALUES ('foreign-project', 'foreign-version', 'foreign-generation',
                  'accepted', '["sbomComponent"]',
-                 '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z',
-                 '2026-08-14T00:00:00.000Z')`,
+                 '2099-08-14T00:00:00.000Z', '2099-08-14T00:00:00.000Z',
+                 '2099-08-14T00:00:00.000Z'),
+                ('sibling-project', 'sibling-version', 'sibling-generation',
+                 'accepted', '["sbomComponent"]',
+                 '2000-08-14T00:00:00.000Z', '2000-08-14T00:00:00.000Z',
+                 '2000-08-14T00:00:00.000Z')`,
         )
         .run();
       ctx
@@ -242,12 +246,35 @@ describe("registered SBOM pull surfaces", () => {
            (project_id, project_version_id, entity_kind,
             accepted_generation_id, last_pull)
          VALUES ('foreign-project', 'foreign-version', 'sbomComponent',
-                 'foreign-generation', '2026-08-14T00:00:00.000Z')`,
+                 'foreign-generation', '2099-08-14T00:00:00.000Z'),
+                ('sibling-project', 'sibling-version', 'sbomComponent',
+                 'sibling-generation', '2000-08-14T00:00:00.000Z')`,
+        )
+        .run();
+      ctx
+        .db()
+        .prepare(
+          `INSERT INTO workspace_platform_project_binding
+           (workspace_project_id, platform_project_id)
+           VALUES ('bb-project-fs172', 'sibling-project'),
+                  ('other-workspace-project', 'foreign-project')`,
         )
         .run();
       expect(
+        ctx
+          .db()
+          .prepare(
+            `SELECT platform_project_id
+               FROM workspace_platform_project_binding
+              WHERE workspace_project_id = 'bb-project-fs172'
+              ORDER BY platform_project_id`,
+          )
+          .pluck()
+          .all(),
+      ).toEqual([projectId, "sibling-project"].sort());
+      expect(
         await host.harness.behavior.callRpc("bomCachedProjectVersions", {
-          projectId,
+          projectId: "bb-project-fs172",
         }),
       ).toEqual({
         versions: [
@@ -257,9 +284,31 @@ describe("registered SBOM pull surfaces", () => {
             asOf: sbomAsOf,
             state: "fresh",
           },
+          {
+            platformProjectId: "sibling-project",
+            projectVersionId: "sibling-version",
+            asOf: "2000-08-14T00:00:00.000Z",
+            state: "fresh",
+          },
         ],
         selectedPlatformProjectId: projectId,
         selectedProjectVersionId: projectVersionId,
+      });
+      await expect(
+        host.harness.behavior.callRpc("bomCachedProjectVersions", {
+          projectId: "other-workspace-project",
+        }),
+      ).resolves.toEqual({
+        versions: [
+          {
+            platformProjectId: "foreign-project",
+            projectVersionId: "foreign-version",
+            asOf: "2099-08-14T00:00:00.000Z",
+            state: "fresh",
+          },
+        ],
+        selectedPlatformProjectId: "foreign-project",
+        selectedProjectVersionId: "foreign-version",
       });
 
       const page = bomAppRpcContract.bomSoftwareList.output.parse(

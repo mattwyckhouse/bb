@@ -154,11 +154,11 @@ describe("bulk triage registered surface", () => {
       panel,
       { subPath: "" },
       {
-        context: { projectId: "platform-project-1" },
+        context: { projectId: "workspace-project-1" },
         sidebarThreads: {
           status: "ready",
           projects: [
-            { id: "platform-project-1", name: "Workspace", isPersonal: false },
+            { id: "workspace-project-1", name: "Workspace", isPersonal: false },
           ],
         },
         rpc: {

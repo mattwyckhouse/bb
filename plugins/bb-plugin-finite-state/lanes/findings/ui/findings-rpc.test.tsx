@@ -86,7 +86,8 @@ describe("findings UI RPC seams", () => {
       `INSERT INTO pull_generation
       (project_id, project_version_id, generation_id, status, requested_kinds_json, started_at, completed_at, accepted_at, error)
       VALUES ('platform-project-1','version-1','generation-1','accepted','["finding"]',?,?,?,NULL),
-             ('platform-project-2','foreign-version','foreign-generation','accepted','["finding"]',?,?,?,NULL)`,
+             ('platform-project-2','version-2','generation-2','accepted','["finding"]',?,?,?,NULL),
+             ('platform-project-3','foreign-version','foreign-generation','accepted','["finding"]',?,?,?,NULL)`,
     ).run(
       "2026-08-13T00:00:00.000Z",
       "2026-08-13T00:00:00.000Z",
@@ -94,13 +95,28 @@ describe("findings UI RPC seams", () => {
       "2026-08-13T01:00:00.000Z",
       "2026-08-13T01:00:00.000Z",
       "2026-08-13T01:00:00.000Z",
+      "2026-08-13T02:00:00.000Z",
+      "2026-08-13T02:00:00.000Z",
+      "2026-08-13T02:00:00.000Z",
     );
     db.prepare(
       `INSERT INTO sync_state
       (project_id, project_version_id, entity_kind, accepted_generation_id, staging_generation_id, base_revision, staging_continuation, staged_pages, staged_rows, last_pull, error)
       VALUES ('platform-project-1','version-1','finding','generation-1',NULL,1,NULL,0,0,?,NULL),
-             ('platform-project-2','foreign-version','finding','foreign-generation',NULL,1,NULL,0,0,?,NULL)`,
-    ).run("2026-08-13T00:00:00.000Z", "2026-08-13T01:00:00.000Z");
+             ('platform-project-2','version-2','finding','generation-2',NULL,1,NULL,0,0,?,NULL),
+             ('platform-project-3','foreign-version','finding','foreign-generation',NULL,1,NULL,0,0,?,NULL)`,
+    ).run(
+      "2026-08-13T00:00:00.000Z",
+      "2026-08-13T01:00:00.000Z",
+      "2026-08-13T02:00:00.000Z",
+    );
+    db.prepare(
+      `INSERT INTO workspace_platform_project_binding
+       (workspace_project_id, platform_project_id)
+       VALUES ('workspace-project-1', 'platform-project-1'),
+              ('workspace-project-1', 'platform-project-2'),
+              ('workspace-project-2', 'platform-project-3')`,
+    ).run();
     db.prepare(
       `INSERT INTO findings
       (project_id, project_version_id, generation_id, finding_id, stable_key, cve, severity, risk_score, raw, pulled_at)
@@ -115,16 +131,38 @@ describe("findings UI RPC seams", () => {
 
     await expect(
       host.harness.callRpc("cachedProjectVersions", {
-        projectId: "platform-project-1",
+        projectId: "workspace-project-1",
       }),
     ).resolves.toEqual({
-      selectedPlatformProjectId: "platform-project-1",
-      selectedProjectVersionId: "version-1",
+      selectedPlatformProjectId: "platform-project-2",
+      selectedProjectVersionId: "version-2",
       versions: [
+        {
+          platformProjectId: "platform-project-2",
+          projectVersionId: "version-2",
+          asOf: "2026-08-13T01:00:00.000Z",
+          state: "fresh",
+        },
         {
           platformProjectId: "platform-project-1",
           projectVersionId: "version-1",
           asOf: "2026-08-13T00:00:00.000Z",
+          state: "fresh",
+        },
+      ],
+    });
+    await expect(
+      host.harness.callRpc("cachedProjectVersions", {
+        projectId: "workspace-project-2",
+      }),
+    ).resolves.toEqual({
+      selectedPlatformProjectId: "platform-project-3",
+      selectedProjectVersionId: "foreign-version",
+      versions: [
+        {
+          platformProjectId: "platform-project-3",
+          projectVersionId: "foreign-version",
+          asOf: "2026-08-13T02:00:00.000Z",
           state: "fresh",
         },
       ],
@@ -143,6 +181,66 @@ describe("findings UI RPC seams", () => {
       localState: "conflicted",
       localFile: ".fs/triage/one.yaml",
     });
+  });
+
+  it("keeps one-project legacy caches visible and backfills their workspace binding", async () => {
+    const host = createFakePluginHost({
+      pluginId: "findings-ui-legacy-project-binding",
+      sdk: {
+        projects: {
+          get: ({ projectId }) => ({
+            id: projectId,
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
+      },
+    });
+    hosts.push(host);
+    const db = createPluginContext(host.bb).db();
+    db.prepare(
+      `INSERT INTO pull_generation
+       (project_id, project_version_id, generation_id, status,
+        requested_kinds_json, started_at, completed_at, accepted_at)
+       VALUES ('legacy-platform-project', 'legacy-version', 'legacy-generation',
+               'accepted', '["finding"]', ?, ?, ?)`,
+    ).run(
+      "2026-08-12T00:00:00.000Z",
+      "2026-08-12T00:00:00.000Z",
+      "2026-08-12T00:00:00.000Z",
+    );
+    db.prepare(
+      `INSERT INTO sync_state
+       (project_id, project_version_id, entity_kind, accepted_generation_id,
+        last_pull)
+       VALUES ('legacy-platform-project', 'legacy-version', 'finding',
+               'legacy-generation', '2026-08-12T00:00:00.000Z')`,
+    ).run();
+    registerFindingsRpc(host.bb, db);
+
+    await expect(
+      host.harness.callRpc("cachedProjectVersions", {
+        projectId: "legacy-workspace-project",
+      }),
+    ).resolves.toMatchObject({
+      versions: [
+        {
+          platformProjectId: "legacy-platform-project",
+          projectVersionId: "legacy-version",
+        },
+      ],
+    });
+    expect(
+      db
+        .prepare(
+          `SELECT platform_project_id
+             FROM workspace_platform_project_binding
+            WHERE workspace_project_id = ?`,
+        )
+        .pluck()
+        .all("legacy-workspace-project"),
+    ).toEqual(["legacy-platform-project"]);
   });
 
   it("resolves every stable-key collision and rejects invalid keys before DB access", async () => {

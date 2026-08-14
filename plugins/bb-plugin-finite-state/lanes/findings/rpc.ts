@@ -9,6 +9,10 @@ import {
   VEX_RESPONSES,
   VEX_STATUSES,
 } from "../../lib/remote/types.js";
+import {
+  backfillUnambiguousWorkspaceProjectBinding,
+  WORKSPACE_PLATFORM_PROJECT_PREDICATE,
+} from "../../lib/store/project-scope.js";
 import { listFindingActivity } from "./cache/activity.js";
 import {
   commentMutationAuthorizationUnavailable,
@@ -1074,16 +1078,17 @@ export function registerFindingsRpc(
     },
     async cachedProjectVersions(input) {
       await projectSource(bb, input.projectId);
+      backfillUnambiguousWorkspaceProjectBinding(db, input.projectId);
       const rows = db
         .prepare(
-          `SELECT project_id, project_version_id, MAX(last_pull) AS as_of,
-                MAX(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS stale
-           FROM sync_state
-          WHERE project_id = ?
-            AND entity_kind = 'finding'
-            AND accepted_generation_id IS NOT NULL
-          GROUP BY project_id, project_version_id
-          ORDER BY as_of DESC, project_version_id ASC`,
+          `SELECT s.project_id, s.project_version_id, MAX(s.last_pull) AS as_of,
+                MAX(CASE WHEN s.error IS NOT NULL THEN 1 ELSE 0 END) AS stale
+           FROM sync_state s
+          WHERE ${WORKSPACE_PLATFORM_PROJECT_PREDICATE}
+            AND s.entity_kind = 'finding'
+            AND s.accepted_generation_id IS NOT NULL
+          GROUP BY s.project_id, s.project_version_id
+          ORDER BY as_of DESC, s.project_id ASC, s.project_version_id ASC`,
         )
         .all(input.projectId) as Array<{
         project_id: string;

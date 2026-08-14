@@ -144,11 +144,11 @@ describe("registered findings realtime boundary", () => {
           panel,
           { subPath: "" },
           {
-            context: { projectId: platformProjectId },
+            context: { projectId: "bb-project-fs140" },
             sidebarThreads: {
               status: "ready",
               projects: [
-                { id: platformProjectId, name: "FS-140", isPersonal: false },
+                { id: "bb-project-fs140", name: "FS-140", isPersonal: false },
               ],
             },
             rpc: {
