@@ -11,7 +11,10 @@ import type {
   Json,
   RemoteServices,
 } from "../../lib/remote/types.js";
-import { BENCH_DISPATCH_RECONCILED_CODE } from "./ambiguity.js";
+import {
+  BENCH_DISPATCH_RECONCILIATION_FAILED_CODE,
+  BENCH_DISPATCH_RECONCILED_CODE,
+} from "./ambiguity.js";
 import { registerActionTools } from "../agentic/tools/actions.js";
 import {
   openManifest,
@@ -224,22 +227,47 @@ describe("registered bench agent action", () => {
       mode: "pen_failure" as const,
       expectedInitialJobId: "dynamic-live-1",
       expectedPenCalls: 1,
+      reconciliationFailures: 0,
+      expectedReconciliationAttempts: 1,
+      enqueueFailure: false,
     },
     {
       name: "verify dispatch returns no parseable job id",
       mode: "malformed_verify" as const,
       expectedInitialJobId: null,
       expectedPenCalls: 0,
+      reconciliationFailures: 0,
+      expectedReconciliationAttempts: 1,
+      enqueueFailure: false,
     },
     {
       name: "verify transport fails after Forge accepts the job",
       mode: "verify_transport" as const,
       expectedInitialJobId: null,
       expectedPenCalls: 0,
+      reconciliationFailures: 1,
+      expectedReconciliationAttempts: 2,
+      enqueueFailure: false,
+    },
+    {
+      name: "the reconciliation task cannot be queued",
+      mode: "verify_transport" as const,
+      expectedInitialJobId: null,
+      expectedPenCalls: 0,
+      reconciliationFailures: 0,
+      expectedReconciliationAttempts: 0,
+      enqueueFailure: true,
     },
   ])(
     "preserves ambiguity when $name",
-    async ({ mode, expectedInitialJobId, expectedPenCalls }) => {
+    async ({
+      mode,
+      expectedInitialJobId,
+      expectedPenCalls,
+      reconciliationFailures,
+      expectedReconciliationAttempts,
+      enqueueFailure,
+    }) => {
       const root = await mkdtemp(join(tmpdir(), "fs-agent-bench-ambiguous-"));
       roots.push(root);
       const artifactHash = await writeReadyMount(root);
@@ -357,11 +385,14 @@ describe("registered bench agent action", () => {
       const penTestRun = vi.fn(async () => {
         throw new Error("pen-test dispatch transport closed");
       });
+      let reconciliationFailuresRemaining = reconciliationFailures;
+      const reconciliationStatesSeenDuringSleep: unknown[] = [];
       let reconciliationTask:
         | { run(signal: AbortSignal): Promise<void> }
         | undefined;
       const jobQueue = {
         enqueue: vi.fn((task: { run(signal: AbortSignal): Promise<void> }) => {
+          if (enqueueFailure) throw new Error("bench queue unavailable");
           reconciliationTask = task;
         }),
         take: vi.fn(async () => {
@@ -391,7 +422,23 @@ describe("registered bench agent action", () => {
               remote,
               queue,
             ),
-            scheduler: { sleep: async () => undefined },
+            scheduler: {
+              sleep: async () => {
+                const current = ctx
+                  .db()
+                  .prepare(
+                    "SELECT raw FROM verification_runs WHERE run_id='bench-ambiguous-1'",
+                  )
+                  .get() as { raw: string } | undefined;
+                if (current) {
+                  reconciliationStatesSeenDuringSleep.push(
+                    (JSON.parse(current.raw) as Record<string, unknown>)[
+                      "reconciliationState"
+                    ],
+                  );
+                }
+              },
+            },
             hostProbe: {
               inspect: async () => ({
                 allowPentest: true,
@@ -404,12 +451,17 @@ describe("registered bench agent action", () => {
               verifyDynamic,
               penTestRun,
               getJobStatus: vi.fn(async () => acceptedJob),
-              listJobs() {
+              listJobs(input) {
                 return {
                   async *[Symbol.asyncIterator]() {
+                    if (verifyIssued && reconciliationFailuresRemaining > 0) {
+                      reconciliationFailuresRemaining -= 1;
+                      throw new Error("transient list_jobs outage");
+                    }
+                    const matchesTool = input?.tool === acceptedJob.tool;
                     yield {
-                      items: verifyIssued ? [acceptedJob] : [],
-                      total: verifyIssued ? 1 : 0,
+                      items: verifyIssued && matchesTool ? [acceptedJob] : [],
+                      total: verifyIssued && matchesTool ? 1 : 0,
                       next: null,
                     };
                   },
@@ -475,6 +527,25 @@ describe("registered bench agent action", () => {
         finished_at: string | null;
         raw: string;
       };
+      expect(verifyDynamic).toHaveBeenCalledTimes(1);
+      expect(penTestRun).toHaveBeenCalledTimes(expectedPenCalls);
+      expect(jobQueue.enqueue).toHaveBeenCalledTimes(1);
+      if (enqueueFailure) {
+        expect(row).toMatchObject({
+          status: "failed",
+          job_id: expectedInitialJobId,
+          finished_at: expect.any(String),
+        });
+        expect(JSON.parse(row.raw)).toMatchObject({
+          dispatchAmbiguous: true,
+          reconciliationState: "terminal",
+          reconciliationError: "bench queue unavailable",
+          failureCode: BENCH_DISPATCH_RECONCILIATION_FAILED_CODE,
+          failureReason: expect.stringMatching(/do not dispatch a duplicate/iu),
+        });
+        expect(reconciliationTask).toBeUndefined();
+        return;
+      }
       expect(row).toMatchObject({
         status: "running",
         job_id: expectedInitialJobId,
@@ -485,9 +556,6 @@ describe("registered bench agent action", () => {
         failureCode: "FORGE_DISPATCH_AMBIGUOUS",
         jobIds: expectedInitialJobId === null ? [] : [expectedInitialJobId],
       });
-      expect(verifyDynamic).toHaveBeenCalledTimes(1);
-      expect(penTestRun).toHaveBeenCalledTimes(expectedPenCalls);
-      expect(jobQueue.enqueue).toHaveBeenCalledTimes(1);
       if (!reconciliationTask) {
         throw new Error("Expected ambiguity reconciliation task");
       }
@@ -512,9 +580,13 @@ describe("registered bench agent action", () => {
       expect(JSON.parse(reconciled.raw)).toMatchObject({
         dispatchAmbiguous: false,
         reconciliationState: "terminal",
+        reconciliationAttempts: expectedReconciliationAttempts,
         reconciledJobIds: ["dynamic-live-1"],
         failureCode: BENCH_DISPATCH_RECONCILED_CODE,
       });
+      if (reconciliationFailures > 0) {
+        expect(reconciliationStatesSeenDuringSleep).toContain("retry_required");
+      }
     },
   );
 });
