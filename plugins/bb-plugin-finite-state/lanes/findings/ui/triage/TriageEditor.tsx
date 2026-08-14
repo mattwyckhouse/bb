@@ -67,6 +67,7 @@ export function TriageEditor({
   onReload(): void;
 }): React.JSX.Element {
   const validation = validateTriageDraft(draft);
+  const validationMessage = validation.ok ? null : validation.message;
   const [showCompare, setShowCompare] = useState(false);
   const [submitFeedback, setSubmitFeedback] = useState<string | null>(null);
   const exactPin = draft.justification === "CODE_NOT_REACHABLE";
@@ -368,6 +369,8 @@ export function TriageEditor({
             </p>
           ) : null}
           {submitFeedback &&
+          submitFeedback !== commitBlockedReason &&
+          submitFeedback !== validationMessage &&
           (pending ||
             Boolean(commitBlockedReason) ||
             !reasonConfirmed ||

@@ -136,7 +136,7 @@ afterEach(() => cleanup());
 async function renderFlow(
   options: {
     write?: (input: Record<string, unknown>) => unknown;
-    undo?: () => unknown;
+    undo?: (input: Record<string, unknown>) => unknown;
     read?: (input: Record<string, unknown>) => unknown;
     findings?: ReturnType<typeof finding>[];
     catalogAvailable?: () => boolean;
@@ -223,8 +223,8 @@ async function renderFlow(
             }
           );
         },
-        triageDecisionUndo: () =>
-          options.undo?.() ?? {
+        triageDecisionUndo: (input) =>
+          options.undo?.(input as Record<string, unknown>) ?? {
             file: ".fs/triage/finding-0.yaml",
             afterSha256: SHA_A,
           },
@@ -370,6 +370,30 @@ describe("manual triage flow", () => {
     expect(
       within(editor).getByText("The local writer returned no result."),
     ).toBeTruthy();
+  });
+
+  it("surfaces a thrown registered-writer failure and preserves the draft", async () => {
+    const slot = await renderFlow({
+      write: () => {
+        throw new Error("Filesystem denied the local YAML write");
+      },
+    });
+    fireEvent.keyDown(window, { key: "e" });
+    const editor = await slot.findByRole("form", { name: /Triage/u });
+    confirmEditor(editor, "Keep this reviewed rationale after failure");
+    fireEvent.click(
+      within(editor).getByRole("button", { name: /Write YAML/u }),
+    );
+
+    expect(
+      await within(editor).findByText("This decision was not written"),
+    ).toBeTruthy();
+    expect(
+      within(editor).getByText("Filesystem denied the local YAML write"),
+    ).toBeTruthy();
+    expect(
+      (within(editor).getByLabelText("Reason") as HTMLTextAreaElement).value,
+    ).toBe("Keep this reviewed rationale after failure");
   });
 
   it("preserves bulk successes, lists individual failures, and retries only failures", async () => {
@@ -587,7 +611,7 @@ describe("manual triage flow", () => {
     ).toHaveLength(0);
   });
 
-  it("disables Write YAML with a visible reason when a bulk draft loses its resolved scope", async () => {
+  it("retains a bulk draft's resolved scope across catalog loss and recovery", async () => {
     let catalogAvailable = true;
     const slot = await renderFlow({ catalogAvailable: () => catalogAvailable });
     fireEvent.click(slot.getByRole("button", { name: "Select all 3" }));
@@ -596,30 +620,89 @@ describe("manual triage flow", () => {
     const editor = await slot.findByRole("form", {
       name: /3 local overlay identities/u,
     });
+    fireEvent.change(within(editor).getByLabelText("Reason"), {
+      target: { value: "Reviewed every selected finding locally" },
+    });
+    fireEvent.change(within(editor).getByLabelText("Evidence reviewed"), {
+      target: { value: "Reviewed the evidence for every selected row" },
+    });
+    fireEvent.click(within(editor).getByRole("checkbox"));
+    const write = within(editor).getByRole("button", { name: /Write YAML/u });
+    expect((write as HTMLButtonElement).disabled).toBe(false);
+    expect(
+      slot.inspection.rpcCalls.filter(
+        (call) => call.method === "triageTargetsRead",
+      ),
+    ).toHaveLength(2);
 
     catalogAvailable = false;
     await slot.behavior.emitRealtime("findings:changed", {
       projectVersionId: "different-version",
     });
 
-    const write = within(editor).getByRole("button", { name: /Write YAML/u });
     await waitFor(() =>
-      expect((write as HTMLButtonElement).disabled).toBe(true),
+      expect((write as HTMLButtonElement).disabled).toBe(false),
     );
     expect(
-      within(editor)
-        .getAllByRole("alert")
-        .some((alert) =>
-          /no resolved project and version scope/u.test(
-            alert.textContent ?? "",
-          ),
-        ),
-    ).toBe(true);
+      slot.queryByText(/no resolved project and version scope/u),
+    ).toBeNull();
+
+    catalogAvailable = true;
+    await slot.behavior.emitRealtime("findings:changed", {
+      projectVersionId: "version-1",
+    });
+    await waitFor(() =>
+      expect(slot.getByText(/Local triage ready/u)).toBeTruthy(),
+    );
+    expect((write as HTMLButtonElement).disabled).toBe(false);
+    expect(
+      slot.queryByText(/no resolved project and version scope/u),
+    ).toBeNull();
     expect(
       slot.inspection.rpcCalls.filter(
         (call) => call.method === "triageDecisionsWrite",
       ),
     ).toHaveLength(0);
+  });
+
+  it("undoes with the captured write scope after the live catalog becomes unresolved", async () => {
+    let catalogAvailable = true;
+    const undo = vi.fn(() => ({
+      file: ".fs/triage/finding-0.yaml",
+      afterSha256: SHA_A,
+    }));
+    const slot = await renderFlow({
+      catalogAvailable: () => catalogAvailable,
+      undo,
+    });
+    fireEvent.keyDown(window, { key: "e" });
+    const editor = await slot.findByRole("form", { name: /Triage/u });
+    confirmEditor(editor);
+
+    catalogAvailable = false;
+    await slot.behavior.emitRealtime("findings:changed", {
+      projectVersionId: "different-version",
+    });
+    fireEvent.click(
+      within(editor).getByRole("button", { name: /Write YAML/u }),
+    );
+    await waitFor(() =>
+      expect(slot.queryByRole("form", { name: /Triage/u })).toBeNull(),
+    );
+
+    fireEvent.keyDown(window, { key: "u" });
+    await waitFor(() => expect(undo).toHaveBeenCalledTimes(1));
+    expect(undo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceProjectId: "workspace-project-1",
+        platformProjectId: "platform-project-1",
+        projectVersionId: "version-1",
+        findingId: "finding-0",
+        stableKey: "stable-0",
+      }),
+    );
+    expect(slot.getByText(/Undid the last local decision/u)).toBeTruthy();
+    expect(slot.queryByText(/There is no local decision to undo/u)).toBeNull();
   });
 
   it("refreshes the CAS base across a 20-item chunk boundary", async () => {
@@ -906,10 +989,9 @@ describe("manual triage flow", () => {
       expect(slot.queryByRole("form", { name: /Triage/u })).toBeNull(),
     );
     fireEvent.keyDown(window, { key: "u" });
-    expect(
-      await slot.findByText(
-        /Undo refused: Triage overlay changed concurrently/u,
-      ),
-    ).toBeTruthy();
+    const alert = await slot.findByRole("alert");
+    expect(alert.textContent).toMatch(
+      /Undo refused: Triage overlay changed concurrently/u,
+    );
   });
 });

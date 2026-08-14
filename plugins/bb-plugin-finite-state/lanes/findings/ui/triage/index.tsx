@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
 import { useRpc } from "@bb/plugin-sdk/app";
@@ -36,6 +36,7 @@ interface ScopedTriageTarget {
 }
 
 interface UndoEntry {
+  scope: TriageScope;
   target: TriageTarget;
   token: UndoToken;
   rpcToken: RpcUndoToken;
@@ -43,6 +44,8 @@ interface UndoEntry {
 
 const WRITE_CHUNK = 20;
 const TARGET_PAGE = 25;
+const UNRESOLVED_DRAFT_SCOPE =
+  "This draft has no resolved project and version scope. Choose an accepted findings version to continue.";
 
 function selectedCount(selection: FindingSelection): number {
   return selection.mode === "explicit"
@@ -139,6 +142,7 @@ export function FindingsTriage({
   const [reasonConfirmed, setReasonConfirmed] = useState(false);
   const [pending, setPending] = useState(false);
   const [writeError, setWriteError] = useState<TriageWriteError | null>(null);
+  const [undoError, setUndoError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState(
     "Findings shortcuts ready. Press question mark for the keyboard map.",
   );
@@ -252,10 +256,15 @@ export function FindingsTriage({
   );
 
   const rememberUndo = useCallback(
-    (write: Extract<WriteResult, { success: true }>, exact: TriageTarget) => {
+    (
+      write: Extract<WriteResult, { success: true }>,
+      exact: TriageTarget,
+      scope: TriageScope,
+    ) => {
       const token: UndoToken = write.undo;
       undoStack.current.push(token);
       undoEntries.current.set(token, {
+        scope,
         token,
         rpcToken: write.undo,
         target: exact,
@@ -265,28 +274,16 @@ export function FindingsTriage({
   );
 
   const commitSingle = useCallback(
-    async (currentDraft: TriageDraft, currentTarget: TriageTarget) => {
-      if (!singleScope) {
-        const message =
-          "This draft has no resolved project and version scope. Cancel it, choose an accepted findings version, and reopen triage.";
-        setWriteError({ kind: "write", message, file: currentTarget.file });
-        setAnnouncement(`Local YAML was not written: ${message}`);
-        return;
-      }
-      const validation = validateTriageDraft(currentDraft);
-      if (!validation.ok || !reasonConfirmed) {
-        const message = validation.ok
-          ? "Confirm that you reviewed the reason and evidence before writing YAML."
-          : validation.message;
-        setWriteError({ kind: "write", message, file: currentTarget.file });
-        setAnnouncement(`Local YAML was not written: ${message}`);
-        return;
-      }
+    async (
+      currentDraft: TriageDraft,
+      currentTarget: TriageTarget,
+      scope: TriageScope,
+    ) => {
       setPending(true);
       setWriteError(null);
       try {
         const response = await rpc.call("triageDecisionsWrite", {
-          ...singleScope,
+          ...scope,
           decisions: [
             {
               findingId: currentTarget.findingId,
@@ -312,7 +309,7 @@ export function FindingsTriage({
           });
           return;
         }
-        rememberUndo(result, currentTarget);
+        rememberUndo(result, currentTarget, scope);
         setAnnouncement(
           `${currentDraft.status.replaceAll("_", " ")} written locally for ${currentTarget.label}. Cursor advanced.`,
         );
@@ -333,7 +330,7 @@ export function FindingsTriage({
         setPending(false);
       }
     },
-    [advance, onCommitted, reasonConfirmed, rememberUndo, rpc, singleScope],
+    [advance, onCommitted, rememberUndo, rpc],
   );
 
   const reloadTarget = useCallback(async () => {
@@ -364,25 +361,57 @@ export function FindingsTriage({
     }
   }, [readExactTarget, rows, target]);
 
+  useEffect(() => {
+    if (!draft || !target || singleScope || !scopeReady) return;
+    const row = rows.find(
+      (candidate) => candidate.findingId === target.findingId,
+    );
+    if (!row) return;
+    let cancelled = false;
+    void readExactTarget(row)
+      .then(({ scope, target: recovered }) => {
+        if (cancelled) return;
+        setTarget(recovered);
+        setSingleScope(scope);
+        setWriteError(null);
+        setAnnouncement(
+          `Recovered the project and version scope for ${recovered.label}; your draft was preserved.`,
+        );
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const message =
+          error instanceof Error
+            ? error.message
+            : "The draft scope could not be recovered.";
+        setWriteError({ kind: "write", message, file: target.file });
+        setAnnouncement(`Draft scope recovery failed: ${message}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [draft, readExactTarget, rows, scopeReady, singleScope, target]);
+
   const undo = useCallback(async () => {
     const token = undoStack.current.peek();
     const entry = token ? undoEntries.current.get(token) : null;
-    if (
-      !token ||
-      !entry ||
-      !workspaceProjectId ||
-      !platformProjectId ||
-      !projectVersionId
-    ) {
+    if (!token) {
+      setUndoError(null);
       setAnnouncement("There is no local decision to undo in this session.");
       return;
     }
+    if (!entry) {
+      const message =
+        "The last local decision has no saved undo scope. Its YAML was not changed.";
+      setUndoError(message);
+      setAnnouncement(`Undo was not attempted: ${message}`);
+      return;
+    }
     setPending(true);
+    setUndoError(null);
     try {
       await rpc.call("triageDecisionUndo", {
-        workspaceProjectId,
-        platformProjectId,
-        projectVersionId,
+        ...entry.scope,
         findingId: entry.target.findingId,
         stableKey: entry.target.stableKey,
         token: entry.rpcToken,
@@ -392,21 +421,16 @@ export function FindingsTriage({
       setAnnouncement(
         `Undid the last local decision for ${entry.target.label}.`,
       );
+      setUndoError(null);
       onCommitted();
     } catch (error) {
-      setAnnouncement(
-        `Undo refused: ${error instanceof Error ? error.message : "the file changed after the decision"}. The newer YAML was preserved.`,
-      );
+      const message = `Undo refused: ${error instanceof Error ? error.message : "the file changed after the decision"}. The newer YAML was preserved.`;
+      setUndoError(message);
+      setAnnouncement(message);
     } finally {
       setPending(false);
     }
-  }, [
-    onCommitted,
-    platformProjectId,
-    projectVersionId,
-    rpc,
-    workspaceProjectId,
-  ]);
+  }, [onCommitted, rpc]);
 
   const move = useCallback(
     (delta: -1 | 1) => {
@@ -524,7 +548,7 @@ export function FindingsTriage({
         const exact = scoped.target;
         setPreparedBulk({ selection, targets });
         setTarget(exact);
-        setSingleScope(null);
+        setSingleScope(scoped.scope);
         setDraft(draftFor(exact, status, false));
         setReasonConfirmed(false);
         setAnnouncement(
@@ -654,6 +678,11 @@ export function FindingsTriage({
       if (!draft) throw new Error("Bulk triage draft is no longer available.");
       if (!workspaceProjectId || !platformProjectId || !projectVersionId)
         throw new Error("Choose a findings scope before bulk triage.");
+      const scope = {
+        workspaceProjectId,
+        platformProjectId,
+        projectVersionId,
+      };
       const failures: BulkFailure[] = [...preservedFailures];
       const retryTargets: TriageTarget[] = [];
       let successes = 0;
@@ -665,9 +694,7 @@ export function FindingsTriage({
         if (refreshed.targets.length > 0) {
           try {
             const response = await rpc.call("triageDecisionsWrite", {
-              workspaceProjectId,
-              platformProjectId,
-              projectVersionId,
+              ...scope,
               decisions: refreshed.targets.map((exact) => ({
                 findingId: exact.findingId,
                 stableKey: exact.stableKey,
@@ -697,7 +724,7 @@ export function FindingsTriage({
                 retryTargets.push(exact);
               } else if (result.success) {
                 successes += 1;
-                rememberUndo(result, exact);
+                rememberUndo(result, exact, scope);
               } else {
                 failures.push({
                   findingId: result.findingId,
@@ -868,12 +895,18 @@ export function FindingsTriage({
           Shortcuts <kbd className="font-mono">?</kbd>
         </Button>
       </div>
+      {undoError ? (
+        <div
+          className="border-b border-destructive/40 bg-muted px-3 py-2 text-xs text-destructive"
+          role="alert"
+        >
+          {undoError}
+        </div>
+      ) : null}
       {draft && target ? (
         <TriageEditor
           commitBlockedReason={
-            count === 0 && !singleScope
-              ? "This draft has no resolved project and version scope. Cancel it, choose an accepted findings version, and reopen triage."
-              : null
+            count === 0 && !singleScope ? UNRESOLVED_DRAFT_SCOPE : null
           }
           draft={draft}
           error={writeError}
@@ -899,9 +932,20 @@ export function FindingsTriage({
                     void confirmBulk(false);
                   }
                 : requestBulkConfirmation
-              : () => {
-                  void commitSingle(draft, target);
-                }
+              : singleScope
+                ? () => {
+                    void commitSingle(draft, target, singleScope);
+                  }
+                : () => {
+                    setWriteError({
+                      kind: "write",
+                      message: UNRESOLVED_DRAFT_SCOPE,
+                      file: target.file,
+                    });
+                    setAnnouncement(
+                      `Local YAML was not written: ${UNRESOLVED_DRAFT_SCOPE}`,
+                    );
+                  }
           }
           onReasonConfirmed={(confirmed) => {
             setBulkConfirming(false);

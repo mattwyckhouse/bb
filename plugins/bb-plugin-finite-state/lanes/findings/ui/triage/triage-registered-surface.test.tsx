@@ -305,6 +305,10 @@ describe("bulk triage registered surface", () => {
             findingsUiRpcContract.triageDecisionsWrite.output.parse(
               await host.harness.callRpc("triageDecisionsWrite", input),
             ),
+          triageDecisionUndo: async (input) =>
+            findingsUiRpcContract.triageDecisionUndo.output.parse(
+              await host.harness.callRpc("triageDecisionUndo", input),
+            ),
         },
       },
     );
@@ -346,5 +350,28 @@ describe("bulk triage registered surface", () => {
     expect(
       slot.queryByText(/no resolved project and version scope/u),
     ).toBeNull();
+
+    fireEvent.keyDown(window, { key: "u" });
+    await waitFor(() =>
+      expect(
+        slot.inspection.rpcCalls.filter(
+          (call) => call.method === "triageDecisionUndo",
+        ),
+      ).toHaveLength(1),
+    );
+    const rpcUndo = slot.inspection.rpcCalls.find(
+      (call) => call.method === "triageDecisionUndo",
+    );
+    expect(rpcUndo?.input).toMatchObject({
+      workspaceProjectId: "workspace-project-1",
+      platformProjectId: "platform-project-1",
+      projectVersionId: "version-1",
+    });
+    await waitFor(async () =>
+      expect(await readFile(written, "utf8").catch(() => "")).not.toContain(
+        "status: EXPLOITABLE",
+      ),
+    );
+    expect(slot.getByText(/Undid the last local decision/u)).toBeTruthy();
   });
 });
