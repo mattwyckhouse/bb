@@ -187,6 +187,47 @@ describe("SBOM vulnerability rollup", () => {
     db.close();
   });
 
+  it("attributes one purl-less finding to every accepted-slice alias claimant", () => {
+    const db = createDb();
+    seedGeneration(db);
+    const name = "zlib";
+    const keys = ["pkg:npm/zlib@1", "pkg:generic/zlib@1"].map((purl) =>
+      componentKeyFromIdentity({ purl, name, group: null, version: "1" }),
+    );
+    const insert = db.prepare(
+      `INSERT INTO sbom_components
+        (project_id, project_version_id, generation_id, component_id,
+         component_key, purl, name, version, raw, pulled_at)
+       VALUES ('p', 'v', 'sbom-g', ?, ?, ?, ?, '1', '{}', 'now')`,
+    );
+    insert.run("npm-zlib", keys[0], "pkg:npm/zlib@1", name);
+    insert.run("generic-zlib", keys[1], "pkg:generic/zlib@1", name);
+    db.prepare(
+      `INSERT INTO findings
+        (project_id, project_version_id, generation_id, finding_id, stable_key,
+         component_name, component_version, component_purl, severity,
+         reachability_score, raw, pulled_at)
+       VALUES ('p', 'v', 'finding-g', 'shared-finding', 'stable-shared',
+               ?, '1', NULL, 'critical', -1, '{}', 'now')`,
+    ).run(name);
+
+    expect(recomputeVulnRollup(db, "v")).toBe(2);
+    expect(
+      db
+        .prepare<[], { component_key: string; critical: number }>(
+          `SELECT component_key, critical
+             FROM sbom_vuln_rollup
+            ORDER BY component_key`,
+        )
+        .all(),
+    ).toEqual(
+      [...keys]
+        .sort()
+        .map((componentKey) => ({ component_key: componentKey, critical: 1 })),
+    );
+    db.close();
+  });
+
   it("materializes finding keys once and recomputes a 10k-component rollup within budget", () => {
     const db = createDb();
     seedGeneration(db);

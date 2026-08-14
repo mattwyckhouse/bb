@@ -172,6 +172,8 @@ describe("registered SBOM pull surfaces", () => {
         { projectId: "bb-project-fs172", threadId: "thread-fs172" },
       );
 
+      // The sync engine rejects before acceptance unless the puller's
+      // quarantined count equals sync_state.staged_quarantined.
       expect(pulled).toMatchObject({ exitCode: 0, stderr: "" });
       expect(JSON.parse(pulled.stdout)).toMatchObject({
         kinds: {

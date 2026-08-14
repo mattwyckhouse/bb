@@ -103,7 +103,11 @@ function installComponentKeyFunction(db: Database.Database): void {
   );
 }
 
-/** Rebuilds one accepted SBOM generation from the separately accepted findings cache. */
+/**
+ * Rebuilds one accepted SBOM generation from the separately accepted findings
+ * cache. A purl-less finding is intentionally attributed to every component
+ * in the accepted slice that claims its fallback alias.
+ */
 export function recomputeVulnRollup(
   db: Database.Database,
   projectVersionId: string,

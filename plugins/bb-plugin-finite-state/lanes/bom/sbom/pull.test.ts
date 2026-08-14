@@ -6,7 +6,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PlatformClient } from "../../../lib/remote/platform/client.js";
 import { MIGRATIONS } from "../../../lib/store/schema.js";
-import { parseKey } from "../../../lib/sync/registry.js";
+import { findingStableKey, parseKey } from "../../../lib/sync/registry.js";
 import {
   RemoteError,
   type Json,
@@ -156,7 +156,7 @@ const rowA = {
 const rowB = { id: "b", name: "Beta", purl: null, group: "Core", version: "2" };
 
 describe("resumable SBOM pull", () => {
-  it("derives stable keys from captured file paths without drifting accepted identities", () => {
+  it("derives captured path keys and pins the legacy compatibility boundary", () => {
     const normalized = normalizeComponent({
       id: "firmware-path-row",
       name: "bin/busybox",
@@ -203,6 +203,38 @@ describe("resumable SBOM pull", () => {
       "core",
       "2",
     ]);
+    expect(
+      componentKeyFromIdentity({
+        purl: "pkg:generic/busybox@1.36",
+        name: "ignored-path/name",
+        group: "ignored group",
+        version: "ignored",
+      }),
+    ).toBe(
+      findingStableKey({
+        cve: "SBOM-COMPONENT",
+        purl: "pkg:generic/busybox@1.36",
+        name: "purl-identified-component",
+        group: null,
+        version: null,
+      }),
+    );
+    const legacyEscapedGroup = findingStableKey({
+      cve: "SBOM-COMPONENT",
+      purl: null,
+      name: "kernel",
+      group: "日本",
+      version: "1",
+    });
+    const canonicalEscapedGroup = componentKeyFromIdentity({
+      purl: null,
+      name: "kernel",
+      group: "日本",
+      version: "1",
+    });
+    expect(parseKey(legacyEscapedGroup)[4]).toBe("日本");
+    expect(parseKey(canonicalEscapedGroup)[4]).toBe("%e6%97%a5%e6%9c%ac");
+    expect(canonicalEscapedGroup).not.toBe(legacyEscapedGroup);
   });
 
   it("fully drains the audited 900-component Platform iterable and publishes one atomic slice", async () => {
