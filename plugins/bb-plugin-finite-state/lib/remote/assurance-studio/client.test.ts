@@ -1,7 +1,21 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it, vi } from "vitest";
 
-import type { AsEntity } from "../types.js";
+import { diagnoseRemoteFailure } from "../errors.js";
+import { RemoteError, type AsEntity } from "../types.js";
 import { AssuranceStudioClient } from "./client.js";
+
+const errorEnvelopeRoot = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../test/mock-remote/as-error-envelopes",
+);
+
+function loadErrorEnvelope(name: string): unknown {
+  return JSON.parse(readFileSync(join(errorEnvelopeRoot, name), "utf8"));
+}
 
 describe("AssuranceStudioClient review regressions", () => {
   it("treats an X-API-Key scheme mismatch as an immediate auth failure", async () => {
@@ -232,5 +246,153 @@ describe("AssuranceStudioClient review regressions", () => {
         }),
       },
     });
+  });
+});
+
+describe("AssuranceStudioClient HTTP-200 error envelopes (FS-211)", () => {
+  it("refuses captured threat error envelopes without coercing to an empty page", async () => {
+    // Capture: a97db111-98ae-46c0-a1f2-9868c93ae51b--threats.json
+    // (identical twin: c7e5307b-34b6-4979-b3a1-eb2274890781--threats.json)
+    const body = loadErrorEnvelope("threats-failed.json");
+    expect(body).toEqual({ error: "Failed to fetch threats" });
+    const fetch = vi.fn(async () => Response.json(body, { status: 200 }));
+    const client = new AssuranceStudioClient({
+      baseUrl: "https://as.example",
+      apiKey: "as-secret",
+      fetch,
+    });
+
+    const iterator = client
+      .listEntities("threat", { projectId: "project-error" })
+      [Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toMatchObject({
+      code: "AS_REMOTE_REPORTED_ERROR",
+      status: 200,
+      retryable: false,
+      message: "Assurance Studio reported an error: Failed to fetch threats",
+      details: { error: "Failed to fetch threats" },
+    });
+  });
+
+  it("classifies captured threat/requirements error envelopes as http, never unreachable or auth", async () => {
+    const cases = [
+      {
+        fixture: "threats-failed.json",
+        kind: "threat" as const,
+        // Capture: a97db111-98ae-46c0-a1f2-9868c93ae51b--threats.json
+        message: "Assurance Studio reported an error: Failed to fetch threats",
+        details: { error: "Failed to fetch threats" },
+      },
+      {
+        fixture: "requirements-bad-request.json",
+        kind: "requirement" as const,
+        // Capture: 54a35838-465a-4d22-8f8b-36a1e25237c5--requirements.json
+        message:
+          "Assurance Studio reported an error: Failed to fetch requirements: Bad Request",
+        details: {
+          error: "Failed to fetch requirements",
+          details: "Bad Request",
+        },
+      },
+      {
+        fixture: "requirements-414-cloudflare.json",
+        kind: "requirement" as const,
+        // Capture: c7e5307b-34b6-4979-b3a1-eb2274890781--requirements.json
+        messageIncludes: "414 Request-URI Too Large",
+        detailsError: "Failed to fetch requirements",
+      },
+    ] as const;
+
+    for (const entry of cases) {
+      const body = loadErrorEnvelope(entry.fixture);
+      const fetch = vi.fn(async () => Response.json(body, { status: 200 }));
+      const client = new AssuranceStudioClient({
+        baseUrl: "https://as.example",
+        apiKey: "as-secret",
+        fetch,
+      });
+      let thrown: unknown;
+      try {
+        for await (const _page of client.listEntities(entry.kind, {
+          projectId: "project-error",
+        })) {
+          throw new Error("error envelope must not yield pages");
+        }
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(RemoteError);
+      expect(thrown).toMatchObject({
+        code: "AS_REMOTE_REPORTED_ERROR",
+        status: 200,
+        retryable: false,
+      });
+      if ("message" in entry) {
+        expect(thrown).toMatchObject({
+          message: entry.message,
+          details: entry.details,
+        });
+      } else {
+        expect(String((thrown as RemoteError).message)).toContain(
+          entry.messageIncludes,
+        );
+        expect(thrown).toMatchObject({
+          details: { error: entry.detailsError },
+        });
+      }
+      const diagnostic = diagnoseRemoteFailure(thrown);
+      expect(diagnostic.kind).toBe("http");
+      expect(diagnostic.status).toBe(200);
+      expect(diagnostic.message).toContain("Failed to fetch");
+      expect(diagnostic.credential).toBeNull();
+      client.close();
+    }
+  });
+
+  it("still drains successful per-kind envelopes after an error-envelope sibling fails", async () => {
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/threats")) {
+        return Response.json(loadErrorEnvelope("threats-failed.json"), {
+          status: 200,
+        });
+      }
+      // Live requirements success shape: data.requirements (FS-207 corpus).
+      return Response.json({
+        success: true,
+        data: {
+          requirements: [
+            {
+              id: "req-1",
+              project_id: "project-mixed",
+              requirement_id: "REQ-1",
+            },
+          ],
+          total: 1,
+        },
+      });
+    });
+    const client = new AssuranceStudioClient({
+      baseUrl: "https://as.example",
+      apiKey: "as-secret",
+      fetch,
+    });
+
+    await expect(
+      client
+        .listEntities("threat", { projectId: "project-mixed" })
+        [Symbol.asyncIterator]()
+        .next(),
+    ).rejects.toMatchObject({ code: "AS_REMOTE_REPORTED_ERROR", status: 200 });
+
+    const requirements: AsEntity[] = [];
+    for await (const page of client.listEntities("requirement", {
+      projectId: "project-mixed",
+    })) {
+      requirements.push(...page.items);
+    }
+    expect(requirements).toEqual([
+      expect.objectContaining({ id: "req-1", kind: "requirement" }),
+    ]);
   });
 });

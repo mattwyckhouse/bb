@@ -8,6 +8,7 @@ import {
   unavailableError,
   withRemoteRequestTimeout,
 } from "./errors.js";
+import { RemoteError } from "./types.js";
 
 const request = {
   method: "GET",
@@ -130,6 +131,33 @@ describe("remote failure diagnostics", () => {
     });
     expect(connectionStatusMessage(diagnostic)).toBe(
       "Remote service request failed unexpectedly.",
+    );
+  });
+
+  it("maps HTTP-200 application error envelopes to http, not unreachable or auth", () => {
+    const reported = new RemoteError(
+      "Assurance Studio reported an error: Failed to fetch threats",
+      {
+        service: "assurance-studio",
+        code: "AS_REMOTE_REPORTED_ERROR",
+        status: 200,
+        retryable: false,
+        retryAfterMs: null,
+        details: { error: "Failed to fetch threats" },
+      },
+    );
+
+    expect(diagnoseRemoteFailure(reported)).toEqual({
+      kind: "http",
+      message: "Assurance Studio reported an error: Failed to fetch threats",
+      retryable: false,
+      service: "assurance-studio",
+      status: 200,
+      request: null,
+      credential: null,
+    });
+    expect(connectionStatusMessage(diagnoseRemoteFailure(reported))).toBe(
+      "Assurance Studio request was rejected (HTTP 200).",
     );
   });
 
