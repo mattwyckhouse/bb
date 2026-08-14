@@ -218,7 +218,13 @@ describe("bulk triage registered surface", () => {
       name: "Confirm local writes",
     });
     expect(document.activeElement).toBe(confirm);
-    fireEvent.click(confirm);
+    const activeConfirm = document.activeElement;
+    if (!activeConfirm)
+      throw new Error("bulk confirmation did not receive focus");
+    fireEvent.keyDown(activeConfirm, {
+      key: "Enter",
+      metaKey: true,
+    });
 
     await waitFor(() => expect(writtenFiles.length).toBeGreaterThan(0));
     const yamls = await Promise.all(

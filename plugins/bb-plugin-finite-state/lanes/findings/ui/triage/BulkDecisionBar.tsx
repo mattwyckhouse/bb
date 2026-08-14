@@ -103,6 +103,12 @@ export function BulkDecisionBar({
               autoFocus
               disabled={pending}
               onClick={onConfirm}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey))
+                  return;
+                event.preventDefault();
+                onConfirm();
+              }}
               size="sm"
             >
               {pending ? "Writing…" : "Confirm local writes"}

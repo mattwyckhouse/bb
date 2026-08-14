@@ -433,15 +433,19 @@ describe("manual triage flow", () => {
       key: "Enter",
       metaKey: true,
     });
-    expect(
-      await slot.findByRole("button", { name: "Confirm local writes" }),
-    ).toBeTruthy();
+    const confirm = await slot.findByRole("button", {
+      name: "Confirm local writes",
+    });
+    expect(document.activeElement).toBe(confirm);
     expect(
       slot.inspection.rpcCalls.filter(
         (call) => call.method === "triageDecisionsWrite",
       ),
     ).toHaveLength(0);
-    fireEvent.keyDown(within(editor).getByLabelText("Reason"), {
+    const activeConfirm = document.activeElement;
+    if (!activeConfirm)
+      throw new Error("bulk confirmation did not receive focus");
+    fireEvent.keyDown(activeConfirm, {
       key: "Enter",
       metaKey: true,
     });
@@ -491,13 +495,26 @@ describe("manual triage flow", () => {
     const reason = within(editor).getByLabelText("Reason");
     confirmEditor(editor, "Reviewed every selected finding");
     fireEvent.keyDown(reason, { key: "Enter", metaKey: true });
-    expect(
-      await slot.findByRole("button", { name: "Confirm local writes" }),
-    ).toBeTruthy();
+    const confirm = await slot.findByRole("button", {
+      name: "Confirm local writes",
+    });
+    expect(document.activeElement).toBe(confirm);
+    const activeConfirm = document.activeElement;
+    if (!activeConfirm)
+      throw new Error("bulk confirmation did not receive focus");
 
-    fireEvent.keyDown(reason, { key: "Enter", metaKey: true });
-    fireEvent.keyDown(reason, { key: "Enter", metaKey: true });
-    fireEvent.keyDown(reason, { key: "Enter", metaKey: true });
+    fireEvent.keyDown(activeConfirm, {
+      key: "Enter",
+      metaKey: true,
+    });
+    fireEvent.keyDown(activeConfirm, {
+      key: "Enter",
+      metaKey: true,
+    });
+    fireEvent.keyDown(activeConfirm, {
+      key: "Enter",
+      metaKey: true,
+    });
     await waitFor(() =>
       expect(
         slot.inspection.rpcCalls.filter(
