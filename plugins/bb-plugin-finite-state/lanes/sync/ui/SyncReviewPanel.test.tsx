@@ -44,7 +44,7 @@ class PanelResizeObserver implements ResizeObserver {
   disconnect(): void {}
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   configure({ asyncUtilTimeout: 10_000 });
   installTestPluginRuntime();
   vi.stubGlobal("ResizeObserver", PanelResizeObserver);
@@ -73,9 +73,40 @@ beforeAll(() => {
       typeof options === "number" ? (y ?? 0) : (options?.top ?? 0);
     this.dispatchEvent(new Event("scroll"));
   };
+  // Warm the plugin app graph once so the first case is not a cold-import
+  // lottery under a contended full-suite worker pool (FS-210).
+  await syncPanel();
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  document.body.replaceChildren();
+});
+
+/**
+ * Wait until `getCount()` has been stable for `quietMs`. Used instead of fixed
+ * sleeps when asserting RPC call ceilings after async settlement.
+ */
+async function waitForCallCountQuiet(
+  getCount: () => number,
+  quietMs = 150,
+): Promise<number> {
+  let last = getCount();
+  let quietSince = Date.now();
+  await waitFor(
+    () => {
+      const current = getCount();
+      const now = Date.now();
+      if (current !== last) {
+        last = current;
+        quietSince = now;
+      }
+      expect(now - quietSince).toBeGreaterThanOrEqual(quietMs);
+    },
+    { timeout: 10_000 },
+  );
+  return last;
+}
 
 function cache(state: "fresh" | "stale" | "empty" = "fresh") {
   return {
@@ -303,7 +334,7 @@ describe("Sync review panel", () => {
     const slot = renderSlot(panel, { subPath: "scope//bad" }, { rpc: {} });
     expect(slot.getByText("This Sync route is invalid")).toBeTruthy();
     expect(slot.inspection.rpcCalls).toEqual([]);
-  });
+  }, 60_000);
 
   it.each([
     "scope/platform-project/%40project",
@@ -314,7 +345,9 @@ describe("Sync review panel", () => {
     async (subPath) => {
       const slot = renderSlot(await syncPanel(), { subPath }, { rpc: {} });
 
-      expect(slot.getByText("Choose a project version")).toBeTruthy();
+      expect(
+        await slot.findByRole("heading", { name: "Choose a project version" }),
+      ).toBeTruthy();
       expect(
         slot.getByText(
           "VEX decisions require a Platform project version. Enter a version ID above and apply the scope to review this surface.",
@@ -634,7 +667,14 @@ describe("Sync review panel", () => {
     expect(
       slot.container.querySelectorAll("[data-plan-row]").length,
     ).toBeLessThan(80);
-    await waitFor(() => expect(syncPlan).toHaveBeenCalledTimes(25));
+    await waitFor(() =>
+      expect(syncPlan.mock.calls.length).toBeGreaterThanOrEqual(25),
+    );
+    const settledPlanCalls = await waitForCallCountQuiet(
+      () => syncPlan.mock.calls.length,
+    );
+    // Exactly one drain of 25 pages; refuse silent extra drains under load.
+    expect(settledPlanCalls).toBe(25);
     expect(syncPlan.mock.calls[0]?.[0]).toMatchObject({
       kinds: ["vexDecision"],
       continuation: null,
@@ -767,6 +807,7 @@ describe("Sync review panel", () => {
         "Human push approval is unavailable in the web panel in v1",
       ),
     ).toBeTruthy();
+    stale.lifecycle.unmount();
   });
 
   it("surfaces a typed non-retryable plan failure without offering a retry loop", async () => {
@@ -797,7 +838,12 @@ describe("Sync review panel", () => {
     expect(
       slot.queryByRole("button", { name: "Retry with fresh plan" }),
     ).toBeNull();
-    expect(syncPlan).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(syncPlan.mock.calls.length).toBeGreaterThanOrEqual(1),
+    );
+    expect(await waitForCallCountQuiet(() => syncPlan.mock.calls.length)).toBe(
+      1,
+    );
   });
 
   it("classifies bare and detailed internal plan sentinels as non-retryable", async () => {
@@ -825,7 +871,12 @@ describe("Sync review panel", () => {
     expect(
       pageLimit.queryByRole("button", { name: "Retry with fresh plan" }),
     ).toBeNull();
-    expect(endlessPlan).toHaveBeenCalledTimes(100);
+    await waitFor(() =>
+      expect(endlessPlan.mock.calls.length).toBeGreaterThanOrEqual(100),
+    );
+    expect(
+      await waitForCallCountQuiet(() => endlessPlan.mock.calls.length),
+    ).toBe(100);
     pageLimit.lifecycle.unmount();
 
     let planPage = 0;
@@ -849,7 +900,13 @@ describe("Sync review panel", () => {
         name: "Retry with fresh plan",
       }),
     ).toBeNull();
-    expect(changingPlan).toHaveBeenCalledTimes(2);
+    await waitFor(() =>
+      expect(changingPlan.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+    expect(
+      await waitForCallCountQuiet(() => changingPlan.mock.calls.length),
+    ).toBe(2);
+    changedDuringRead.lifecycle.unmount();
   });
 
   it("offers a truthful escape from a superseded plan deep link", async () => {
@@ -915,6 +972,7 @@ describe("Sync review panel", () => {
       await statusFailure.findByText("Sync status could not be loaded"),
     ).toBeTruthy();
     expect(statusFailure.getByText("SYNC_STATUS_FAILED")).toBeTruthy();
+    statusFailure.lifecycle.unmount();
   });
 
   it("treats realtime payloads as hints and performs one debounced authoritative refetch", async () => {
@@ -927,6 +985,8 @@ describe("Sync review panel", () => {
       },
     );
     await slot.findByText("VEX decision 1");
+    // Let any mount-time refresh identity churn settle before the hint pair.
+    await waitForCallCountQuiet(() => syncPlan.mock.calls.length);
     const callsBeforeRealtimeHint = syncPlan.mock.calls.length;
 
     await slot.behavior.emitRealtime("fs-sync-push", {
@@ -938,8 +998,15 @@ describe("Sync review panel", () => {
     });
 
     await waitFor(() =>
-      expect(syncPlan).toHaveBeenCalledTimes(callsBeforeRealtimeHint + 1),
+      expect(syncPlan.mock.calls.length).toBeGreaterThan(
+        callsBeforeRealtimeHint,
+      ),
     );
+    const settledAfterHint = await waitForCallCountQuiet(
+      () => syncPlan.mock.calls.length,
+    );
+    // Two hints coalesce to exactly one authoritative refetch.
+    expect(settledAfterHint).toBe(callsBeforeRealtimeHint + 1);
     expect(slot.queryByText("PAYLOAD MUST NOT RENDER")).toBeNull();
   });
 
