@@ -19,6 +19,10 @@ import { dispatchTier1, validateDeploymentContext } from "./tier1.js";
 
 const roots: string[] = [];
 
+async function* noForgeJobs() {
+  yield { items: [], total: 0, next: null };
+}
+
 afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
@@ -107,9 +111,14 @@ describe("Tier 1 execution", () => {
     await expect(
       dispatchTier1(
         {
-          forgeCompute: { verifyDynamic, penTestRun },
+          forgeCompute: {
+            verifyDynamic,
+            penTestRun,
+            listJobs: noForgeJobs,
+          },
           firmwareHandshake: { worktreeRoot: fixture.root },
-          onJobsDispatched: vi.fn(),
+          onDispatchIssued: vi.fn(),
+          onJobDispatched: vi.fn(),
           forgeProcess: {
             kind: "plugin_owned_stdio",
             hostId: "host-1",
@@ -162,9 +171,14 @@ describe("Tier 1 execution", () => {
     await expect(
       dispatchTier1(
         {
-          forgeCompute: { verifyDynamic, penTestRun },
+          forgeCompute: {
+            verifyDynamic,
+            penTestRun,
+            listJobs: noForgeJobs,
+          },
           firmwareHandshake: { worktreeRoot: fixture.root },
-          onJobsDispatched: vi.fn(),
+          onDispatchIssued: vi.fn(),
+          onJobDispatched: vi.fn(),
           forgeProcess: {
             kind: "plugin_owned_stdio",
             hostId: "host-1",
@@ -193,9 +207,14 @@ describe("Tier 1 execution", () => {
     await expect(
       dispatchTier1(
         {
-          forgeCompute: { verifyDynamic, penTestRun },
+          forgeCompute: {
+            verifyDynamic,
+            penTestRun,
+            listJobs: noForgeJobs,
+          },
           firmwareHandshake: { worktreeRoot: fixture.root },
-          onJobsDispatched: vi.fn(),
+          onDispatchIssued: vi.fn(),
+          onJobDispatched: vi.fn(),
           forgeProcess: {
             kind: "remote",
             reason: "no prepared-root registration",

@@ -6,6 +6,7 @@ import {
   type ScopedBenchAction,
 } from "../../lib/agentic/action-allowlist.js";
 import type { RemoteServices } from "../../lib/remote/types.js";
+import { BENCH_DISPATCH_AMBIGUOUS_CODE } from "./ambiguity.js";
 import { computeForgeArtifactHash } from "../firmware/forge/artifact-hash.js";
 import { loadFirmwareReadiness } from "../firmware/forge/readiness.js";
 import {
@@ -149,7 +150,7 @@ export function registerBenchAgentAction(
         throw new ActionServiceError(
           attempt.code,
           attempt.message,
-          attempt.code === "FORGE_DISPATCH_AMBIGUOUS"
+          attempt.code === BENCH_DISPATCH_AMBIGUOUS_CODE
             ? "dispatch_ambiguous"
             : "failed",
           {
