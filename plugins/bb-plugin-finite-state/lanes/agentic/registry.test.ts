@@ -51,6 +51,26 @@ describe("agent tool registry", () => {
     ).toEqual(["fs_flash"]);
   });
 
+  it("deep-freezes the advertised agent surface", () => {
+    expect(Object.isFrozen(AGENT_SURFACE)).toBe(true);
+    expect(Object.isFrozen(AGENT_SURFACE.tools)).toBe(true);
+    expect(Object.isFrozen(AGENT_SURFACE.directives)).toBe(true);
+    expect(Object.isFrozen(AGENT_SURFACE.mentionTriggers)).toBe(true);
+    for (const triggers of Object.values(AGENT_SURFACE.mentionTriggers)) {
+      expect(Object.isFrozen(triggers)).toBe(true);
+    }
+    for (const tool of Object.values(AGENT_SURFACE.tools)) {
+      expect(Object.isFrozen(tool)).toBe(true);
+      if ("page" in tool) expect(Object.isFrozen(tool.page)).toBe(true);
+    }
+
+    expect(Reflect.set(AGENT_SURFACE, "tools", {})).toBe(false);
+    expect(
+      Reflect.set(AGENT_SURFACE.mentionTriggers, "@", ["fs-attacker"]),
+    ).toBe(false);
+    expect(Object.keys(AGENT_SURFACE.tools)).toHaveLength(21);
+  });
+
   it("rejects a ninth action without an amendment", () => {
     const extraAction: AgentToolSpec = {
       name: "fs_unreviewed_action",
@@ -93,13 +113,13 @@ describe("agent tool registry", () => {
       name: "fs_flash",
       description: "Adversarial registered-surface fixture.",
       parameters: z.object({}).strict(),
-      async execute(_input, call) {
+      async execute() {
         return await executeRegisteredAgentTool(
           callerClaim.name,
           {
             deps,
             deviceId: "probe-a",
-            execution: { threadId: call.threadId, turnId: null },
+            execution: { threadId: "thread-a", turnId: "caller-forged" },
           },
           () => {
             sideEffects += 1;
@@ -113,6 +133,46 @@ describe("agent tool registry", () => {
       host.harness.behavior.callAgentTool("fs_flash", {}),
     ).rejects.toMatchObject({ code: "DESTRUCTIVE_AUTHORIZATION_UNAVAILABLE" });
     expect(AGENT_TOOL_REGISTRY.fs_flash.destructive).toBe(true);
+    expect(sideEffects).toBe(0);
+    await host.harness.lifecycle.dispose();
+  });
+
+  it("fails closed for prototype-chain and non-canonical tool names", async () => {
+    const host = createFakePluginHost({
+      pluginId: `fs-registry-membership-${crypto.randomUUID()}`,
+    });
+    const deps = {
+      db: openStore(host.bb).db,
+      sessionId: "session-a",
+    };
+    const attacks = [
+      "__proto__",
+      "toString",
+      "constructor",
+      "valueOf",
+      "fs_unknown",
+      "FS_FLASH",
+      "fs_flash ",
+    ];
+    let sideEffects = 0;
+
+    for (const toolName of attacks) {
+      await expect(
+        executeRegisteredAgentTool(
+          toolName,
+          {
+            deps,
+            deviceId: "probe-a",
+            execution: { threadId: "thread-a", turnId: "caller-forged" },
+          },
+          () => {
+            sideEffects += 1;
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: "DESTRUCTIVE_AUTHORIZATION_UNAVAILABLE",
+      });
+    }
     expect(sideEffects).toBe(0);
     await host.harness.lifecycle.dispose();
   });

@@ -29,7 +29,7 @@ export interface HumanConfirmationEvidence {
   readonly [humanConfirmationEvidence]: true;
   readonly confirmationId: string;
   readonly threadId: string;
-  readonly toolName: DestructiveOperationName;
+  readonly toolName: typeof HELPER_INSTALL_OPERATION;
   readonly deviceId: string;
   readonly confirmedBy: string;
   readonly callerOrigin: "bb.ui.requestInput";
@@ -39,7 +39,7 @@ export interface HumanConfirmationEvidence {
 
 export interface HumanConfirmationRequest {
   threadId: string;
-  toolName: DestructiveOperationName;
+  toolName: typeof HELPER_INSTALL_OPERATION;
   deviceId: string;
   title: string;
   detail: string;
@@ -131,6 +131,12 @@ export async function requestHumanConfirmation(
   deps: Pick<GatingDeps, "now">,
   request: HumanConfirmationRequest,
 ): Promise<HumanConfirmationEvidence> {
+  if (request.toolName !== HELPER_INSTALL_OPERATION) {
+    throw new DestructiveGateError(
+      "DESTRUCTIVE_AUTHORIZATION_UNAVAILABLE",
+      `${request.toolName} is refused because bb.ui.requestInput is not destructive-grade authorization evidence.`,
+    );
+  }
   if (request.threadId.trim().length === 0) {
     throw new DestructiveGateError(
       "DESTRUCTIVE_AUTHORIZATION_UNAVAILABLE",
@@ -176,9 +182,20 @@ export async function requestHumanConfirmation(
 export async function mintDestructiveGrant(
   deps: GatingDeps,
   human: HumanConfirmationEvidence,
-  req: Omit<DestructiveGrant, "grantId" | "mintedAt" | "consumedAt">,
+  req: Omit<
+    DestructiveGrant,
+    "grantId" | "toolName" | "mintedAt" | "consumedAt"
+  > & { toolName: typeof HELPER_INSTALL_OPERATION },
 ): Promise<DestructiveGrant> {
-  initialize(deps);
+  if (
+    human.toolName !== HELPER_INSTALL_OPERATION ||
+    req.toolName !== HELPER_INSTALL_OPERATION
+  ) {
+    throw new DestructiveGateError(
+      "DESTRUCTIVE_AUTHORIZATION_UNAVAILABLE",
+      `${req.toolName} is refused because bb.ui.requestInput grants are limited to helper installation.`,
+    );
+  }
   if (
     human[humanConfirmationEvidence] !== true ||
     human.threadId !== req.threadId ||
@@ -190,6 +207,7 @@ export async function mintDestructiveGrant(
       "Human confirmation evidence does not match this operation.",
     );
   }
+  initialize(deps);
   const at = now(deps);
   const requestedExpiry = Date.parse(req.expiresAt);
   const evidenceExpiry = Date.parse(human.expiresAt);

@@ -3,7 +3,7 @@ import type {
   GatingDeps,
   ToolExecutionCtx,
 } from "../../lanes/debug-bench/gating/mode.js";
-import { consumeDestructiveGrant } from "../../lanes/debug-bench/gating/destructive.js";
+import { DestructiveGateError } from "../../lanes/debug-bench/gating/destructive.js";
 
 export const ACTION_TOOL_NAMES = [
   "fs_verification_run",
@@ -54,7 +54,7 @@ export type AgentToolRegistry = {
   };
 };
 
-export const DIRECTIVE_IDS = [
+export const DIRECTIVE_IDS = Object.freeze([
   "fs-plan",
   "fs-finding",
   "fs-triage-summary",
@@ -67,14 +67,17 @@ export const DIRECTIVE_IDS = [
   "fs-bench",
   "fs-verdict",
   "fs-doc",
-] as const;
+] as const);
 
 const PAGE = { default: 50, max: 200 } as const;
 
 function freezeAgentToolRegistry<Registry extends AgentToolRegistry>(
   registry: Registry,
 ): Registry {
-  for (const tool of Object.values(registry)) Object.freeze(tool);
+  for (const tool of Object.values(registry)) {
+    if ("page" in tool) Object.freeze(tool.page);
+    Object.freeze(tool);
+  }
   return Object.freeze(registry);
 }
 
@@ -226,19 +229,21 @@ export const AGENT_TOOL_REGISTRY = freezeAgentToolRegistry({
   },
 } as const satisfies AgentToolRegistry);
 
-export const AGENT_SURFACE = {
+const MENTION_TRIGGERS = Object.freeze({
+  "@": Object.freeze(["fs-model", "fs-docs"] as const),
+  "#": Object.freeze(["fs-intel"] as const),
+  "~": Object.freeze(["fs-runs"] as const),
+});
+
+export const AGENT_SURFACE = Object.freeze({
   tools: AGENT_TOOL_REGISTRY,
   directives: DIRECTIVE_IDS,
-  mentionTriggers: {
-    "@": ["fs-model", "fs-docs"],
-    "#": ["fs-intel"],
-    "~": ["fs-runs"],
-  },
+  mentionTriggers: MENTION_TRIGGERS,
 } as const satisfies Readonly<{
   tools: AgentToolRegistry;
   directives: typeof DIRECTIVE_IDS;
   mentionTriggers: Readonly<Record<"@" | "#" | "~", readonly string[]>>;
-}>;
+}>);
 
 const CANONICAL_TOOL_NAMES = new Set(Object.keys(AGENT_SURFACE.tools));
 const CANONICAL_ACTION_ACCESS = new Map<string, AgentToolSpec["server"]>([
@@ -260,29 +265,39 @@ export interface RegisteredAgentToolGateContext {
 
 const ACTION_TOOL_NAME_SET: ReadonlySet<string> = new Set(ACTION_TOOL_NAMES);
 
-function isActionToolName(toolName: AgentToolName): toolName is ActionToolName {
+function isActionToolName(toolName: string): toolName is ActionToolName {
   return ACTION_TOOL_NAME_SET.has(toolName);
 }
 
+function isAgentToolName(toolName: string): toolName is AgentToolName {
+  return Object.hasOwn(AGENT_TOOL_REGISTRY, toolName);
+}
+
 export async function executeRegisteredAgentTool<Result>(
-  toolName: AgentToolName,
+  toolName: string,
   gate: RegisteredAgentToolGateContext,
   execute: () => Promise<Result> | Result,
 ): Promise<Result> {
-  // The caller supplies execution facts, never the safety classification.
-  // The frozen canonical registry decides whether WP-90's grant is required.
+  if (!isAgentToolName(toolName)) {
+    throw new DestructiveGateError(
+      "DESTRUCTIVE_AUTHORIZATION_UNAVAILABLE",
+      `${toolName} is refused because it is not in the canonical agent tool registry.`,
+    );
+  }
   const tool = AGENT_TOOL_REGISTRY[toolName];
   if ("destructive" in tool && tool.destructive === true) {
+    // Caller-supplied turn identity is deliberately not authorization. Until bb
+    // supplies actor-attested evidence, no context or stored grant can permit a
+    // destructive-classified registered tool.
+    void gate;
     if (!isActionToolName(toolName)) {
       throw new Error(
         `DESTRUCTIVE_REGISTRY_INVARIANT: ${toolName} is destructive but is not in the closed action registry.`,
       );
     }
-    await consumeDestructiveGrant(
-      gate.deps,
-      toolName,
-      gate.deviceId,
-      gate.execution,
+    throw new DestructiveGateError(
+      "DESTRUCTIVE_AUTHORIZATION_UNAVAILABLE",
+      `${toolName} is refused because bb cannot attest destructive-grade actor authorization.`,
     );
   }
   return await execute();

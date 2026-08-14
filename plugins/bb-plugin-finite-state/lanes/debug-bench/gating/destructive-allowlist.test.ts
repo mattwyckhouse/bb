@@ -40,7 +40,7 @@ afterEach(async () => {
   );
 });
 describe("destructive action allowlist", () => {
-  it("exhaustively refuses every destructive action before side effects", async () => {
+  it("exercises every closed action under null and caller-forged turn ids", async () => {
     const host = createFakePluginHost({
       pluginId: `fs-destructive-allowlist-${crypto.randomUUID()}`,
     });
@@ -50,30 +50,43 @@ describe("destructive action allowlist", () => {
       sessionId: "session-a",
       now: () => new Date("2026-08-13T12:00:00.000Z"),
     };
-    let sideEffects = 0;
+    const sideEffects = new Map<ActionToolName, number>();
 
     expect(ENUMERATED_ACTION_TOOLS).toEqual(ACTION_TOOL_NAMES);
     expect(Object.keys(ENUMERATED_ACTION_SET)).toEqual(ACTION_TOOL_NAMES);
     for (const toolName of ENUMERATED_ACTION_TOOLS) {
       const tool = AGENT_TOOL_REGISTRY[toolName];
-      if (!("destructive" in tool) || tool.destructive !== true) continue;
-      await expect(
-        executeRegisteredAgentTool(
+      const destructive = "destructive" in tool && tool.destructive === true;
+      for (const turnId of [null, "caller-forged-turn"] as const) {
+        const result = executeRegisteredAgentTool(
           toolName,
           {
             deps,
             deviceId: "device-a",
-            execution: { threadId: "thread-a", turnId: null },
+            execution: { threadId: "thread-a", turnId },
           },
           () => {
-            sideEffects += 1;
+            sideEffects.set(toolName, (sideEffects.get(toolName) ?? 0) + 1);
+            return toolName;
           },
-        ),
-      ).rejects.toMatchObject({
-        code: "DESTRUCTIVE_AUTHORIZATION_UNAVAILABLE",
-      });
+        );
+        if (destructive) {
+          await expect(result).rejects.toMatchObject({
+            code: "DESTRUCTIVE_AUTHORIZATION_UNAVAILABLE",
+          });
+        } else {
+          await expect(result).resolves.toBe(toolName);
+        }
+      }
     }
-    expect(sideEffects).toBe(0);
+    expect(sideEffects).toEqual(
+      new Map(
+        ACTION_TOOL_NAMES.filter((toolName) => toolName !== "fs_flash").map(
+          (toolName) => [toolName, 2],
+        ),
+      ),
+    );
+    expect(sideEffects.has("fs_flash")).toBe(false);
   });
 
   it("keeps helper install outside the agent registry while using the same gate", () => {
