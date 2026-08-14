@@ -166,29 +166,6 @@ describe.sequential("registered requirement-to-bench journey", () => {
       apiKey: "fs201-as-key",
       fetch: mock.assuranceStudio.fetch,
     });
-    assuranceStudio.listProjectLinks = () => ({
-      async *[Symbol.asyncIterator]() {
-        yield {
-          items: [
-            {
-              linkId: "link-fs201",
-              assuranceStudioProjectId: platformProjectId,
-              assuranceStudioProjectName: "FS-201 Assurance Studio project",
-              platformProjectId,
-              platformProjectName: "FS-201 Platform project",
-              platformProjectVersionId: projectVersionId,
-              platformProjectVersionName: "FS-201 firmware version",
-              isPrimary: true,
-              syncStatus: "synced" as const,
-              lastSyncedAt: "2026-08-14T00:00:00.000Z",
-              versionStrategy: "specific",
-            },
-          ],
-          total: 1,
-          next: null,
-        };
-      },
-    });
     ctx = createPluginContext(host.bb);
     const services: RemoteServices = {
       platform,
