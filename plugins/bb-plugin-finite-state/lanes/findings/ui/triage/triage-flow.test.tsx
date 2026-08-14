@@ -139,6 +139,7 @@ async function renderFlow(
     undo?: () => unknown;
     read?: (input: Record<string, unknown>) => unknown;
     findings?: ReturnType<typeof finding>[];
+    catalogAvailable?: () => boolean;
   } = {},
 ) {
   const app = await loadPluginApp(() => import("../../../../app.js"));
@@ -159,18 +160,25 @@ async function renderFlow(
       },
       rpc: {
         connectionsStatus: connectedRemoteStatus,
-        cachedProjectVersions: () => ({
-          versions: [
-            {
-              platformProjectId: "platform-project-1",
-              projectVersionId: "version-1",
-              asOf: freshCache.asOf,
-              state: "fresh",
-            },
-          ],
-          selectedPlatformProjectId: "platform-project-1",
-          selectedProjectVersionId: "version-1",
-        }),
+        cachedProjectVersions: () =>
+          options.catalogAvailable?.() === false
+            ? {
+                versions: [],
+                selectedPlatformProjectId: null,
+                selectedProjectVersionId: null,
+              }
+            : {
+                versions: [
+                  {
+                    platformProjectId: "platform-project-1",
+                    projectVersionId: "version-1",
+                    asOf: freshCache.asOf,
+                    state: "fresh",
+                  },
+                ],
+                selectedPlatformProjectId: "platform-project-1",
+                selectedProjectVersionId: "version-1",
+              },
         findingsSavedViewsGet: () => ({
           views: [],
           sha256: null,
@@ -344,6 +352,23 @@ describe("manual triage flow", () => {
     ).toBeTruthy();
     expect(
       within(editor).getByRole("button", { name: "Compare" }),
+    ).toBeTruthy();
+  });
+
+  it("surfaces the registered writer returning no single-decision result", async () => {
+    const slot = await renderFlow({ write: () => ({ results: [] }) });
+    fireEvent.keyDown(window, { key: "e" });
+    const editor = await slot.findByRole("form", { name: /Triage/u });
+    confirmEditor(editor);
+    fireEvent.click(
+      within(editor).getByRole("button", { name: /Write YAML/u }),
+    );
+
+    expect(
+      await within(editor).findByText("This decision was not written"),
+    ).toBeTruthy();
+    expect(
+      within(editor).getByText("The local writer returned no result."),
     ).toBeTruthy();
   });
 
@@ -555,6 +580,41 @@ describe("manual triage flow", () => {
     expect((await within(editor).findByRole("alert")).textContent).toMatch(
       /Confirm that you reviewed the reason and evidence/u,
     );
+    expect(
+      slot.inspection.rpcCalls.filter(
+        (call) => call.method === "triageDecisionsWrite",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("disables Write YAML with a visible reason when a bulk draft loses its resolved scope", async () => {
+    let catalogAvailable = true;
+    const slot = await renderFlow({ catalogAvailable: () => catalogAvailable });
+    fireEvent.click(slot.getByRole("button", { name: "Select all 3" }));
+    fireEvent.keyDown(window, { key: "b" });
+    fireEvent.click(slot.getByRole("button", { name: /eEXPLOITABLE/u }));
+    const editor = await slot.findByRole("form", {
+      name: /3 local overlay identities/u,
+    });
+
+    catalogAvailable = false;
+    await slot.behavior.emitRealtime("findings:changed", {
+      projectVersionId: "different-version",
+    });
+
+    const write = within(editor).getByRole("button", { name: /Write YAML/u });
+    await waitFor(() =>
+      expect((write as HTMLButtonElement).disabled).toBe(true),
+    );
+    expect(
+      within(editor)
+        .getAllByRole("alert")
+        .some((alert) =>
+          /no resolved project and version scope/u.test(
+            alert.textContent ?? "",
+          ),
+        ),
+    ).toBe(true);
     expect(
       slot.inspection.rpcCalls.filter(
         (call) => call.method === "triageDecisionsWrite",

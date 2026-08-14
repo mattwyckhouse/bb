@@ -24,6 +24,17 @@ type RpcUndoToken = z.output<
   (typeof findingsUiRpcContract)["triageDecisionUndo"]["input"]
 >["token"];
 
+interface TriageScope {
+  workspaceProjectId: string;
+  platformProjectId: string;
+  projectVersionId: string;
+}
+
+interface ScopedTriageTarget {
+  scope: TriageScope;
+  target: TriageTarget;
+}
+
 interface UndoEntry {
   target: TriageTarget;
   token: UndoToken;
@@ -123,6 +134,7 @@ export function FindingsTriage({
   const rpc = useRpc<typeof findingsUiRpcContract>();
   const [sheet, setSheet] = useState(false);
   const [target, setTarget] = useState<TriageTarget | null>(null);
+  const [singleScope, setSingleScope] = useState<TriageScope | null>(null);
   const [draft, setDraft] = useState<TriageDraft | null>(null);
   const [reasonConfirmed, setReasonConfirmed] = useState(false);
   const [pending, setPending] = useState(false);
@@ -169,13 +181,16 @@ export function FindingsTriage({
   }, [exactSelectedIds.length, rows, selection]);
 
   const readExactTarget = useCallback(
-    async (row: FindingRow): Promise<TriageTarget> => {
+    async (row: FindingRow): Promise<ScopedTriageTarget> => {
       if (!workspaceProjectId || !platformProjectId || !projectVersionId)
         throw new Error("Choose a findings scope before triage.");
-      const result = await rpc.call("triageTargetsRead", {
+      const scope = {
         workspaceProjectId,
         platformProjectId,
         projectVersionId,
+      };
+      const result = await rpc.call("triageTargetsRead", {
+        ...scope,
         selection: { mode: "exact", findingIds: [row.findingId] },
         continuation: null,
       });
@@ -184,7 +199,7 @@ export function FindingsTriage({
         throw new Error(
           "The exact selected finding row is no longer available.",
         );
-      return exact;
+      return { scope, target: exact };
     },
     [platformProjectId, projectVersionId, rpc, workspaceProjectId],
   );
@@ -199,8 +214,9 @@ export function FindingsTriage({
       setPending(true);
       setWriteError(null);
       try {
-        const exact = await readExactTarget(row);
+        const { scope, target: exact } = await readExactTarget(row);
         setTarget(exact);
+        setSingleScope(scope);
         setDraft(draftFor(exact, status, true));
         setReasonConfirmed(false);
         setAnnouncement(
@@ -248,79 +264,77 @@ export function FindingsTriage({
     [],
   );
 
-  const commitSingle = useCallback(async () => {
-    if (
-      !draft ||
-      !target ||
-      !workspaceProjectId ||
-      !platformProjectId ||
-      !projectVersionId
-    )
-      return;
-    const validation = validateTriageDraft(draft);
-    if (!validation.ok || !reasonConfirmed) return;
-    setPending(true);
-    setWriteError(null);
-    try {
-      const response = await rpc.call("triageDecisionsWrite", {
-        workspaceProjectId,
-        platformProjectId,
-        projectVersionId,
-        decisions: [
-          {
-            findingId: target.findingId,
-            stableKey: target.stableKey,
-            status: draft.status,
-            justification: draft.justification,
-            response: draft.response,
-            reason: draft.reason.trim(),
-            evidence: draft.evidence.trim(),
-            pin: draft.pin,
-            expectedSha256: target.expectedSha256,
-          },
-        ],
-      });
-      const result = response.results[0];
-      if (!result || !result.success) {
-        const failure = result && !result.success ? result : null;
-        setWriteError({
-          kind: failure?.code === "OVERLAY_CAS_CONFLICT" ? "conflict" : "write",
-          message: failure?.message ?? "The local writer returned no result.",
-          file: target.file,
-        });
+  const commitSingle = useCallback(
+    async (currentDraft: TriageDraft, currentTarget: TriageTarget) => {
+      if (!singleScope) {
+        const message =
+          "This draft has no resolved project and version scope. Cancel it, choose an accepted findings version, and reopen triage.";
+        setWriteError({ kind: "write", message, file: currentTarget.file });
+        setAnnouncement(`Local YAML was not written: ${message}`);
         return;
       }
-      rememberUndo(result, target);
-      setAnnouncement(
-        `${draft.status.replaceAll("_", " ")} written locally for ${target.label}. Cursor advanced.`,
-      );
-      setDraft(null);
-      setTarget(null);
-      setReasonConfirmed(false);
-      onCommitted();
-      advance(target.findingId);
-    } catch (error) {
-      setWriteError({
-        kind: conflict(error) ? "conflict" : "write",
-        message:
-          error instanceof Error ? error.message : "The local write failed.",
-        file: target.file,
-      });
-    } finally {
-      setPending(false);
-    }
-  }, [
-    advance,
-    draft,
-    onCommitted,
-    platformProjectId,
-    projectVersionId,
-    reasonConfirmed,
-    rememberUndo,
-    rpc,
-    target,
-    workspaceProjectId,
-  ]);
+      const validation = validateTriageDraft(currentDraft);
+      if (!validation.ok || !reasonConfirmed) {
+        const message = validation.ok
+          ? "Confirm that you reviewed the reason and evidence before writing YAML."
+          : validation.message;
+        setWriteError({ kind: "write", message, file: currentTarget.file });
+        setAnnouncement(`Local YAML was not written: ${message}`);
+        return;
+      }
+      setPending(true);
+      setWriteError(null);
+      try {
+        const response = await rpc.call("triageDecisionsWrite", {
+          ...singleScope,
+          decisions: [
+            {
+              findingId: currentTarget.findingId,
+              stableKey: currentTarget.stableKey,
+              status: currentDraft.status,
+              justification: currentDraft.justification,
+              response: currentDraft.response,
+              reason: currentDraft.reason.trim(),
+              evidence: currentDraft.evidence.trim(),
+              pin: currentDraft.pin,
+              expectedSha256: currentTarget.expectedSha256,
+            },
+          ],
+        });
+        const result = response.results[0];
+        if (!result || !result.success) {
+          const failure = result && !result.success ? result : null;
+          setWriteError({
+            kind:
+              failure?.code === "OVERLAY_CAS_CONFLICT" ? "conflict" : "write",
+            message: failure?.message ?? "The local writer returned no result.",
+            file: currentTarget.file,
+          });
+          return;
+        }
+        rememberUndo(result, currentTarget);
+        setAnnouncement(
+          `${currentDraft.status.replaceAll("_", " ")} written locally for ${currentTarget.label}. Cursor advanced.`,
+        );
+        setDraft(null);
+        setTarget(null);
+        setSingleScope(null);
+        setReasonConfirmed(false);
+        onCommitted();
+        advance(currentTarget.findingId);
+      } catch (error) {
+        setWriteError({
+          kind: conflict(error) ? "conflict" : "write",
+          message:
+            error instanceof Error ? error.message : "The local write failed.",
+          file: currentTarget.file,
+        });
+      } finally {
+        setPending(false);
+      }
+    },
+    [advance, onCommitted, reasonConfirmed, rememberUndo, rpc, singleScope],
+  );
 
   const reloadTarget = useCallback(async () => {
     const row = target
@@ -329,8 +343,9 @@ export function FindingsTriage({
     if (!row) return;
     setPending(true);
     try {
-      const reloaded = await readExactTarget(row);
+      const { scope, target: reloaded } = await readExactTarget(row);
       setTarget(reloaded);
+      setSingleScope(scope);
       setWriteError(null);
       setAnnouncement(
         `Reloaded CAS base for ${reloaded.label}; your draft was preserved.`,
@@ -502,12 +517,14 @@ export function FindingsTriage({
       setBulkFailures([]);
       setBulkOutcome(null);
       try {
-        const [exact, targets] = await Promise.all([
+        const [scoped, targets] = await Promise.all([
           readExactTarget(row),
           loadBulkTargets(),
         ]);
+        const exact = scoped.target;
         setPreparedBulk({ selection, targets });
         setTarget(exact);
+        setSingleScope(null);
         setDraft(draftFor(exact, status, false));
         setReasonConfirmed(false);
         setAnnouncement(
@@ -853,11 +870,17 @@ export function FindingsTriage({
       </div>
       {draft && target ? (
         <TriageEditor
+          commitBlockedReason={
+            count === 0 && !singleScope
+              ? "This draft has no resolved project and version scope. Cancel it, choose an accepted findings version, and reopen triage."
+              : null
+          }
           draft={draft}
           error={writeError}
           onCancel={() => {
             setDraft(null);
             setTarget(null);
+            setSingleScope(null);
             setWriteError(null);
           }}
           onChange={(next) => {
@@ -876,7 +899,9 @@ export function FindingsTriage({
                     void confirmBulk(false);
                   }
                 : requestBulkConfirmation
-              : commitSingle
+              : () => {
+                  void commitSingle(draft, target);
+                }
           }
           onReasonConfirmed={(confirmed) => {
             setBulkConfirming(false);
