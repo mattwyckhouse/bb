@@ -516,3 +516,22 @@ specs: `docs/Product Specs/SPEC 07` and `SPEC 08`._
 - Affected-lane reviewer: independent FS-191 reviews in coordinator thread `thr_hg37weivk7`; round 3 mutation-verified every prior repair and narrowed the residual to registered workspace validation, which is covered at head `b0b16b988`.
 - Broadcast and merge commits: contract version 7 broadcast by PR #134; merge commit pending owner merge after exact-head green gates
 - Evidence: FS-191 round-1 production probe at head `9489c1be5` exposed empty catalogs from comparing unrelated id spaces. Round-2 mutation checks killed relaxed legacy backfill, ignored existing bindings, and deleted legacy visibility. Round-3 registered proof rejects a junk workspace before pull, persists no binding, and fails when that validation is removed.
+
+### AMD-0021 — Surface per-kind pull quarantine counts
+
+- Status: proposed — pending owner ratification
+- Artifacts:
+  - `plugins/bb-plugin-finite-state/shared/contract.ts`
+- Contract version: 8
+- Dependency: AMD-0020 must be approved, implemented, and merged first. AMD-0020 owns contract version 7 and adds the required `workspaceProjectId` field to `syncPull` input in this same frozen artifact. AMD-0021 must rebase onto that merged head and must not reuse or bypass version 7.
+- Prior artifact hash: the approved AMD-0020 implementation hash, to be recorded after AMD-0020 acceptance; the current pre-dependency `shared/contract.ts` hash remains `ffa2f477ab2868f678ec4a8f06c962d17e51121706fe0ee52db360178cd505ab`.
+- New artifact hash: recorded by the frozen accept flow for the approved implementation.
+- Reason: FS-193 isolates individually unkeyable finding rows so one malformed Platform row cannot abort a usable corpus, but the cache-puller registration currently drops the resulting quarantine count. The strict `pullReportSchema` permits only `fetched` and `baseRows`, so neither the registered RPC result nor CLI JSON nor the Sync panel can explain the gap. That silent loss violates FS-174 truthful-count semantics and kill-list class 6.
+- Proposed contract: add required `quarantined: z.number().int().nonnegative()` to every per-kind value in `pullReportSchema`. Kinds with no isolated rows report `0`; cache pullers and adapters must supply the explicit value rather than relying on omission or a UI default. Preserve the existing meanings of `fetched` (remote rows observed during this invocation) and `baseRows` (complete accepted-generation rows). No finding stable-key or SPEC 02 §4.3 semantics change.
+- Migration: after AMD-0020 merges and owner ratification is recorded, rebase FS-193 onto the AMD-0020 merged head, increment the shared contract from version 7 to 8, plumb the required count through `CachePuller`, the sync engine `PullReport`, `registerFindings`, registered RPC parsing, CLI `--json`, and the Sync panel pull report. Add registered tests asserting mixed finding corpora publish keyable rows with truthful `fetched`, `baseRows`, and `quarantined` counts at RPC, CLI, and panel surfaces; assert non-quarantining kinds report zero. Run the frozen accept flow only after affected-lane review.
+- Independent B1 behavior: FS-193's all-degenerate protection is not gated by this amendment. When a finding pull observes `fetched > 0` and would publish zero rows, it fails before atomic publication with code-owned quarantine count/reason diagnostics and retains the previous accepted generation.
+- Affected WPs and gates: FS-193; C-FINDING-IDENTITY; registered sync RPC, CLI, and Sync panel pull-report surfaces; shared contract tests; frozen-artifact guard; Node 22.19 typecheck/test/lint/build gates.
+- Approval provenance: coordinator `thr_hg37weivk7` authorized this proposed draft and sequencing after AMD-0020; contract-owner ratification is pending.
+- Affected-lane reviewer: pending independent exact-head audit after owner ratification and implementation.
+- Broadcast and merge commits: pending.
+- Evidence: FS-193 round-1 review at PR #136 head `79b2144f7`; `lanes/findings/register.ts` drops `PullFindingsResult.quarantined`, and the strict contract schema exposes only `fetched` and `baseRows`.

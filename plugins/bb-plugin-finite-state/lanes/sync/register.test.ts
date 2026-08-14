@@ -720,7 +720,14 @@ decisions:
 
     const originalFindings = [...state.findings.entries()];
     state.findings.clear();
-    const mixedVersion = scope.projectVersionId;
+    const mixedVersion = "fs193-mixed-version";
+    const templateVersion = state.versions.get(scope.projectVersionId);
+    if (templateVersion === undefined)
+      throw new Error("fixture has no template Platform version");
+    state.versions.set(mixedVersion, {
+      ...templateVersion,
+      id: mixedVersion,
+    });
     const mixedRows = [
       {
         id: "fs193-binary-sast",
@@ -795,9 +802,64 @@ decisions:
       expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
         "must-not-reach-diagnostics",
       );
+
+      state.findings.clear();
+      for (let index = 1; index <= 3; index += 1) {
+        state.findings.set(`fs193-all-quarantined-${index}`, {
+          id: `fs193-all-quarantined-${index}`,
+          projectVersionId: mixedVersion,
+          findingId: `CVE-2026-1931${index}`,
+          title: `remote-authored-secret-${index}`,
+          component: {
+            id: `fs193-invalid-component-${index}`,
+            version: "",
+          },
+        });
+      }
+      const allQuarantinedPull = () =>
+        host.harness.behavior.callRpc("syncPull", {
+          projectId: scope.projectId,
+          projectVersionId: mixedVersion,
+          kinds: ["finding"],
+        });
+      const allQuarantinedFailure = {
+        code: "handler_error",
+        message: expect.stringContaining(
+          "finding: FINDING_ALL_ROWS_QUARANTINED: quarantined 3 fetched finding rows; reasons [FINDING_COMPONENT_IDENTITY_MISSING=3]",
+        ),
+      };
+      await expect(allQuarantinedPull()).rejects.toMatchObject(
+        allQuarantinedFailure,
+      );
+      await expect(allQuarantinedPull()).rejects.toMatchObject(
+        allQuarantinedFailure,
+      );
+      const acceptedAfterFailure = context
+        .db()
+        .prepare(
+          `SELECT state.accepted_generation_id AS acceptedGenerationId,
+                  COUNT(findings.finding_id) AS visibleRows
+             FROM sync_state AS state
+             LEFT JOIN findings
+               ON findings.project_id = state.project_id
+              AND findings.project_version_id = state.project_version_id
+              AND findings.generation_id = state.accepted_generation_id
+            WHERE state.project_id = ? AND state.project_version_id = ?
+              AND state.entity_kind = 'finding'
+            GROUP BY state.accepted_generation_id`,
+        )
+        .get(scope.projectId, mixedVersion);
+      expect(acceptedAfterFailure).toEqual({
+        acceptedGenerationId: mixed.generationId,
+        visibleRows: 2,
+      });
+      expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
+        "remote-authored-secret",
+      );
     } finally {
       state.findings.clear();
       for (const [id, row] of originalFindings) state.findings.set(id, row);
+      state.versions.delete(mixedVersion);
     }
   });
 

@@ -286,11 +286,13 @@ function checkpoint(
   rows: number;
   continuation: string | null;
   pulledAt: string;
+  error: string | null;
 } {
   const row = deps.db
     .prepare(
       `SELECT state.staged_pages AS pages, state.staged_rows AS rows,
-            state.staging_continuation AS continuation, generation.started_at AS pulledAt
+            state.staging_continuation AS continuation, generation.started_at AS pulledAt,
+            state.error
        FROM sync_state AS state
        JOIN pull_generation AS generation
          ON generation.project_id = state.project_id
@@ -305,6 +307,7 @@ function checkpoint(
         rows: number;
         continuation: string | null;
         pulledAt: string;
+        error: string | null;
       }
     | undefined;
   if (!row)
@@ -322,15 +325,25 @@ function writePage(
   pageNumber: number,
   page: RemotePage<Record<string, Json>>,
   pulledAt: string,
-): { inserted: number; deduplicated: number; quarantined: number } {
+): {
+  inserted: number;
+  deduplicated: number;
+  quarantined: number;
+  quarantineReasons: ReadonlyMap<string, number>;
+} {
   const normalized: NormalizedFinding[] = [];
   let quarantined = 0;
+  const quarantineReasons = new Map<string, number>();
   for (const item of page.items) {
     try {
       normalized.push(normalizeFinding(item));
     } catch (error: unknown) {
       if (!(error instanceof FindingsCacheError)) throw error;
       quarantined += 1;
+      quarantineReasons.set(
+        error.code,
+        (quarantineReasons.get(error.code) ?? 0) + 1,
+      );
     }
   }
   const unique = new Map<string, NormalizedFinding>();
@@ -440,7 +453,23 @@ function writePage(
         "Finding staging checkpoint moved",
       );
   })();
-  return { inserted, deduplicated, quarantined };
+  return { inserted, deduplicated, quarantined, quarantineReasons };
+}
+
+const ALL_ROWS_QUARANTINED = "FINDING_ALL_ROWS_QUARANTINED";
+
+function allRowsQuarantinedError(
+  quarantined: number,
+  reasons: ReadonlyMap<string, number>,
+): FindingsCacheError {
+  const reasonSummary = [...reasons.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([code, count]) => `${code}=${count}`)
+    .join(", ");
+  return new FindingsCacheError(
+    ALL_ROWS_QUARANTINED,
+    `${ALL_ROWS_QUARANTINED}: quarantined ${quarantined} fetched finding rows; reasons [${reasonSummary}]`,
+  );
 }
 
 export async function pullFindings(
@@ -462,10 +491,17 @@ export async function pullFindings(
   let fetched = 0;
   let staged = 0;
   let quarantined = 0;
+  const quarantineReasons = new Map<string, number>();
   let deduplicated = 0;
   let latestOf: number | null = null;
   try {
     if (state.pages > 0 && state.continuation === null) {
+      if (
+        state.rows === 0 &&
+        state.error?.startsWith(`${ALL_ROWS_QUARANTINED}:`) === true
+      ) {
+        throw new FindingsCacheError(ALL_ROWS_QUARANTINED, state.error);
+      }
       onProgress({ page: pages, of: pages, phase: "done" });
       return {
         fetched: 0,
@@ -501,6 +537,9 @@ export async function pullFindings(
       fetched += page.items.length;
       staged += written.inserted;
       quarantined += written.quarantined;
+      for (const [code, count] of written.quarantineReasons) {
+        quarantineReasons.set(code, (quarantineReasons.get(code) ?? 0) + count);
+      }
       if (written.quarantined > 0) {
         deps.quarantine?.({ count: written.quarantined });
       }
@@ -513,10 +552,14 @@ export async function pullFindings(
         projectVersionId: scope.projectVersionId,
       });
     }
+    const published = state.rows + staged;
+    if (fetched > 0 && published === 0) {
+      throw allRowsQuarantinedError(quarantined, quarantineReasons);
+    }
     onProgress({ page: pages, of: latestOf, phase: "done" });
     return {
       fetched,
-      published: state.rows + staged,
+      published,
       pages,
       pulledAt,
       deduplicated,
