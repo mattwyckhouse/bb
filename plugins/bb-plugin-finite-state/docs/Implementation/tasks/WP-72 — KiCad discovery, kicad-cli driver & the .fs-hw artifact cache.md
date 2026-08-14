@@ -29,6 +29,8 @@ KiCad remains the editor; this WP is the extraction seam under everything else i
 
 The cache mirrors the `.fs-firmware` discipline from WP-47, including its ignore tripwire: verify `.fs-hw` is gitignored before writing, and fail with `HW_CACHE_NOT_IGNORED` rather than polluting diffs.
 
+**Current visibility limitation:** `hardwareArtifactsStatus` is project-scoped and returns `HW_PROJECT_NOT_FOUND` before it can expose KiCad capability when no project has been ingested, so KiCad absence is log-only in that state. FS-160 does not add an unconditional status probe; a future product requirement may add one through the normal RPC/CLI/SDK contract process.
+
 ## What to build
 
 1. Replace the hardware backend stub. Registration is reload-safe, uses `ctx.service` for shared handles, and exports the extract action service for WP-81's `fs_hw_extract` and command handlers for the CLI WP — it does not call `bb.agents.registerTool` or `bb.cli.register` itself.
@@ -81,7 +83,6 @@ The worktree root comes from the verified invoking execution context, as WP-47 e
 
 - [ ] A fixture worktree with two `.kicad_pro` projects yields two `hw_project` rows keyed by relative path, each with correct source hashes.
 - [ ] With `kicad-cli` absent, discovery and status RPCs work after a project is ingested, extraction returns a typed `KICAD_NOT_INSTALLED` failure, and the capability record drives a hardware-lane advisory while the plugin remains running.
-- [ ] Document the pre-ingest visibility limit: `hardwareArtifactsStatus` is project-scoped and returns `HW_PROJECT_NOT_FOUND` before it can expose KiCad capability when no project has been ingested, so KiCad absence is log-only in that state. FS-160 does not add an unconditional status probe; a future product requirement may add one through the normal RPC/CLI/SDK contract process.
 - [ ] Extraction is skipped when `source_hash` is unchanged and re-runs when it differs or `--force` is set; provenance rows record path, hash, CLI version, and timestamp.
 - [ ] A failing export surfaces the verbatim `kicad-cli` stderr in the result; other artifact kinds in the same run still complete.
 - [ ] Writing into a non-ignored `.fs-hw` aborts with `HW_CACHE_NOT_IGNORED` before any file is created.

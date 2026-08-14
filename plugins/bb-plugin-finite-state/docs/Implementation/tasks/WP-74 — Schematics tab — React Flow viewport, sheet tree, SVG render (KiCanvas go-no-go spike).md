@@ -72,7 +72,7 @@ All data enters through typed RPC hooks; realtime `hardware:changed` is a refetc
 - [ ] The `hardware` panel registers with `schematics`/`board`/`fab` subpaths; board/fab render their WP-76/77 stubs without crashing.
 - [ ] The fixture project's sheet tree renders hierarchically and clicking a sheet displays its cached SVG in the React Flow viewport with working pan/zoom/fit.
 - [ ] With two fixture projects, the header selector switches `project_key` and all queries re-scope.
-- [ ] With KiCad absent, the tab shows the unconfigured state for the canvas while the sheet tree (parsed data) still populates.
+- [ ] With KiCad absent, the tab shows the lane-unavailable advisory for the canvas while the sheet tree (parsed data) still populates.
 - [ ] A stale artifact shows the re-extract banner; no code path regenerates automatically.
 - [ ] All four states exist and are tested; no raw colors, no Lucide, no emoji; the React Flow chunk loads only when the tab opens.
 - [ ] Selection set from the tree persists when switching to the board tab stub and back.
@@ -83,7 +83,7 @@ All data enters through typed RPC hooks; realtime `hardware:changed` is a refetc
 
 - `sheet tree renders fixture hierarchy and breadcrumb`, `svg node mounts and viewport pans/zooms`, `project selector re-scopes queries`, `selection survives tab switch`.
 - **Error path:** artifact fetch 404/failed export renders the error state containing the driver stderr, with retry re-requesting status — not a blank canvas.
-- **Unconfigured path:** capability `installed: false` renders install guidance while `hardware.sheets.list` data still displays.
+- **Lane-unavailable path:** capability `installed: false` renders install guidance while `hardware.sheets.list` data still displays.
 - `lazy chunk absent until schematics route opens`.
 
 ## Do not
