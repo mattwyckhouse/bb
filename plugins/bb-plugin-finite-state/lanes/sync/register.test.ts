@@ -994,6 +994,41 @@ decisions:
         throw new Error("syncPull returned no second recovered generation id");
       }
       expect(recoveredAgain.generationId).not.toBe(strandedGenerationId);
+
+      state.findings.clear();
+      const empty = await allQuarantinedPull();
+      expect(empty).toMatchObject({
+        kinds: { finding: { fetched: 0, baseRows: 0 } },
+      });
+      if (
+        typeof empty !== "object" ||
+        empty === null ||
+        !("generationId" in empty) ||
+        typeof empty.generationId !== "string"
+      ) {
+        throw new Error("syncPull returned no empty generation id");
+      }
+      expect(empty.generationId).not.toBe(recoveredAgain.generationId);
+      expect(
+        context
+          .db()
+          .prepare(
+            `SELECT state.accepted_generation_id AS acceptedGenerationId,
+                    COUNT(findings.finding_id) AS visibleRows
+               FROM sync_state AS state
+               LEFT JOIN findings
+                 ON findings.project_id = state.project_id
+                AND findings.project_version_id = state.project_version_id
+                AND findings.generation_id = state.accepted_generation_id
+              WHERE state.project_id = ? AND state.project_version_id = ?
+                AND state.entity_kind = 'finding'
+              GROUP BY state.accepted_generation_id`,
+          )
+          .get(scope.projectId, mixedVersion),
+      ).toEqual({
+        acceptedGenerationId: empty.generationId,
+        visibleRows: 0,
+      });
     } finally {
       state.findings.clear();
       for (const [id, row] of originalFindings) state.findings.set(id, row);
