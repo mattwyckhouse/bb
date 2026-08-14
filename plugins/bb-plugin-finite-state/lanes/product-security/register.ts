@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import type Database from "better-sqlite3";
 import type { JsonValue } from "../../shared/contract.js";
@@ -147,6 +148,104 @@ function compareTaraSlug(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+const CACHE_MESSAGE_MAX_LENGTH = 500;
+const CACHE_MESSAGE_BASE_MAX_LENGTH = 100;
+const DIAGNOSTIC_ENTRY_MAX_LENGTH = 110;
+const UNSAFE_CACHE_DETAIL_PATTERN =
+  /(?:authorization|bearer\s|api[_-]?key|token=|https?:\/\/[^\s]*[?@])/giu;
+
+function sanitizeCacheDetail(value: string): string {
+  return value
+    .replace(UNSAFE_CACHE_DETAIL_PATTERN, "[redacted]")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function compactDetail(value: string, maxLength: number): string {
+  const safe = sanitizeCacheDetail(value);
+  if (safe.length <= maxLength) return safe;
+  if (maxLength <= 1) return safe.slice(0, maxLength);
+  const suffixLength = Math.min(12, Math.floor((maxLength - 1) / 2));
+  const prefixLength = maxLength - suffixLength - 1;
+  return `${safe.slice(0, prefixLength)}…${safe.slice(-suffixLength)}`;
+}
+
+function diagnosticFileLabel(file: string, maxLength: number): string {
+  const normalized = file.replaceAll("\\", "/");
+  const name = basename(normalized) || "unknown.yaml";
+  return compactDetail(name, maxLength);
+}
+
+function diagnosticEntry(
+  diagnostic: CanvasFileDiagnostic,
+  maxLength: number,
+): string {
+  if (diagnostic.code === "UNSUPPORTED_COMPONENT_TYPE") {
+    const prefix = "Unsupported component type in authored file ";
+    const file = diagnosticFileLabel(
+      diagnostic.file,
+      Math.max(12, Math.min(56, maxLength - prefix.length - 1)),
+    );
+    const withoutValue = `${prefix}${file}.`;
+    const value = compactDetail(diagnostic.value ?? "unknown", 24);
+    const withValue = `Unsupported component type “${value}” in authored file ${file}.`;
+    return withValue.length <= maxLength ? withValue : withoutValue;
+  }
+  if (diagnostic.code === "RETIRED_COMPONENT_TYPE") {
+    const prefix =
+      "Retired component type requires migration in authored file ";
+    const file = diagnosticFileLabel(
+      diagnostic.file,
+      Math.max(12, Math.min(56, maxLength - prefix.length - 1)),
+    );
+    const withoutValue = `${prefix}${file}.`;
+    const value = compactDetail(diagnostic.value ?? "unknown", 24);
+    const withValue = `Retired component type “${value}” requires migration in authored file ${file}.`;
+    return withValue.length <= maxLength ? withValue : withoutValue;
+  }
+  const prefix = "Invalid working YAML quarantined at ";
+  const file = diagnosticFileLabel(
+    diagnostic.file,
+    Math.max(12, Math.min(56, maxLength - prefix.length - 1)),
+  );
+  const required = `Invalid working YAML quarantined at ${file}.`;
+  const reasonBudget = maxLength - required.length - " Reason: ".length;
+  if (reasonBudget < 16) return required;
+  const reason = compactDetail(diagnostic.message, reasonBudget);
+  return `${required} Reason: ${reason}`;
+}
+
+function moreDiagnosticsTail(count: number): string {
+  return count > 0
+    ? ` +${count} more diagnostic${count === 1 ? "" : "s"}.`
+    : "";
+}
+
+function diagnosticGroupMessage(
+  diagnostics: readonly CanvasFileDiagnostic[],
+  maxLength: number,
+): string {
+  const first = diagnostics[0];
+  if (!first) return "";
+  let shown = 1;
+  let tail = moreDiagnosticsTail(diagnostics.length - shown);
+  const entries = [diagnosticEntry(first, maxLength - tail.length)];
+  while (shown < diagnostics.length) {
+    const candidate = diagnosticEntry(
+      diagnostics[shown]!,
+      DIAGNOSTIC_ENTRY_MAX_LENGTH,
+    );
+    const candidateTail = moreDiagnosticsTail(diagnostics.length - shown - 1);
+    const candidateLength =
+      entries.join(" ").length + 1 + candidate.length + candidateTail.length;
+    if (candidateLength > maxLength) break;
+    entries.push(candidate);
+    shown += 1;
+    tail = candidateTail;
+  }
+  return `${entries.join(" ")}${tail}`;
+}
+
 function workingDiagnosticMessage(
   baseMessage: string | null,
   diagnostics: readonly CanvasFileDiagnostic[],
@@ -156,33 +255,38 @@ function workingDiagnosticMessage(
     "RETIRED_COMPONENT_TYPE",
     "INVALID_AUTHORED_YAML",
   ];
-  const groups = diagnosticCodes.flatMap((code) => {
+  const diagnosticGroups = diagnosticCodes.flatMap((code) => {
     const matching = diagnostics.filter(
       (diagnostic) => diagnostic.code === code,
     );
-    const first = matching[0];
-    if (!first) return [];
-    const more = matching.length - 1;
-    const additional =
-      more > 0
-        ? ` ${more} more authored file${more === 1 ? "" : "s"} have this diagnostic.`
-        : "";
-    if (code === "UNSUPPORTED_COMPONENT_TYPE") {
-      return [
-        `Unsupported component type “${first.value ?? "unknown"}” in authored file ${first.file}; excluded from canvas.${additional}`,
-      ];
-    }
-    if (code === "RETIRED_COMPONENT_TYPE") {
-      return [
-        `Retired component type “${first.value ?? "unknown"}” requires migration in authored file ${first.file}; excluded from canvas.${additional}`,
-      ];
-    }
-    return [
-      `Invalid working YAML quarantined at ${first.file}: ${first.message.slice(0, 120)}${additional}`,
-    ];
+    return matching.length > 0 ? [matching] : [];
   });
-  const combined = [baseMessage, ...groups].filter(Boolean).join(" ");
-  return combined.length > 0 ? combined.slice(0, 500) : null;
+  const safeBase = baseMessage
+    ? compactDetail(baseMessage, CACHE_MESSAGE_BASE_MAX_LENGTH)
+    : null;
+  const segmentCount = diagnosticGroups.length + (safeBase ? 1 : 0);
+  if (segmentCount === 0) return null;
+  const separatorsLength = segmentCount - 1;
+  const groupsBudget =
+    CACHE_MESSAGE_MAX_LENGTH - (safeBase?.length ?? 0) - separatorsLength;
+  const baseGroupBudget =
+    diagnosticGroups.length > 0
+      ? Math.floor(groupsBudget / diagnosticGroups.length)
+      : 0;
+  let remainingBudget = groupsBudget;
+  const groups = diagnosticGroups.map((group, index) => {
+    const remainingGroups = diagnosticGroups.length - index;
+    const budget =
+      index === diagnosticGroups.length - 1
+        ? remainingBudget
+        : Math.max(
+            baseGroupBudget,
+            Math.floor(remainingBudget / remainingGroups),
+          );
+    remainingBudget -= budget;
+    return diagnosticGroupMessage(group, budget);
+  });
+  return [safeBase, ...groups].filter(Boolean).join(" ");
 }
 
 export async function listTara(
