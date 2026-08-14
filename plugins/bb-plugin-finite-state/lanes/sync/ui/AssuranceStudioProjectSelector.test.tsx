@@ -27,6 +27,7 @@ describe("AssuranceStudioProjectSelector", () => {
   it("does not infer a winner from equally primary linked projects", () => {
     const slot = render(
       <AssuranceStudioProjectSelector
+        candidateState="ambiguous"
         candidates={candidates}
         error={null}
         loading={false}
@@ -55,6 +56,7 @@ describe("AssuranceStudioProjectSelector", () => {
     const onSelect = vi.fn(async () => undefined);
     const slot = render(
       <AssuranceStudioProjectSelector
+        candidateState="ambiguous"
         candidates={candidates}
         error={null}
         loading={false}
@@ -71,5 +73,35 @@ describe("AssuranceStudioProjectSelector", () => {
     await waitFor(() =>
       expect(onSelect).toHaveBeenCalledWith("as-project-two"),
     );
+  });
+
+  it("requires confirmation for one unambiguous linked project", () => {
+    const slot = render(
+      <AssuranceStudioProjectSelector
+        candidateState="unambiguous"
+        candidates={[candidates[0]!]}
+        error={null}
+        loading={false}
+        onRetry={vi.fn()}
+        onSelect={vi.fn()}
+        saving={false}
+        selectedId={null}
+      />,
+    );
+
+    expect(
+      slot.getByText(
+        "1 linked project is available. Confirm it explicitly before connected reads.",
+      ),
+    ).toBeTruthy();
+    expect(
+      (slot.getByLabelText("Assurance Studio project") as HTMLSelectElement)
+        .value,
+    ).toBe("");
+    expect(
+      slot
+        .getByRole("button", { name: "Save selection" })
+        .getAttribute("disabled"),
+    ).not.toBeNull();
   });
 });

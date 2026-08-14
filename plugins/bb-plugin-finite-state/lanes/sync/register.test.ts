@@ -352,18 +352,44 @@ describe("sync registration", () => {
         .all("bb-project-sync"),
     ).toEqual([scope.projectId]);
 
+    bindWorkspacePlatformProject(
+      context.db(),
+      "bb-project-failed-sync",
+      scope.projectId,
+    );
+    selectAssuranceStudioProjectBinding(
+      context.db(),
+      "bb-project-failed-sync",
+      scope.projectId,
+      "as-project-explicit",
+    );
     remoteRequirementError = new Error("registered RPC pull failed");
     try {
       await expect(
         host.harness.behavior.callRpc("syncPull", {
           ...scope,
-          workspaceProjectId: "bb-project-sync",
+          workspaceProjectId: "bb-project-failed-sync",
           kinds: ["requirement"],
         }),
       ).rejects.toThrow("registered RPC pull failed");
     } finally {
       remoteRequirementError = null;
     }
+    expect(
+      context
+        .db()
+        .prepare(
+          `SELECT platform_project_id, assurance_studio_project_id
+             FROM workspace_platform_project_binding
+            WHERE workspace_project_id = ?`,
+        )
+        .all("bb-project-failed-sync"),
+    ).toEqual([
+      {
+        platform_project_id: scope.projectId,
+        assurance_studio_project_id: "as-project-explicit",
+      },
+    ]);
     const statusReport = await host.harness.behavior.callRpc("syncStatus", {
       ...scope,
       workspaceProjectId: "bb-project-sync",
@@ -504,6 +530,35 @@ describe("sync registration", () => {
       selectedAssuranceStudioProjectId: null,
     });
     expect(listed.items).toHaveLength(4);
+
+    await expect(
+      host.harness.behavior.callRpc("syncAsProjectCandidates", {
+        workspaceProjectId: "bb-project-sync",
+        projectId: "platform-project-c",
+        projectVersionId: null,
+      }),
+    ).resolves.toMatchObject({
+      platformProjectId: "platform-project-c",
+      candidateState: "unambiguous",
+      selectedAssuranceStudioProjectId: null,
+      items: [
+        expect.objectContaining({
+          assuranceStudioProjectId: "as-project-c1",
+        }),
+      ],
+    });
+    await expect(
+      host.harness.behavior.callRpc("syncAsProjectCandidates", {
+        workspaceProjectId: "bb-project-sync",
+        projectId: "platform-project-unlinked",
+        projectVersionId: null,
+      }),
+    ).resolves.toMatchObject({
+      platformProjectId: "platform-project-unlinked",
+      candidateState: "none",
+      selectedAssuranceStudioProjectId: null,
+      items: [],
+    });
 
     await host.harness.behavior.callRpc("syncAsProjectSelect", {
       workspaceProjectId: "bb-project-sync",

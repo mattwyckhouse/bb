@@ -143,6 +143,30 @@
       "updated_at": "2026-05-12T14:30:00.000Z",
       "version_strategy": "specific",
       "vulnerability_count": 3
+    },
+    {
+      "created_at": "2026-05-12T14:30:00.000Z",
+      "created_by": "fixture-user",
+      "critical_vuln_count": 1,
+      "fs_product_id": "platform-project-c",
+      "fs_product_name": "Platform Project C",
+      "fs_version_id": "platform-version-c",
+      "fs_version_name": "Version C",
+      "id": "link-c1",
+      "is_primary": true,
+      "last_synced_at": "2026-05-12T14:30:00.000Z",
+      "organization_id": "fixture-organization",
+      "project_id": "as-project-c1",
+      "sbom_component_count": 12,
+      "source_type": "finite_state",
+      "summary": {
+        "status": "captured-shape"
+      },
+      "sync_error": null,
+      "sync_status": "synced",
+      "updated_at": "2026-05-12T14:30:00.000Z",
+      "version_strategy": "specific",
+      "vulnerability_count": 3
     }
   ],
   "projects": [
@@ -169,6 +193,10 @@
     {
       "id": "as-project-b2",
       "name": "AS Project B2"
+    },
+    {
+      "id": "as-project-c1",
+      "name": "AS Project C1"
     }
   ]
 }

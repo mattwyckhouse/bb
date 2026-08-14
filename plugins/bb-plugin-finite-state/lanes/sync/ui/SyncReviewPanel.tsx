@@ -64,6 +64,13 @@ const PRODUCT_SECURITY_KINDS = [
   "attackPath",
   "sbomLink",
 ] as const satisfies readonly EntityKind[];
+const CONNECTED_PRODUCT_SECURITY_KINDS = [
+  "component",
+  "zone",
+  "dataflow",
+  "asset",
+  "threat",
+] as const satisfies readonly EntityKind[];
 const PLATFORM_KINDS: ReadonlySet<string> = new Set(["vexDecision"]);
 const ASSURANCE_STUDIO_KINDS: ReadonlySet<string> = new Set(
   PRODUCT_SECURITY_KINDS,
@@ -249,7 +256,9 @@ export function parseSyncReviewSubPath(subPath: string): ParsedRoute {
 
 function routeKinds(surface: SyncSurfaceFilter): EntityKind[] | undefined {
   if (surface === "all") return undefined;
-  if (surface === "product-security") return [...PRODUCT_SECURITY_KINDS];
+  if (surface === "product-security") {
+    return [...CONNECTED_PRODUCT_SECURITY_KINDS];
+  }
   if (surface === "triage") return ["vexDecision"];
   return [surface];
 }
@@ -257,7 +266,12 @@ function routeKinds(surface: SyncSurfaceFilter): EntityKind[] | undefined {
 export function isSyncReviewSurfaceAvailable(
   surface: SyncSurfaceFilter,
 ): boolean {
-  return surface === "all" || surface === "triage" || surface === "vexDecision";
+  return (
+    surface === "all" ||
+    surface === "product-security" ||
+    surface === "triage" ||
+    surface === "vexDecision"
+  );
 }
 
 function routeSurfaceLabel(surface: SyncSurfaceFilter): string {
@@ -535,6 +549,50 @@ function MissingScopeState(): React.JSX.Element {
   );
 }
 
+function WorkspaceProjectRequiredState(): React.JSX.Element {
+  return (
+    <div className="flex min-h-80 items-center justify-center p-6">
+      <section className="w-full max-w-lg rounded-lg border border-border bg-card p-6 shadow-sm">
+        <Icon className="size-6 text-muted-foreground" name="FolderOpen" />
+        <p className="mt-4 font-mono text-xs uppercase tracking-wide text-muted-foreground">
+          WORKSPACE_PROJECT_REQUIRED
+        </p>
+        <h2 className="mt-2 text-lg font-semibold">Select a bb project</h2>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          Choose the workspace project that owns this Platform scope before
+          selecting its linked Assurance Studio project.
+        </p>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
+          No status or plan request was sent.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+function AssuranceStudioSelectionRequiredState(): React.JSX.Element {
+  return (
+    <div className="flex min-h-80 items-center justify-center p-6">
+      <section className="w-full max-w-lg rounded-lg border border-border bg-card p-6 shadow-sm">
+        <Icon className="size-6 text-muted-foreground" name="ExternalLink" />
+        <p className="mt-4 font-mono text-xs uppercase tracking-wide text-muted-foreground">
+          AS_PROJECT_SELECTION_REQUIRED
+        </p>
+        <h2 className="mt-2 text-lg font-semibold">
+          Select an Assurance Studio project
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          Use the selector above to confirm the exact product-linked project.
+          Primary status and link order never select it automatically.
+        </p>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
+          No status or plan request was sent.
+        </p>
+      </section>
+    </div>
+  );
+}
+
 function ProjectScopeGuidanceState({
   surface,
 }: {
@@ -718,6 +776,7 @@ export function SyncReviewPanel({
   const activeScope = route?.scope ?? selectedScope;
   const surface = route?.surface ?? "all";
   const surfaceAvailable = isSyncReviewSurfaceAvailable(surface);
+  const requiresAssuranceStudio = surfaceUsesAssuranceStudio(surface);
   const kinds = useMemo(() => routeKinds(surface), [surface]);
   const [state, setState] = useState<ReviewState>({ kind: "loading" });
   const [refreshing, setRefreshing] = useState(false);
@@ -736,6 +795,9 @@ export function SyncReviewPanel({
   const [asProjectsLoading, setAsProjectsLoading] = useState(false);
   const [asProjectsSaving, setAsProjectsSaving] = useState(false);
   const [asProjectsError, setAsProjectsError] = useState<string | null>(null);
+  const assuranceStudioSelectionReady =
+    !requiresAssuranceStudio ||
+    typeof asProjects?.selectedAssuranceStudioProjectId === "string";
   const requestGeneration = useRef(0);
   const realtimeDebounce = useRef<number | null>(null);
   const connectedOnce = useRef(false);
@@ -857,7 +919,8 @@ export function SyncReviewPanel({
     async (keepVisible = false) => {
       if (
         !activeScope ||
-        (!workspaceProjectId && surfaceUsesAssuranceStudio(surface)) ||
+        (!workspaceProjectId && requiresAssuranceStudio) ||
+        !assuranceStudioSelectionReady ||
         activeScope.projectVersionId === null ||
         !surfaceAvailable ||
         !route
@@ -936,7 +999,8 @@ export function SyncReviewPanel({
       loadPlan,
       route,
       rpc,
-      surface,
+      assuranceStudioSelectionReady,
+      requiresAssuranceStudio,
       surfaceAvailable,
       workspaceProjectId,
     ],
@@ -946,7 +1010,8 @@ export function SyncReviewPanel({
     if (
       !parsedRoute.valid ||
       !activeScope ||
-      (!workspaceProjectId && surfaceUsesAssuranceStudio(surface)) ||
+      (!workspaceProjectId && requiresAssuranceStudio) ||
+      !assuranceStudioSelectionReady ||
       activeScope.projectVersionId === null ||
       !surfaceAvailable
     ) {
@@ -955,8 +1020,10 @@ export function SyncReviewPanel({
     void refresh(false);
   }, [
     activeScope,
+    assuranceStudioSelectionReady,
     parsedRoute.valid,
     refresh,
+    requiresAssuranceStudio,
     surface,
     surfaceAvailable,
     workspaceProjectId,
@@ -1191,6 +1258,7 @@ export function SyncReviewPanel({
           </div>
           {workspaceProjectId ? (
             <AssuranceStudioProjectSelector
+              candidateState={asProjects?.candidateState ?? "none"}
               candidates={asProjects?.items ?? []}
               error={asProjectsError}
               key={`${activeScope?.projectId ?? "no-scope"}:${asProjects?.selectedAssuranceStudioProjectId ?? "unselected"}`}
@@ -1226,6 +1294,16 @@ export function SyncReviewPanel({
             }}
             surface={surface}
           />
+        </div>
+      ) : requiresAssuranceStudio && !workspaceProjectId ? (
+        <div className="min-h-0 flex-1 overflow-auto">
+          <WorkspaceProjectRequiredState />
+        </div>
+      ) : requiresAssuranceStudio &&
+        asProjects !== null &&
+        !assuranceStudioSelectionReady ? (
+        <div className="min-h-0 flex-1 overflow-auto">
+          <AssuranceStudioSelectionRequiredState />
         </div>
       ) : state.kind === "loading" ? (
         <div className="min-h-0 flex-1 overflow-auto">

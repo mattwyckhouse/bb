@@ -496,6 +496,7 @@ async function resolveOrphans(
   states: readonly AdapterState[],
   remote: ReadonlyMap<EntityKind, ReadonlyMap<string, Record<string, unknown>>>,
   degraded: boolean,
+  binding: PullProjectBinding,
 ): Promise<Map<string, boolean>> {
   const result = new Map<string, boolean>();
   if (degraded) return result;
@@ -505,12 +506,17 @@ async function resolveOrphans(
     const resolver = registered.has(state.adapter)
       ? registeredResolver(state.adapter.kind)
       : undefined;
+    const resolverScope = remoteScopeForKind(
+      state.adapter.kind,
+      scope,
+      binding,
+    );
     for (const row of state.workingRows) {
       const resolved =
         resolver === undefined
           ? remote.get(state.adapter.kind)?.has(row.key) === true ||
             state.base.has(row.key)
-          : (await resolver(row.key, scope)).resolved;
+          : (await resolver(row.key, resolverScope)).resolved;
       result.set(`${state.adapter.kind}\0${row.key}`, !resolved);
     }
   }
@@ -900,7 +906,7 @@ export async function computePlan(
   let orphans = new Map<string, boolean>();
   if (!remoteDegraded) {
     try {
-      orphans = await resolveOrphans(scope, states, remote, false);
+      orphans = await resolveOrphans(scope, states, remote, false, binding);
     } catch (error: unknown) {
       if (error instanceof RemoteError && error.code === "REMOTE_ABORTED")
         throw error;

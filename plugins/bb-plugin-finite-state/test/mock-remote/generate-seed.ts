@@ -878,6 +878,13 @@ function buildCorpus(seed: string): {
       platformVersionName: "Version B",
       projects: ["b1", "b2"],
     },
+    {
+      platformProjectId: "platform-project-c",
+      platformProjectName: "Platform Project C",
+      platformVersionId: "platform-version-c",
+      platformVersionName: "Version C",
+      projects: ["c1"],
+    },
   ];
   const projectLinks = {
     projects: projectLinkGroups.flatMap((group) =>

@@ -41,6 +41,7 @@ export interface AssuranceStudioClientOptions {
 /** Sanitized project-link candidate from the FS-198 verified AS read routes. */
 /** Largest page the Assurance Studio API and normalized pager accept. */
 export const ASSURANCE_STUDIO_MAX_PAGE_SIZE = 200;
+const ASSURANCE_STUDIO_PROJECT_LINK_LIMIT = 1_000;
 
 function clean(value: unknown): Json {
   if (value === null || typeof value === "string" || typeof value === "boolean")
@@ -139,6 +140,29 @@ function nullableString(
   return normalized;
 }
 
+function nullableTimestamp(
+  fields: Record<string, Json>,
+  field: string,
+  code: string,
+): string | null {
+  const value = nullableString(fields, field, code);
+  if (value === null) return null;
+  if (
+    !/(?:Z|[+-]\d{2}:\d{2})$/u.test(value) ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    throw new RemoteError(`Assurance Studio ${field} was invalid`, {
+      service: "assurance-studio",
+      code,
+      status: null,
+      retryable: false,
+      retryAfterMs: null,
+      details: { field },
+    });
+  }
+  return value;
+}
+
 function projectIdentity(value: unknown): { id: string; name: string } {
   const fields = object(value);
   return {
@@ -211,7 +235,7 @@ function projectLinkCandidate(
       "sync_status",
       "AS_INVALID_PROJECT_LINK",
     ),
-    lastSyncedAt: nullableString(
+    lastSyncedAt: nullableTimestamp(
       fields,
       "last_synced_at",
       "AS_INVALID_PROJECT_LINK",
@@ -624,18 +648,30 @@ export class AssuranceStudioClient implements AssuranceStudioClientContract {
           );
       }),
     );
-    return nested
-      .flat()
-      .sort(
-        (left, right) =>
-          left.assuranceStudioProjectName.localeCompare(
-            right.assuranceStudioProjectName,
-          ) ||
-          left.assuranceStudioProjectId.localeCompare(
-            right.assuranceStudioProjectId,
-          ) ||
-          left.linkId.localeCompare(right.linkId),
+    const candidates = nested.flat();
+    if (candidates.length > ASSURANCE_STUDIO_PROJECT_LINK_LIMIT) {
+      throw new RemoteError(
+        "Assurance Studio project-link candidates exceeded their bound",
+        {
+          service: "assurance-studio",
+          code: "AS_PROJECT_CANDIDATE_LIMIT",
+          status: null,
+          retryable: false,
+          retryAfterMs: null,
+          details: { maxCandidates: ASSURANCE_STUDIO_PROJECT_LINK_LIMIT },
+        },
       );
+    }
+    return candidates.sort(
+      (left, right) =>
+        left.assuranceStudioProjectName.localeCompare(
+          right.assuranceStudioProjectName,
+        ) ||
+        left.assuranceStudioProjectId.localeCompare(
+          right.assuranceStudioProjectId,
+        ) ||
+        left.linkId.localeCompare(right.linkId),
+    );
   }
 
   #pageNumberPages<T>(

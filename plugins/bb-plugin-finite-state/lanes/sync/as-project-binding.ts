@@ -2,6 +2,7 @@ import type {
   AssuranceStudioClient,
   AssuranceStudioProjectLinkCandidate,
 } from "../../lib/remote/types.js";
+import { RemoteError } from "../../lib/remote/types.js";
 import {
   assuranceStudioProjectBinding,
   bindWorkspacePlatformProject,
@@ -10,7 +11,7 @@ import {
 import type { EngineDeps } from "./engine/pull.js";
 
 const ENUMERATION_PAGE_SIZE = 200;
-const MAX_ENUMERATION_PAGES = 100;
+const MAX_PROJECT_LINK_CANDIDATES = 1_000;
 
 export type AssuranceStudioProjectCandidateState =
   | "ambiguous"
@@ -30,16 +31,24 @@ export async function enumerateAssuranceStudioProjectCandidates(
   platformProjectId: string,
 ): Promise<AssuranceStudioProjectLinkCandidate[]> {
   const candidates: AssuranceStudioProjectLinkCandidate[] = [];
-  let pages = 0;
   for await (const page of assuranceStudio.listProjectLinks({
     platformProjectId,
     page: { pageSize: ENUMERATION_PAGE_SIZE },
   })) {
-    pages += 1;
-    if (pages > MAX_ENUMERATION_PAGES) {
-      throw new Error("AS_PROJECT_ENUMERATION_PAGE_LIMIT");
-    }
     candidates.push(...page.items);
+    if (candidates.length > MAX_PROJECT_LINK_CANDIDATES) {
+      throw new RemoteError(
+        "Assurance Studio project-link candidates exceeded their bound",
+        {
+          service: "assurance-studio",
+          code: "AS_PROJECT_CANDIDATE_LIMIT",
+          status: null,
+          retryable: false,
+          retryAfterMs: null,
+          details: { maxCandidates: MAX_PROJECT_LINK_CANDIDATES },
+        },
+      );
+    }
   }
   return candidates;
 }

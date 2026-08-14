@@ -35,3 +35,13 @@ The 15 links represented 14 AS projects and 11 Platform projects. One
 Platform project/version had four distinct AS projects and another had two.
 Every row in both ambiguous groups had `is_primary=true`, and each group shared
 one `fs_version_id`; therefore neither field is a valid automatic tie-break.
+
+## 2. Timestamp validator confirmation
+
+A second sanitized read-only pass on 2026-08-14 drained the same 20 project
+routes and 15 link rows solely to classify `last_synced_at` format. Fourteen
+rows had a non-null timestamp; all 14 ended in `Z` or an explicit numeric UTC
+offset, zero lacked an offset, and zero had a non-string value. The capture
+therefore supports the boundary contract used by
+`z.string().datetime({ offset: true })`. Timestamp values and project
+identifiers remain withheld.

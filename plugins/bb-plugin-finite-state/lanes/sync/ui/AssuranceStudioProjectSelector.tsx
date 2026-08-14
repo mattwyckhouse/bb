@@ -13,6 +13,7 @@ export interface AssuranceStudioProjectOption {
 }
 
 export function AssuranceStudioProjectSelector({
+  candidateState,
   candidates,
   error,
   loading,
@@ -21,6 +22,7 @@ export function AssuranceStudioProjectSelector({
   saving,
   selectedId,
 }: {
+  candidateState: "ambiguous" | "none" | "unambiguous";
   candidates: AssuranceStudioProjectOption[];
   error: string | null;
   loading: boolean;
@@ -102,9 +104,14 @@ export function AssuranceStudioProjectSelector({
           </AlertDescription>
         </Alert>
       ) : null}
-      {candidates.length > 1 ? (
+      {candidateState === "ambiguous" ? (
         <p className="mt-2 text-xs text-warning">
           {candidates.length} linked projects require an explicit choice.
+        </p>
+      ) : candidateState === "unambiguous" ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          1 linked project is available. Confirm it explicitly before connected
+          reads.
         </p>
       ) : null}
       {error ? (

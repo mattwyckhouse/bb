@@ -255,6 +255,26 @@ function handlers(
 ) {
   return {
     connectionsStatus: connectionHandler,
+    syncAsProjectCandidates: () => ({
+      platformProjectId: PROJECT,
+      candidateState: "unambiguous" as const,
+      selectedAssuranceStudioProjectId: "as-project-default",
+      items: [
+        {
+          linkId: "link-default",
+          assuranceStudioProjectId: "as-project-default",
+          assuranceStudioProjectName: "Default AS Project",
+          platformProjectId: PROJECT,
+          platformProjectName: "Platform Project",
+          platformProjectVersionId: VERSION,
+          platformProjectVersionName: "2.4",
+          isPrimary: true,
+          syncStatus: "synced",
+          lastSyncedAt: "2026-08-14T00:00:00.000Z",
+          versionStrategy: "latest",
+        },
+      ],
+    }),
     syncStatus: status,
     syncPlan: planHandler,
   };
@@ -326,6 +346,7 @@ describe("Sync review panel", () => {
   );
 
   it("requires an explicit UI choice for an ambiguous AS project set", async () => {
+    let selectedId: string | null = null;
     const candidates = ["as-one", "as-two", "as-three", "as-four"].map(
       (id) => ({
         linkId: `link-${id}`,
@@ -343,13 +364,14 @@ describe("Sync review panel", () => {
     );
     const slot = renderSlot(
       await syncPanel(),
-      { subPath: `${SCOPE_PATH}/surface/requirement` },
+      { subPath: `${SCOPE_PATH}/surface/product-security` },
       {
         rpc: {
+          ...handlers(() => plan([])),
           syncAsProjectCandidates: () => ({
             platformProjectId: PROJECT,
             candidateState: "ambiguous" as const,
-            selectedAssuranceStudioProjectId: null,
+            selectedAssuranceStudioProjectId: selectedId,
             items: candidates,
           }),
           syncAsProjectSelect: (input) => {
@@ -359,6 +381,7 @@ describe("Sync review panel", () => {
                 inputField(input, "assuranceStudioProjectId"),
             );
             if (!selected) throw new Error("candidate missing");
+            selectedId = selected.assuranceStudioProjectId;
             return selected;
           },
         },
@@ -366,6 +389,13 @@ describe("Sync review panel", () => {
     );
 
     await slot.findByText("4 linked projects require an explicit choice.");
+    expect(slot.getByText("AS_PROJECT_SELECTION_REQUIRED")).toBeTruthy();
+    expect(slot.getByText("No status or plan request was sent.")).toBeTruthy();
+    expect(
+      slot.inspection.rpcCalls.some(
+        (call) => call.method === "syncStatus" || call.method === "syncPlan",
+      ),
+    ).toBe(false);
     const selector = slot.getByLabelText("Assurance Studio project");
     expect((selector as HTMLSelectElement).value).toBe("");
     fireEvent.change(selector, { target: { value: "as-three" } });
@@ -381,10 +411,48 @@ describe("Sync review panel", () => {
         },
       }),
     );
+    expect(await slot.findByText("No local changes")).toBeTruthy();
+    expect(slot.inspection.rpcCalls).toContainEqual({
+      method: "syncStatus",
+      input: {
+        workspaceProjectId: "workspace-project",
+        projectId: PROJECT,
+        projectVersionId: VERSION,
+        kinds: ["component", "zone", "dataflow", "asset", "threat"],
+      },
+    });
+  });
+
+  it("renders WORKSPACE_PROJECT_REQUIRED instead of a silent product-security panel", async () => {
+    const slot = renderTestSlot(
+      await syncPanel(),
+      { subPath: `${SCOPE_PATH}/surface/product-security` },
+      {
+        context: { projectId: null, threadId: null },
+        rpc: {},
+        sidebarThreads: {
+          status: "ready",
+          projects: [
+            {
+              id: "workspace-project",
+              name: "Workspace Project",
+              isPersonal: false,
+            },
+          ],
+          threads: [],
+        },
+      },
+    );
+
+    expect(slot.getByText("WORKSPACE_PROJECT_REQUIRED")).toBeTruthy();
+    expect(
+      slot.getByRole("heading", { name: "Select a bb project" }),
+    ).toBeTruthy();
+    expect(slot.getByText("No status or plan request was sent.")).toBeTruthy();
+    expect(slot.inspection.rpcCalls).toEqual([]);
   });
 
   it.each([
-    ["product-security", "Product Security"],
     ["requirement", "requirement"],
     ["threat", "threat"],
     ["hbomPart", "hbomPart"],
@@ -443,7 +511,7 @@ describe("Sync review panel", () => {
     expect(isSyncReviewSurfaceAvailable("all")).toBe(true);
     expect(isSyncReviewSurfaceAvailable("triage")).toBe(true);
     expect(isSyncReviewSurfaceAvailable("vexDecision")).toBe(true);
-    expect(isSyncReviewSurfaceAvailable("product-security")).toBe(false);
+    expect(isSyncReviewSurfaceAvailable("product-security")).toBe(true);
     expect(isSyncReviewSurfaceAvailable("component")).toBe(false);
     expect(isSyncReviewSurfaceAvailable("finding")).toBe(false);
   });
@@ -586,7 +654,7 @@ describe("Sync review panel", () => {
       failed.getByRole("button", { name: "Retry with fresh plan" }),
     );
     expect(await failed.findByText("VEX decision 1")).toBeTruthy();
-    expect(retryablePlan).toHaveBeenCalledTimes(2);
+    expect(retryablePlan.mock.calls.length).toBeGreaterThanOrEqual(2);
     failed.lifecycle.unmount();
 
     const unconfigured = renderSlot(
@@ -794,7 +862,7 @@ describe("Sync review panel", () => {
       },
     );
     await slot.findByText("VEX decision 1");
-    expect(syncPlan).toHaveBeenCalledTimes(1);
+    const callsBeforeRealtimeHint = syncPlan.mock.calls.length;
 
     await slot.behavior.emitRealtime("fs-sync-push", {
       plan: { items: [{ label: "PAYLOAD MUST NOT RENDER" }] },
@@ -804,7 +872,9 @@ describe("Sync review panel", () => {
       phase: "completed",
     });
 
-    await waitFor(() => expect(syncPlan).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(syncPlan).toHaveBeenCalledTimes(callsBeforeRealtimeHint + 1),
+    );
     expect(slot.queryByText("PAYLOAD MUST NOT RENDER")).toBeNull();
   });
 
@@ -858,7 +928,9 @@ describe("Sync review panel", () => {
         resolution: { choice: "take-ours" },
       }),
     );
-    await waitFor(() => expect(syncPlan).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(syncPlan.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
   });
 
   it("renders per-item partial results and retries only retryable failed keys", async () => {

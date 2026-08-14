@@ -102,6 +102,23 @@ describe("Assurance Studio project-link enumeration", () => {
     expect(
       projectB.every((candidate) => candidate.syncStatus === "synced"),
     ).toBe(true);
+
+    const projectC = [];
+    for await (const page of client.listProjectLinks({
+      platformProjectId: "platform-project-c",
+    })) {
+      projectC.push(...page.items);
+    }
+    expect(projectC).toHaveLength(1);
+    expect(projectC[0]?.assuranceStudioProjectId).toBe("as-project-c1");
+
+    const unlinked = [];
+    for await (const page of client.listProjectLinks({
+      platformProjectId: "platform-project-unlinked",
+    })) {
+      unlinked.push(...page.items);
+    }
+    expect(unlinked).toEqual([]);
   });
 
   it("resumes candidate paging without changing the explicit candidate set", async () => {
@@ -137,6 +154,14 @@ describe("Assurance Studio project-link enumeration", () => {
     [
       "non-boolean primary",
       { project_id: "as-project-a1", is_primary: "true" },
+      "AS_INVALID_PROJECT_LINK",
+    ],
+    [
+      "timestamp without an offset",
+      {
+        project_id: "as-project-a1",
+        last_synced_at: "2026-08-14T12:00:00",
+      },
       "AS_INVALID_PROJECT_LINK",
     ],
   ])(
@@ -189,4 +214,49 @@ describe("Assurance Studio project-link enumeration", () => {
       await expect(consume()).rejects.toMatchObject({ code });
     },
   );
+
+  it("fails with a typed refusal before more than 1,000 candidates reach RPC validation", async () => {
+    const links = Array.from({ length: 1_001 }, (_, index) => ({
+      id: `link-${index}`,
+      project_id: "as-project-limit",
+      fs_product_id: "platform-project-limit",
+      fs_product_name: "Platform Project Limit",
+      fs_version_id: "platform-version-limit",
+      fs_version_name: "Version Limit",
+      is_primary: true,
+      sync_status: "synced",
+      last_synced_at: "2026-08-14T12:00:00.000Z",
+      version_strategy: "specific",
+    }));
+    const client = new AssuranceStudioClient({
+      baseUrl: "http://as.mock",
+      apiKey,
+      fetch: async (input) => {
+        const url = new URL(String(input));
+        return url.pathname === "/api/projects"
+          ? Response.json({
+              success: true,
+              data: {
+                items: [{ id: "as-project-limit", name: "AS Project Limit" }],
+                total: 1,
+                page: 1,
+                pageSize: 200,
+                hasMore: false,
+              },
+            })
+          : Response.json({ success: true, data: links });
+      },
+    });
+    const consume = async () => {
+      for await (const _page of client.listProjectLinks({
+        platformProjectId: "platform-project-limit",
+      })) {
+        // The client must reject before yielding an oversized candidate page.
+      }
+    };
+    await expect(consume()).rejects.toMatchObject({
+      code: "AS_PROJECT_CANDIDATE_LIMIT",
+      details: { maxCandidates: 1_000 },
+    });
+  });
 });

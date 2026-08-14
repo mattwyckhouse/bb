@@ -264,7 +264,7 @@ async function statusAdapter(
       const resolved =
         resolver === undefined
           ? remote.has(row.key)
-          : (await resolver(row.key, scope)).resolved;
+          : (await resolver(row.key, remoteScope)).resolved;
       if (!resolved)
         orphans.push({ kind: adapter.kind, key: row.key, file: row.file });
     }

@@ -31,4 +31,11 @@ describe("Assurance Studio project candidate state", () => {
       "as-d",
     ]);
   });
+
+  it("distinguishes one explicit candidate from no linked candidates", () => {
+    expect(assuranceStudioProjectCandidateState([candidate("as-only")])).toBe(
+      "unambiguous",
+    );
+    expect(assuranceStudioProjectCandidateState([])).toBe("none");
+  });
 });
