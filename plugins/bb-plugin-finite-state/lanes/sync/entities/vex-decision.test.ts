@@ -26,6 +26,7 @@ import {
   projectVexDecision,
   projectVexDecisionKey,
   readVexWorking,
+  type VexRemoteRowAdvisory,
   VexWorkingReadError,
 } from "./vex-decision.js";
 
@@ -511,6 +512,145 @@ decisions:
     expect(canonical.group).toBe("a%2Fb");
   });
 
+  it("migrates the opaque VEX key alias on the byte-frozen real specimen", async () => {
+    const row = JSON.parse(
+      await readFile(
+        resolve(
+          import.meta.dirname,
+          "../../../test/mock-remote/fixtures/platform/fs174-i491nax-distro-specimen.json",
+        ),
+        "utf8",
+      ),
+    ) as Record<string, Json>;
+    const decided = { ...row, vexStatus: "NOT_AFFECTED" };
+    const targetKey = projectVexDecisionKey(decided);
+    const componentId = "e1a048dc-9890-5333-9e97-cd5d6f429fcd";
+    const root = await worktree();
+    const projectId = "cfe6fb97-ed49-5ace-b0fe-8121dba2c793";
+    const projectVersionId = "b3df3633-ebd7-560e-a3b7-77953521b4e3";
+    const directory = join(root, ".fs", "triage", projectId);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      join(directory, "component.yaml"),
+      `schema: fs-triage/v1
+project: ${projectId}
+component:
+  purl: null
+  name: ${componentId}
+  group: null
+  version: null
+decisions:
+  CVE-2016-4658:
+    status: NOT_AFFECTED
+    justification: CODE_NOT_PRESENT
+    response: null
+    reason: reviewed evidence
+`,
+      "utf8",
+    );
+    expect((await readVexWorking(root))[0]?.key).toBe(
+      ENTITIES.vexDecision.key({
+        cve: "CVE-2016-4658",
+        purl: null,
+        name: componentId,
+        group: null,
+        version: null,
+      }),
+    );
+    const platform = {
+      getFindings() {
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { items: [decided], total: 1, next: null };
+          },
+        };
+      },
+    };
+    const host = createFakePluginHost({ pluginId: "fs173-opaque-alias" });
+    hosts.push(host);
+    const db = createPluginContext(host.bb).db();
+    await pull(
+      {
+        db,
+        adapters: [createVexDecisionAdapter(platform, db)],
+        cachePullers: [],
+        worktreeRoot: root,
+        createGenerationId: () => "opaque-alias-1",
+        now: () => new Date("2026-08-14T03:40:00.000Z"),
+      },
+      { projectId, projectVersionId },
+      ["vexDecision"],
+    );
+    expect(
+      (await readVexWorking(root, { projectId, projectVersionId }))[0]?.key,
+    ).toBe(targetKey);
+  });
+
+  it("isolates a synthetic nameless decided row and retains its valid peer", async () => {
+    const valid = JSON.parse(
+      await readFile(
+        resolve(
+          import.meta.dirname,
+          "../../../test/mock-remote/fixtures/platform/fs174-i491nax-distro-specimen.json",
+        ),
+        "utf8",
+      ),
+    ) as Record<string, Json>;
+    const nameless: Record<string, Json> = {
+      id: "synthetic-nameless-decided",
+      findingId: "CVE-2026-9999",
+      component: { id: "opaque-only", version: "1.0" },
+      vexStatus: "NOT_AFFECTED",
+    };
+    const validDecided: Record<string, Json> = {
+      ...valid,
+      vexStatus: "NOT_AFFECTED",
+    };
+    const advisories: VexRemoteRowAdvisory[] = [];
+    const platform = {
+      getFindings() {
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              items: [nameless, validDecided],
+              total: 2,
+              next: null,
+            };
+          },
+        };
+      },
+    };
+    const host = createFakePluginHost({ pluginId: "fs173-row-isolation" });
+    hosts.push(host);
+    const db = createPluginContext(host.bb).db();
+    const report = await pull(
+      {
+        db,
+        adapters: [
+          createVexDecisionAdapter(platform, db, (advisory) =>
+            advisories.push(advisory),
+          ),
+        ],
+        worktreeRoot: null,
+        createGenerationId: () => "row-isolation-1",
+        now: () => new Date("2026-08-14T03:40:00.000Z"),
+      },
+      {
+        projectId: "cfe6fb97-ed49-5ace-b0fe-8121dba2c793",
+        projectVersionId: "b3df3633-ebd7-560e-a3b7-77953521b4e3",
+      },
+      ["vexDecision"],
+    );
+    expect(report.kinds["vexDecision"]).toEqual({ fetched: 1, baseRows: 1 });
+    expect(advisories).toEqual([
+      {
+        code: "VEX_REMOTE_IDENTITY_MISSING",
+        findingId: "synthetic-nameless-decided",
+        message: "Platform finding is missing canonical identity",
+      },
+    ]);
+  });
+
   it("migrates a VEX-space legacy key through pull and keeps the new key stable", async () => {
     const specimen = JSON.parse(
       await readFile(
@@ -541,7 +681,7 @@ component:
   group: null
   version: null
 decisions:
-  cbdc8dc1-66ad-5264-b81b-67b2eaf1257e:
+  CVE-2026-34877:
     status: NOT_AFFECTED
     justification: CODE_NOT_PRESENT
     response: null
@@ -599,7 +739,7 @@ decisions:
     await pull(deps, scope, ["vexDecision"]);
     const migrated = await readFile(file, "utf8");
     expect(migrated).toContain("CVE-2026-34877:");
-    expect(migrated).not.toContain("cbdc8dc1-66ad-5264-b81b-67b2eaf1257e:");
+    expect(migrated).toContain("version: 3.0.0");
     const workingKeys = async () => {
       const result = await readVexWorking(root, scope).catch(
         (error: unknown) => error,

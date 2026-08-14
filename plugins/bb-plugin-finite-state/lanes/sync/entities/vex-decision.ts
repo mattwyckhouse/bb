@@ -16,6 +16,7 @@ import {
   canonicalFindingStableKey,
   canonicalizeFindingIdentity,
   legacyFindingStableKey,
+  selectFindingCve,
   type CanonicalFindingIdentity,
   type FindingIdentityInput,
 } from "../../findings/stable-key/canonical.js";
@@ -99,7 +100,12 @@ function legacyVexIdentity(
   const componentId =
     optionalString(row, "componentId") ??
     (component === null ? null : optionalString(component, "id"));
-  const cve = optionalString(row, "cve");
+  const cve = selectFindingCve({
+    cve: optionalString(row, "cve"),
+    findingIdentifier: optionalString(row, "findingIdentifier"),
+    findingId: optionalString(row, "findingId"),
+    vulnerabilityId: optionalString(row, "vulnerabilityId"),
+  });
   if (componentId === null || cve === null) return null;
   const purl = optionalString(row, "componentPurl");
   const parsed = purlIdentity(purl);
@@ -114,12 +120,29 @@ function legacyVexIdentity(
   };
 }
 
+export class VexRemoteIdentityError extends TypeError {
+  readonly code = "VEX_REMOTE_IDENTITY_MISSING";
+
+  constructor(readonly findingId: string | null) {
+    super("Platform finding is missing canonical identity");
+    this.name = "VexRemoteIdentityError";
+  }
+}
+
+export interface VexRemoteRowAdvisory {
+  code: VexRemoteIdentityError["code"];
+  findingId: string | null;
+  message: string;
+}
+
 function findingIdentity(
   row: Readonly<Record<string, Json>>,
 ): CanonicalFindingIdentity {
   const identity = currentFindingIdentity(row);
   if (identity === null)
-    throw new TypeError("Platform finding is missing canonical identity");
+    throw new VexRemoteIdentityError(
+      typeof row["id"] === "string" ? row["id"] : null,
+    );
   return canonicalizeFindingIdentity(identity);
 }
 
@@ -677,6 +700,7 @@ export async function fastForwardVexWorking(
 export function createVexDecisionAdapter(
   client: Pick<PlatformClient, "getFindings">,
   db?: Database.Database,
+  onAdvisory: (advisory: VexRemoteRowAdvisory) => void = () => undefined,
 ): EntityAdapter {
   const migrationsByScope = new Map<string, Map<string, VexKeyMigration>>();
   return {
@@ -703,7 +727,18 @@ export function createVexDecisionAdapter(
         });
         const persistedKeys = persistedFindingKeys(db, scope, page.items);
         yield page.items.flatMap((row) => {
-          const projected = projectVexDecision(row);
+          let projected: ServerEntity | null;
+          try {
+            projected = projectVexDecision(row);
+          } catch (error: unknown) {
+            if (!(error instanceof VexRemoteIdentityError)) throw error;
+            onAdvisory({
+              code: error.code,
+              findingId: error.findingId,
+              message: error.message,
+            });
+            return [];
+          }
           if (projected === null) {
             // Migration is best-effort for undecided rows: they are not VEX
             // entities and therefore must never make this pull key-dependent.
