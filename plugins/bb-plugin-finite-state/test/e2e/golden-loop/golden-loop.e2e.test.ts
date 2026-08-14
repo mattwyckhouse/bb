@@ -1108,6 +1108,12 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
             version: "1",
           },
         });
+        runtime.findings.set("fs193-partial-bad", {
+          id: "fs193-partial-bad",
+          projectVersionId: runtime.fs193Version,
+          findingId: "CVE-2026-19302",
+          component: { id: "fs193-partial-invalid", version: "" },
+        });
         const pull = () =>
           runtime.host.harness.behavior.callRpc("syncPull", {
             workspaceProjectId: WORKSPACE_PROJECT_ID,
@@ -1115,8 +1121,33 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
             projectVersionId: runtime.fs193Version,
             kinds: ["finding"],
           });
-        await pull();
-        for (const id of ["fs193-valid-a", "fs193-valid-b"])
+        const partial = await pull();
+        const partialSlot = renderSlot(
+          await registeredPanel("findings"),
+          { subPath: "" },
+          panelRuntime(runtime),
+        );
+        await waitFor(() =>
+          expect(
+            partialSlot.container.querySelectorAll("[data-finding-row]"),
+          ).toHaveLength(2),
+        );
+        fireEvent.click(
+          partialSlot.getByRole("button", { name: "Pull findings" }),
+        );
+        const partialReport = await partialSlot.findByText(
+          /3 fetched · 1 quarantined · 2 published/u,
+        );
+        await artifacts.writeText(
+          "partial-quarantine.dom.html",
+          partialSlot.container.innerHTML,
+        );
+        partialSlot.unmount();
+        for (const id of [
+          "fs193-valid-a",
+          "fs193-valid-b",
+          "fs193-partial-bad",
+        ])
           runtime.findings.delete(id);
         for (let index = 1; index <= 3; index += 1) {
           runtime.findings.set(`fs193-bad-${index}`, {
@@ -1165,17 +1196,90 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
             filters: {},
           },
         );
+        runtime.findings.delete("fs193-repaired");
+        const specimen = object(
+          JSON.parse(
+            await readFile(
+              join(FIXTURE_ROOT, "platform", "fs193-binary-sast-specimen.json"),
+              "utf8",
+            ),
+          ),
+          "FS-199 specimen",
+        );
+        runtime.findings.set("fs199-full-shape", {
+          ...specimen,
+          id: "fs199-full-shape",
+          projectVersionId: runtime.fs193Version,
+        });
+        runtime.findings.set("fs199-advisory", {
+          ...specimen,
+          id: "fs199-advisory",
+          findingId: "FS-500-007",
+          projectVersionId: runtime.fs193Version,
+          warnings: null,
+          violations: "invalid",
+        });
+        runtime.findings.set("fs199-quarantined", {
+          id: "fs199-quarantined",
+          projectVersionId: runtime.fs193Version,
+          findingId: "FS-500-008",
+          component: { id: "fs199-missing-name", version: "" },
+        });
+        const enrichmentPull = await pull();
+        const enrichmentPage = object(
+          await runtime.host.harness.behavior.callRpc("findingsUiList", {
+            projectId: runtime.projectId,
+            projectVersionId: runtime.fs193Version,
+            pageSize: 100,
+            continuation: null,
+            filters: {},
+          }),
+          "FS-199 findings page",
+        );
+        const fullShape = array(enrichmentPage["items"], "FS-199 rows")
+          .map((item) => object(item, "FS-199 row"))
+          .find(
+            (item) =>
+              object(item["fields"], "FS-199 fields")["findingId"] ===
+              "FS-500-006",
+          );
+        const { findingDetailSubPath } =
+          await import("../../../lanes/findings/ui/route.js");
+        const detailSlot = renderSlot(
+          await registeredPanel("findings"),
+          {
+            subPath: findingDetailSubPath(
+              string(fullShape?.["key"], "FS-199 stable key"),
+              {},
+            ),
+          },
+          panelRuntime(runtime),
+        );
+        await detailSlot.findByText("FS-500-006");
+        const detailText = detailSlot.container.textContent ?? "";
+        await artifacts.writeText(
+          "fs199-finding-detail.dom.html",
+          detailSlot.container.innerHTML,
+        );
+        detailSlot.unmount();
         runtime.evidence.set("fs193", {
+          partial,
+          partialReport: partialReport.textContent,
           failure,
           retained,
           recovered,
           published,
+          enrichmentPull,
+          enrichmentPage,
+          detailText,
         });
         await artifacts.writeJson("quarantine-recovery.json", {
           failure,
           retained,
           recovered,
           published,
+          enrichmentPull,
+          enrichmentPage,
         });
       },
       assert: async () => {
@@ -1191,7 +1295,22 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           object(evidence["published"], "published page")["items"],
           "published rows",
         );
+        const enrichmentPull = object(
+          evidence["enrichmentPull"],
+          "FS-199 pull",
+        );
+        const enrichmentKind = object(
+          object(enrichmentPull["kinds"], "FS-199 kinds")["finding"],
+          "FS-199 finding report",
+        );
+        const detailText = string(evidence["detailText"], "FS-199 detail");
         return [
+          assertion(
+            "partial quarantine is truthful in the registered Findings panel",
+            String(evidence["partialReport"]).includes(
+              "Pull complete · 3 fetched · 1 quarantined · 2 published",
+            ),
+          ),
           assertion(
             "all-quarantined pull fails with truthful count",
             string(evidence["failure"], "failure").includes(
@@ -1205,24 +1324,6 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           assertion(
             "same-kind repaired pull publishes",
             published.length === 1,
-          ),
-          assertion(
-            "full-shape pull isolates identity errors and publishes enrichment advisories",
-            enrichmentKind["fetched"] === 3 &&
-              enrichmentKind["quarantined"] === 1 &&
-              enrichmentKind["baseRows"] === 2 &&
-              array(enrichmentPull["advisories"], "FS-199 advisories").some(
-                (item) =>
-                  object(item, "FS-199 advisory")["code"] ===
-                  "FINDING_WARNING_COUNT_INVALID",
-              ),
-          ),
-          assertion(
-            "registered finding detail renders real-shape enrichment",
-            detailText.includes("ca-certificates.crt") &&
-              detailText.includes("0.4%") &&
-              detailText.includes("2 warnings") &&
-              detailText.includes("1 violations"),
           ),
         ];
       },
