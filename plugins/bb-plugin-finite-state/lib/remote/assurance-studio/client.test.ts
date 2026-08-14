@@ -395,4 +395,151 @@ describe("AssuranceStudioClient HTTP-200 error envelopes (FS-211)", () => {
       expect.objectContaining({ id: "req-1", kind: "requirement" }),
     ]);
   });
+
+  it("adversarial envelope matrix: extra keys fail; empty error and error+rows succeed paths stay truthful", async () => {
+    const cases: Array<{
+      name: string;
+      body: unknown;
+      expect: "reported-error" | "empty-page" | "rows";
+    }> = [
+      {
+        name: "envelope with extra keys",
+        body: {
+          error: "Failed to fetch threats",
+          request_id: "adv-1",
+          code: "UPSTREAM",
+        },
+        expect: "reported-error",
+      },
+      {
+        name: "empty error string is not an envelope",
+        body: { error: "" },
+        expect: "empty-page",
+      },
+      {
+        name: "error alongside non-empty data collection succeeds",
+        body: {
+          error: "advisory-not-fatal",
+          data: {
+            threats: [
+              {
+                id: "threat-with-error-key",
+                project_id: "project-adv",
+              },
+            ],
+          },
+        },
+        expect: "rows",
+      },
+      {
+        name: "error with empty data array must not publish empty",
+        body: { error: "Failed", data: [] },
+        expect: "reported-error",
+      },
+      {
+        name: "error with empty named collection must not publish empty",
+        body: { error: "Failed", data: { threats: [] } },
+        expect: "reported-error",
+      },
+    ];
+
+    for (const entry of cases) {
+      const fetch = vi.fn(async () =>
+        Response.json(entry.body, { status: 200 }),
+      );
+      const client = new AssuranceStudioClient({
+        baseUrl: "https://as.example",
+        apiKey: "as-secret",
+        fetch,
+      });
+      if (entry.expect === "reported-error") {
+        await expect(
+          client
+            .listEntities("threat", { projectId: "project-adv" })
+            [Symbol.asyncIterator]()
+            .next(),
+        ).rejects.toMatchObject({
+          code: "AS_REMOTE_REPORTED_ERROR",
+          status: 200,
+        });
+      } else if (entry.expect === "empty-page") {
+        await expect(
+          client
+            .listEntities("threat", { projectId: "project-adv" })
+            [Symbol.asyncIterator]()
+            .next(),
+        ).rejects.toMatchObject({ code: "AS_INVALID_RESPONSE" });
+      } else {
+        const page = await client
+          .listEntities("threat", { projectId: "project-adv" })
+          [Symbol.asyncIterator]()
+          .next();
+        expect(page.value?.items).toEqual([
+          expect.objectContaining({ id: "threat-with-error-key" }),
+        ]);
+      }
+      client.close();
+    }
+  });
+
+  it("preserves a legitimate entity-level error field inside a healthy list page", async () => {
+    const fetch = vi.fn(async () =>
+      Response.json(
+        {
+          success: true,
+          data: {
+            threats: [
+              {
+                id: "threat-entity-error",
+                project_id: "project-adv",
+                error: "entity-level diagnostic string",
+                name: "Keep me",
+              },
+            ],
+          },
+        },
+        { status: 200 },
+      ),
+    );
+    const client = new AssuranceStudioClient({
+      baseUrl: "https://as.example",
+      apiKey: "as-secret",
+      fetch,
+    });
+
+    const page = await client
+      .listEntities("threat", { projectId: "project-adv" })
+      [Symbol.asyncIterator]()
+      .next();
+    expect(page.value?.items).toHaveLength(1);
+    expect(page.value?.items[0]).toMatchObject({
+      id: "threat-entity-error",
+      kind: "threat",
+      fields: expect.objectContaining({
+        error: "entity-level diagnostic string",
+        name: "Keep me",
+      }),
+    });
+  });
+
+  it("fails closed if envelope rejection is reintroduced into entity payload()", () => {
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "client.ts"),
+      "utf8",
+    );
+    const payloadFn = source.match(
+      /function payload\([^)]*\)[^{]*\{[\s\S]*?\n\}/u,
+    )?.[0];
+    expect(payloadFn).toBeTruthy();
+    expect(payloadFn).not.toContain("rejectReportedErrorEnvelope");
+    expect(payloadFn).not.toContain("asReportedErrorEnvelope");
+    expect(payloadFn).not.toContain("envelopeErrorMessage");
+    // Envelope rejection must remain at the HTTP/list boundaries only.
+    expect(source).toMatch(
+      /async #json\([\s\S]*rejectReportedErrorEnvelope\(parsed, response\.status\)/u,
+    );
+    expect(source).toMatch(
+      /function pagePayload\([\s\S]*rejectReportedErrorEnvelope\(value, null\)/u,
+    );
+  });
 });

@@ -85,33 +85,63 @@ function object(value: unknown): Record<string, Json> {
 /**
  * Live AS sometimes returns HTTP 200 with an application error body
  * (`{"error":"Failed to fetch threats"}`, optional `details`) instead of a
- * list/item envelope. Detect that shape without treating a successful
- * `data.<collection>` / `data[]` response as empty.
+ * list/item envelope. Envelope detection belongs only at HTTP/list boundaries
+ * (`#json` / `pagePayload`) — never inside entity `payload()` unwrap, because
+ * OpenAPI reserves `error` for ErrorResponse envelopes, not TARA entity fields.
  */
-function asReportedErrorEnvelope(
-  value: unknown,
-): { error: string; details: string | null } | null {
+function envelopeErrorMessage(value: unknown): string | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
-  const record = value as Record<string, unknown>;
-  if (typeof record.error !== "string") return null;
-  const error = record.error.trim();
-  if (error.length === 0) return null;
-  if (record.success === true) return null;
-  if (record.data !== undefined && record.data !== null) return null;
-  return {
-    error,
-    details: typeof record.details === "string" ? record.details : null,
-  };
+  const error = (value as Record<string, unknown>).error;
+  if (typeof error !== "string") return null;
+  const trimmed = error.trim();
+  return trimmed.length === 0 ? null : trimmed;
 }
 
-function rejectReportedErrorEnvelope(
+function envelopeDetails(value: unknown): string | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const details = (value as Record<string, unknown>).details;
+  return typeof details === "string" ? details : null;
+}
+
+function asReportedErrorEnvelope(
   value: unknown,
+): { error: string; details: string | null } | null {
+  const error = envelopeErrorMessage(value);
+  if (error === null) return null;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const data = (value as Record<string, unknown>).data;
+  const details = envelopeDetails(value);
+  if (data === undefined || data === null) return { error, details };
+  if (Array.isArray(data)) {
+    // `{"error":"Failed","data":[]}` must not publish empty.
+    return data.length === 0 ? { error, details } : null;
+  }
+  if (typeof data === "object") {
+    const arrays = Object.values(data).filter(Array.isArray);
+    if (arrays.length > 0) {
+      // List-shaped `data.<collection>`: empty collections + error => envelope.
+      // Non-empty rows alongside an `error` key stay successful.
+      return arrays.every((items) => items.length === 0)
+        ? { error, details }
+        : null;
+    }
+    // Entity-shaped object (no arrays) is not a list error envelope — entity
+    // fields named `error` are handled by payload()/normalizeEntity only.
+    return null;
+  }
+  return { error, details };
+}
+
+function throwReportedErrorEnvelope(
+  reported: { error: string; details: string | null },
   status: number | null,
-): void {
-  const reported = asReportedErrorEnvelope(value);
-  if (reported === null) return;
+): never {
   const detailText =
     reported.details === null
       ? ""
@@ -139,8 +169,16 @@ function rejectReportedErrorEnvelope(
   );
 }
 
+function rejectReportedErrorEnvelope(
+  value: unknown,
+  status: number | null,
+): void {
+  const reported = asReportedErrorEnvelope(value);
+  if (reported === null) return;
+  throwReportedErrorEnvelope(reported, status);
+}
+
 function payload(value: unknown): Record<string, Json> {
-  rejectReportedErrorEnvelope(value, null);
   const envelope = object(value);
   const nested = envelope.data ?? envelope.result ?? envelope.entity;
   return nested !== undefined &&
@@ -352,7 +390,7 @@ function pagePayload(
   itemKeys: readonly string[],
 ): { items: unknown[]; total: number | null; hasMore?: boolean } {
   if (Array.isArray(value)) return { items: value, total: null };
-  // Refuse 200-shaped error envelopes before any empty-collection fallback.
+  // List-envelope boundary only — never applied to entity unwrap.
   rejectReportedErrorEnvelope(value, null);
   const envelope = object(value);
   const data = envelope.data;
@@ -376,7 +414,14 @@ function pagePayload(
     Array.isArray(data) ? data : undefined,
   ];
   const items = candidates.find(Array.isArray);
-  if (!Array.isArray(items))
+  if (!Array.isArray(items)) {
+    const reported = envelopeErrorMessage(value);
+    if (reported !== null) {
+      throwReportedErrorEnvelope(
+        { error: reported, details: envelopeDetails(value) },
+        null,
+      );
+    }
     throw new RemoteError("Assurance Studio list response had no items", {
       service: "assurance-studio",
       code: "AS_INVALID_RESPONSE",
@@ -385,6 +430,17 @@ function pagePayload(
       retryAfterMs: null,
       details: null,
     });
+  }
+  // Non-empty error + empty resolved collection must not publish empty.
+  if (items.length === 0) {
+    const reported = envelopeErrorMessage(value);
+    if (reported !== null) {
+      throwReportedErrorEnvelope(
+        { error: reported, details: envelopeDetails(value) },
+        null,
+      );
+    }
+  }
   const paginationValue = nested.pagination ?? envelope.pagination;
   const pagination =
     paginationValue !== null &&
