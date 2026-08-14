@@ -9,7 +9,9 @@ export { DESTRUCTIVE_CONFIRMATION_RENDERER_ID } from "./destructive-contract.js"
 export const DEFAULT_DESTRUCTIVE_GRANT_TTL_MS = 60_000;
 export const HELPER_INSTALL_OPERATION = "benchDevHelperInstall" as const;
 
-export type DestructiveOperationName = ActionToolName | typeof HELPER_INSTALL_OPERATION;
+export type DestructiveOperationName =
+  | ActionToolName
+  | typeof HELPER_INSTALL_OPERATION;
 
 export interface DestructiveGrant {
   grantId: string;
@@ -51,7 +53,10 @@ export type DestructiveErrorCode =
   | "DESTRUCTIVE_CONFIRMATION_REJECTED";
 
 export class DestructiveGateError extends Error {
-  constructor(readonly code: DestructiveErrorCode, message: string) {
+  constructor(
+    readonly code: DestructiveErrorCode,
+    message: string,
+  ) {
     super(`${code}: ${message}`);
     this.name = "DestructiveGateError";
   }
@@ -112,8 +117,13 @@ function toGrant(row: GrantRow): DestructiveGrant {
 }
 
 function submittedConfirmation(value: JsonValue): boolean {
-  return typeof value === "object" && value !== null && !Array.isArray(value) &&
-    "confirmed" in value && value.confirmed === true;
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    "confirmed" in value &&
+    value.confirmed === true
+  );
 }
 
 export async function requestHumanConfirmation(
@@ -188,7 +198,10 @@ export async function mintDestructiveGrant(
     requestedExpiry <= at.getTime() ||
     evidenceExpiry <= at.getTime()
   ) {
-    throw new DestructiveGateError("DESTRUCTIVE_REQUIRES_GRANT", "Human confirmation has expired.");
+    throw new DestructiveGateError(
+      "DESTRUCTIVE_REQUIRES_GRANT",
+      "Human confirmation has expired.",
+    );
   }
   const grant: DestructiveGrant = {
     grantId: `destructive-${randomUUID()}`,
@@ -196,30 +209,34 @@ export async function mintDestructiveGrant(
     toolName: req.toolName,
     deviceId: req.deviceId,
     mintedAt: at.toISOString(),
-    expiresAt: new Date(Math.min(
-      requestedExpiry,
-      evidenceExpiry,
-      at.getTime() + DEFAULT_DESTRUCTIVE_GRANT_TTL_MS,
-    )).toISOString(),
+    expiresAt: new Date(
+      Math.min(
+        requestedExpiry,
+        evidenceExpiry,
+        at.getTime() + DEFAULT_DESTRUCTIVE_GRANT_TTL_MS,
+      ),
+    ).toISOString(),
     consumedAt: null,
   };
-  deps.db.prepare(
-    `INSERT INTO bench_destructive_grant (
+  deps.db
+    .prepare(
+      `INSERT INTO bench_destructive_grant (
        grant_id, thread_id, tool_name, device_id, turn_id, confirmation_id,
        confirmed_by, caller_origin, minted_at, expires_at, consumed_at
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-  ).run(
-    grant.grantId,
-    grant.threadId,
-    grant.toolName,
-    grant.deviceId,
-    human.confirmationId,
-    human.confirmationId,
-    human.confirmedBy,
-    human.callerOrigin,
-    grant.mintedAt,
-    grant.expiresAt,
-  );
+    )
+    .run(
+      grant.grantId,
+      grant.threadId,
+      grant.toolName,
+      grant.deviceId,
+      human.confirmationId,
+      human.confirmationId,
+      human.confirmedBy,
+      human.callerOrigin,
+      grant.mintedAt,
+      grant.expiresAt,
+    );
   deps.publish?.(BENCH_CHANGED_CHANNEL, {
     threadId: grant.threadId,
     deviceId: grant.deviceId,
@@ -244,29 +261,33 @@ export async function consumeDestructiveGrant(
   const turnId = ctx.turnId;
   const consumedAt = now(deps).toISOString();
   const transaction = deps.db.transaction((): DestructiveGrant => {
-    const row = deps.db.prepare<
-      [string, string, string, string, string],
-      GrantRow
-    >(
-      `SELECT grant_id, thread_id, tool_name, device_id, turn_id,
+    const row = deps.db
+      .prepare<[string, string, string, string, string], GrantRow>(
+        `SELECT grant_id, thread_id, tool_name, device_id, turn_id,
               minted_at, expires_at, consumed_at
          FROM bench_destructive_grant
         WHERE thread_id = ? AND tool_name = ? AND device_id = ? AND turn_id = ?
           AND consumed_at IS NULL AND expires_at > ?
         ORDER BY minted_at DESC LIMIT 1`,
-    ).get(ctx.threadId, toolName, deviceId, turnId, consumedAt);
+      )
+      .get(ctx.threadId, toolName, deviceId, turnId, consumedAt);
     if (!row) {
       throw new DestructiveGateError(
         "DESTRUCTIVE_REQUIRES_GRANT",
         `${toolName} requires a live, single-use human confirmation for this turn and device.`,
       );
     }
-    const changed = deps.db.prepare(
-      `UPDATE bench_destructive_grant SET consumed_at = ?
+    const changed = deps.db
+      .prepare(
+        `UPDATE bench_destructive_grant SET consumed_at = ?
         WHERE grant_id = ? AND consumed_at IS NULL AND expires_at > ?`,
-    ).run(consumedAt, row.grant_id, consumedAt).changes;
+      )
+      .run(consumedAt, row.grant_id, consumedAt).changes;
     if (changed !== 1) {
-      throw new DestructiveGateError("DESTRUCTIVE_REQUIRES_GRANT", "The destructive grant was already used.");
+      throw new DestructiveGateError(
+        "DESTRUCTIVE_REQUIRES_GRANT",
+        "The destructive grant was already used.",
+      );
     }
     return toGrant({ ...row, consumed_at: consumedAt });
   });
@@ -279,17 +300,6 @@ export async function consumeDestructiveGrant(
   return grant;
 }
 
-export async function executeDestructiveOperation<Result>(
-  deps: GatingDeps,
-  toolName: DestructiveOperationName,
-  deviceId: string,
-  ctx: ToolExecutionCtx,
-  execute: (grant: DestructiveGrant) => Promise<Result> | Result,
-): Promise<Result> {
-  const grant = await consumeDestructiveGrant(deps, toolName, deviceId, ctx);
-  return await execute(grant);
-}
-
 export function destructiveGrantAudit(
   deps: GatingDeps,
   grantId: string,
@@ -299,17 +309,21 @@ export function destructiveGrantAudit(
   callerOrigin: "bb.ui.requestInput";
 } | null {
   initialize(deps);
-  const row = deps.db.prepare<
-    [string],
-    GrantRow & { confirmed_by: string; caller_origin: "bb.ui.requestInput" }
-  >(
-    `SELECT grant_id, thread_id, tool_name, device_id, turn_id, minted_at,
+  const row = deps.db
+    .prepare<
+      [string],
+      GrantRow & { confirmed_by: string; caller_origin: "bb.ui.requestInput" }
+    >(
+      `SELECT grant_id, thread_id, tool_name, device_id, turn_id, minted_at,
             expires_at, consumed_at, confirmed_by, caller_origin
        FROM bench_destructive_grant WHERE grant_id = ?`,
-  ).get(grantId);
-  return row ? {
-    grant: toGrant(row),
-    confirmedBy: row.confirmed_by,
-    callerOrigin: row.caller_origin,
-  } : null;
+    )
+    .get(grantId);
+  return row
+    ? {
+        grant: toGrant(row),
+        confirmedBy: row.confirmed_by,
+        callerOrigin: row.caller_origin,
+      }
+    : null;
 }

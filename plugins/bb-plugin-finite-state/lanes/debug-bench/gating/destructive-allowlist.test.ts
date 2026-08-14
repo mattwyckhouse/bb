@@ -4,12 +4,10 @@ import { openStore } from "../../../lib/store/index.js";
 import {
   ACTION_TOOL_NAMES,
   AGENT_TOOL_REGISTRY,
+  executeRegisteredAgentTool,
   type ActionToolName,
 } from "../../../lib/agentic/registry.js";
-import {
-  executeDestructiveOperation,
-  HELPER_INSTALL_OPERATION,
-} from "./destructive.js";
+import { HELPER_INSTALL_OPERATION } from "./destructive.js";
 import type { GatingDeps } from "./mode.js";
 
 const ENUMERATED_ACTION_TOOLS = [
@@ -37,11 +35,15 @@ const ENUMERATED_ACTION_SET: Record<ActionToolName, true> = {
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
 afterEach(async () => {
-  await Promise.all(hosts.splice(0).map((host) => host.harness.lifecycle.dispose()));
+  await Promise.all(
+    hosts.splice(0).map((host) => host.harness.lifecycle.dispose()),
+  );
 });
 describe("destructive action allowlist", () => {
   it("exhaustively refuses every destructive action before side effects", async () => {
-    const host = createFakePluginHost({ pluginId: `fs-destructive-allowlist-${crypto.randomUUID()}` });
+    const host = createFakePluginHost({
+      pluginId: `fs-destructive-allowlist-${crypto.randomUUID()}`,
+    });
     hosts.push(host);
     const deps: GatingDeps = {
       db: openStore(host.bb).db,
@@ -55,13 +57,21 @@ describe("destructive action allowlist", () => {
     for (const toolName of ENUMERATED_ACTION_TOOLS) {
       const tool = AGENT_TOOL_REGISTRY[toolName];
       if (!("destructive" in tool) || tool.destructive !== true) continue;
-      await expect(executeDestructiveOperation(
-        deps,
-        toolName,
-        "device-a",
-        { threadId: "thread-a", turnId: null },
-        () => { sideEffects += 1; },
-      )).rejects.toMatchObject({ code: "DESTRUCTIVE_AUTHORIZATION_UNAVAILABLE" });
+      await expect(
+        executeRegisteredAgentTool(
+          toolName,
+          {
+            deps,
+            deviceId: "device-a",
+            execution: { threadId: "thread-a", turnId: null },
+          },
+          () => {
+            sideEffects += 1;
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: "DESTRUCTIVE_AUTHORIZATION_UNAVAILABLE",
+      });
     }
     expect(sideEffects).toBe(0);
   });

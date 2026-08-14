@@ -1,13 +1,15 @@
 import { createFakePluginHost } from "@bb/plugin-sdk/testing";
+import { z } from "zod";
 import { describe, expect, it } from "vitest";
 import { createPluginContext } from "../../lib/context.js";
+import { openStore } from "../../lib/store/index.js";
 import {
+  AGENT_TOOL_REGISTRY,
   AGENT_SURFACE,
   ACTION_TOOL_NAMES,
   assertAgentSurface,
-  DestructiveInstructionRequiredError,
   DIRECTIVE_IDS,
-  executeAgentToolWithDestructiveGate,
+  executeRegisteredAgentTool,
 } from "../../lib/agentic/registry.js";
 import type { AgentToolSpec } from "../../lib/agentic/types.js";
 import { registerAgentic } from "./register.js";
@@ -44,7 +46,8 @@ describe("agent tool registry", () => {
     expect(ACTION_TOOL_NAMES).toEqual(actions.map(([name]) => name));
     expect(
       Object.values(AGENT_SURFACE.tools).flatMap((tool) =>
-        "destructive" in tool && tool.destructive === true ? [tool.name] : []),
+        "destructive" in tool && tool.destructive === true ? [tool.name] : [],
+      ),
     ).toEqual(["fs_flash"]);
   });
 
@@ -64,35 +67,54 @@ describe("agent tool registry", () => {
     ).toThrow(/amendment/u);
   });
 
-  it("gates destructive tools on an explicit human instruction in the current turn", () => {
-    let executions = 0;
-    const executeFlash = (
-      instruction: { source: "human" | "plan"; turnId: string } | null,
-    ) =>
-      executeAgentToolWithDestructiveGate(
-        "fs_flash",
-        {
-          currentTurnId: "turn-current",
-          instruction,
-        },
-        () => {
-          executions += 1;
-          return "flashed" as const;
-        },
-      );
+  it("derives destructive gating from the canonical registry on the registered tool path", async () => {
+    const host = createFakePluginHost({
+      pluginId: `fs-registry-gate-${crypto.randomUUID()}`,
+    });
+    const deps = {
+      db: openStore(host.bb).db,
+      sessionId: "session-a",
+      now: () => new Date("2026-08-13T12:00:00.000Z"),
+    };
+    const callerClaim = {
+      ...AGENT_TOOL_REGISTRY.fs_flash,
+      destructive: false,
+    } as const;
+    let sideEffects = 0;
 
-    expect(() => executeFlash(null)).toThrow(
-      DestructiveInstructionRequiredError,
+    expect(
+      Reflect.set(AGENT_TOOL_REGISTRY.fs_flash, "destructive", false),
+    ).toBe(false);
+    expect(Reflect.set(AGENT_TOOL_REGISTRY, "fs_flash", callerClaim)).toBe(
+      false,
     );
-    expect(() => executeFlash({ source: "plan", turnId: "turn-current" })).toThrow(
-      DestructiveInstructionRequiredError,
-    );
-    expect(() => executeFlash({ source: "human", turnId: "turn-prior" })).toThrow(
-      /current turn/u,
-    );
-    expect(executions).toBe(0);
-    expect(executeFlash({ source: "human", turnId: "turn-current" })).toBe("flashed");
-    expect(executions).toBe(1);
+    expect(callerClaim.destructive).toBe(false);
+    host.bb.agents.registerTool({
+      name: "fs_flash",
+      description: "Adversarial registered-surface fixture.",
+      parameters: z.object({}).strict(),
+      async execute(_input, call) {
+        return await executeRegisteredAgentTool(
+          callerClaim.name,
+          {
+            deps,
+            deviceId: "probe-a",
+            execution: { threadId: call.threadId, turnId: null },
+          },
+          () => {
+            sideEffects += 1;
+            return "flashed";
+          },
+        );
+      },
+    });
+
+    await expect(
+      host.harness.behavior.callAgentTool("fs_flash", {}),
+    ).rejects.toMatchObject({ code: "DESTRUCTIVE_AUTHORIZATION_UNAVAILABLE" });
+    expect(AGENT_TOOL_REGISTRY.fs_flash.destructive).toBe(true);
+    expect(sideEffects).toBe(0);
+    await host.harness.lifecycle.dispose();
   });
 
   it("contains no registered or advertised agent mutation capability", () => {
