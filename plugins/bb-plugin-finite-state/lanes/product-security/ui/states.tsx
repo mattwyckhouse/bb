@@ -88,6 +88,33 @@ export function CanvasErrorState({
   );
 }
 
+interface CanvasDiagnosticsStateProps extends RetryStateProps {
+  message: string;
+}
+
+export function CanvasDiagnosticsState({
+  message,
+  onRetry,
+}: CanvasDiagnosticsStateProps): React.JSX.Element {
+  return (
+    <div className="flex h-full min-h-80 items-center justify-center bg-background p-6 text-foreground">
+      <div className="max-w-xl rounded-lg border border-destructive/40 bg-card p-6 text-card-foreground">
+        <p className="text-base font-medium">
+          Architecture files need attention
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground">{message}</p>
+        <button
+          className="mt-4 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={onRetry}
+          type="button"
+        >
+          Retry local read
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function CanvasUnconfiguredState(): React.JSX.Element {
   return (
     <div className="flex h-full min-h-80 items-center justify-center bg-background p-6 text-foreground">

@@ -124,7 +124,10 @@ function seedAccepted(
 
 async function registeredComponentPage(
   files: ReadonlyMap<string, string>,
-  options: { syncError?: string } = {},
+  options: {
+    acceptedEntities?: readonly ArchitectureYamlEntity[];
+    syncError?: string;
+  } = {},
 ) {
   const host = createFakePluginHost({
     pluginId: "finite-state-component-diagnostics",
@@ -163,7 +166,10 @@ async function registeredComponentPage(
   });
   hosts.push(host);
   const context = createPluginContext(host.bb);
-  seedAccepted(context, [component("accepted-controller")]);
+  const acceptedEntities = options.acceptedEntities ?? [
+    component("accepted-controller"),
+  ];
+  if (acceptedEntities.length > 0) seedAccepted(context, acceptedEntities);
   if (options.syncError) {
     context
       .db()
@@ -189,6 +195,103 @@ async function registeredComponentPage(
 }
 
 describe("WP-35 read-classified editing RPCs", () => {
+  it("returns the actionable quarantine diagnostic when malformed YAML is the only component", async () => {
+    const directory = "/workspace/product-security/architecture/components";
+    const page = await registeredComponentPage(
+      new Map([
+        [
+          `${directory}/quarantined-controller.yaml`,
+          `${serializeCanvasEntity(component("quarantined-controller"))}verification_status: passed\n`,
+        ],
+      ]),
+      { acceptedEntities: [] },
+    );
+
+    expect(page).toMatchObject({
+      items: [],
+      total: 0,
+      cache: {
+        state: "stale",
+        message: expect.stringMatching(
+          /Invalid working YAML quarantined at quarantined-controller\.yaml.*verification_status/iu,
+        ),
+      },
+    });
+    expect(
+      cacheStateSchema.shape.message.safeParse(page.cache.message).success,
+    ).toBe(true);
+  });
+
+  it("returns the actionable unsupported-type diagnostic when out-of-enum YAML is the only component", async () => {
+    const directory = "/workspace/product-security/architecture/components";
+    const page = await registeredComponentPage(
+      new Map([
+        [
+          `${directory}/unknown-controller.yaml`,
+          serializeCanvasEntity(
+            component("unknown-controller", "hardware"),
+          ).replace(
+            "component_type: hardware",
+            "component_type: mystery_controller",
+          ),
+        ],
+      ]),
+      { acceptedEntities: [] },
+    );
+
+    expect(page).toMatchObject({
+      items: [],
+      total: 0,
+      cache: {
+        state: "stale",
+        message: expect.stringMatching(
+          /Unsupported component type.*mystery_controller.*unknown-controller\.yaml/iu,
+        ),
+      },
+    });
+    expect(
+      cacheStateSchema.shape.message.safeParse(page.cache.message).success,
+    ).toBe(true);
+  });
+
+  it("keeps valid working components visible beside distinct unsupported and quarantine diagnostics", async () => {
+    const directory = "/workspace/product-security/architecture/components";
+    const page = await registeredComponentPage(
+      new Map([
+        [
+          `${directory}/valid-controller.yaml`,
+          serializeCanvasEntity(component("valid-controller")),
+        ],
+        [
+          `${directory}/unknown-controller.yaml`,
+          serializeCanvasEntity(
+            component("unknown-controller", "hardware"),
+          ).replace(
+            "component_type: hardware",
+            "component_type: mystery_controller",
+          ),
+        ],
+        [
+          `${directory}/quarantined-controller.yaml`,
+          `${serializeCanvasEntity(component("quarantined-controller"))}verification_status: passed\n`,
+        ],
+      ]),
+      { acceptedEntities: [] },
+    );
+
+    expect(page.items.map((item) => item.key)).toEqual(["valid-controller"]);
+    expect(page.total).toBe(1);
+    expect(page.cache.message).toMatch(
+      /Unsupported component type.*unknown-controller\.yaml/iu,
+    );
+    expect(page.cache.message).toMatch(
+      /Invalid working YAML quarantined at quarantined-controller\.yaml/iu,
+    );
+    expect(
+      cacheStateSchema.shape.message.safeParse(page.cache.message).success,
+    ).toBe(true);
+  });
+
   it("surfaces five unsupported component types distinctly from retired and malformed authored files", async () => {
     const directory = "/workspace/product-security/architecture/components";
     const files = new Map<string, string>();

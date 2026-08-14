@@ -491,9 +491,6 @@ export async function listTara(
     diagnostics,
   );
   const total = acceptedTotal + visibleWorking.length;
-  if (diagnostics.length > 0 && total === 0) {
-    throw new Error(`INVALID_WORKING_TARA: ${cacheMessage}`);
-  }
 
   return {
     items: visibleRows.map(([slug, fields]) => {

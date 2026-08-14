@@ -450,6 +450,40 @@ describe("WP-31 bb panel qualification", () => {
     ).toBeTruthy();
     stale.lifecycle.unmount();
 
+    const onlyQuarantined = renderSlot(
+      panel,
+      { subPath: "tara" },
+      {
+        context: { projectId: "project-1", threadId: null },
+        rpc: {
+          connectionsStatus: connectedRemoteStatus,
+          taraList: (input) => ({
+            items: [],
+            total: 0,
+            next: null,
+            cache: {
+              ...cache,
+              state: inputKind(input) === "component" ? "stale" : "empty",
+              message:
+                inputKind(input) === "component"
+                  ? "Invalid working YAML quarantined at broken-controller.yaml. Reason: verification_status cannot be authored."
+                  : "No accepted product-security cache is available.",
+            },
+          }),
+        },
+      },
+    );
+    expect(
+      await onlyQuarantined.findByText("Architecture files need attention"),
+    ).toBeTruthy();
+    expect(
+      onlyQuarantined.getByText("broken-controller.yaml", { exact: false }),
+    ).toBeTruthy();
+    expect(
+      onlyQuarantined.queryByText("Product-security cache unavailable"),
+    ).toBeNull();
+    onlyQuarantined.lifecycle.unmount();
+
     const unsupported = renderSlot(
       panel,
       { subPath: "tara" },

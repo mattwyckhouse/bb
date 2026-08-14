@@ -37,6 +37,7 @@ import {
 } from "./route.js";
 import {
   CanvasCacheBanner,
+  CanvasDiagnosticsState,
   CanvasEmptyState,
   CanvasErrorState,
   CanvasLoadingState,
@@ -201,7 +202,14 @@ function TaraPanel({
     const EditingLayer = features.EditingLayer;
     return (
       <div className="relative h-full min-h-0">
-        <CanvasEmptyState onRetry={data.retry} />
+        {data.model.cache.stale && data.model.cache.message ? (
+          <CanvasDiagnosticsState
+            message={data.model.cache.message}
+            onRetry={data.retry}
+          />
+        ) : (
+          <CanvasEmptyState onRetry={data.retry} />
+        )}
         <EditingLayer />
       </div>
     );
