@@ -50,7 +50,11 @@ export function registerSyncRpc(bb: BbPluginApi, deps: EngineDeps): void {
       const metadata = syncMetadata(deps, scope, kinds);
       return {
         ...scope,
-        ...report,
+        generationId: report.generationId,
+        acceptedAt: report.acceptedAt,
+        kinds: report.kinds,
+        workingFastForwarded: report.workingFastForwarded,
+        divergence: report.divergence,
         baseStateSha256: metadata.baseStateSha256,
       };
     },

@@ -339,6 +339,8 @@ export function resolve(db: Db, key: StableKey, pvId: string, pin: Pin): Resolut
 
 Resolution returns **all matching rows** — the bulk write addresses each cached uuid so duplicate rows are covered precisely; the CVE-keyed single PUT fallback fans out server-side anyway (`X-Affected-Count`) [LFD §3.1, §6.3].
 
+The cache and authored VEX overlay deliberately occupy separate legacy namespaces. Cache aliases are scoped by the accepted finding id and remain regenerable cache state; only VEX-space aliases from authored `.fs/triage` files participate in declared key migration. Canonical identity is derived from one Platform finding row. For purl-less rows, a slash-delimited wire name is split losslessly into the final segment as `name` and the preceding segments as `group` (`debian/libxml2` → `name=libxml2`, `group=debian`). The key retains the raw wire `keyVersion` (for example `%2B`) so it remains collision-free and migration-stable, while the decoded `version` is display data. Authored write/read-back canonicalizes the namespace and raw key version symmetrically.
+
 ### 4.4 `pin` semantics
 
 `pin` mirrors the server's promotability rule [LFD §2.3]:

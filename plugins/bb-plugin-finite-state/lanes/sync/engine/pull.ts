@@ -12,6 +12,7 @@ import { BaseSnapshotStore, type BaseRow } from "../store/base-snapshot.js";
 import {
   registeredAdapters,
   registeredCachePullers,
+  type AdapterAdvisory,
   type CachePuller,
   type EntityAdapter,
   type ServerEntity,
@@ -73,6 +74,7 @@ export interface PullReport {
   kinds: Record<string, { fetched: number; baseRows: number }>;
   workingFastForwarded: boolean;
   divergence: string[];
+  advisories: Array<{ kind: EntityKind; code: string; count: number }>;
 }
 
 /** Typed upstream-data failure that prevents raw SQLite constraints escaping. */
@@ -557,6 +559,7 @@ async function pullAdapter(
   storageVersionId: string,
   adapter: EntityAdapter,
   generationId: string,
+  onAdvisory: (advisory: AdapterAdvisory) => void,
 ): Promise<{ fetched: number; baseRows: number }> {
   const checkpoint = kindCheckpoint(
     deps.db,
@@ -568,16 +571,20 @@ async function pullAdapter(
   let pageNumber = 0;
   let latestOf: number | null = null;
   const fetchedKeys = new Set<string>();
-  const pages = adapter.fetchRemote(scope, (progress) => {
-    latestOf = progress.of;
-    deps.publish?.("fs-sync-pull", {
-      scope,
-      generationId,
-      kind: adapter.kind,
-      ...progress,
-      phase: "fetch",
-    });
-  });
+  const pages = adapter.fetchRemote(
+    scope,
+    (progress) => {
+      latestOf = progress.of;
+      deps.publish?.("fs-sync-pull", {
+        scope,
+        generationId,
+        kind: adapter.kind,
+        ...progress,
+        phase: "fetch",
+      });
+    },
+    onAdvisory,
+  );
   for await (const page of pages) {
     pageNumber += 1;
     for (const entity of page) fetchedKeys.add(entity.key);
@@ -886,6 +893,7 @@ export async function pull(
     selectedKinds,
   );
   const reportKinds: PullReport["kinds"] = {};
+  const advisoryCounts = new Map<string, PullReport["advisories"][number]>();
   const failures: Array<{ kind: EntityKind; message: string }> = [];
 
   for (const adapter of adapters) {
@@ -896,6 +904,15 @@ export async function pull(
         storageVersionId,
         adapter,
         generationId,
+        (advisory) => {
+          const key = `${adapter.kind}\0${advisory.code}`;
+          const current = advisoryCounts.get(key);
+          advisoryCounts.set(key, {
+            kind: adapter.kind,
+            code: advisory.code,
+            count: (current?.count ?? 0) + 1,
+          });
+        },
       );
     } catch (error: unknown) {
       const message = errorMessage(error);
@@ -997,5 +1014,10 @@ export async function pull(
     kinds: reportKinds,
     workingFastForwarded: fastForward.workingFastForwarded,
     divergence: fastForward.divergence,
+    advisories: [...advisoryCounts.values()].sort(
+      (left, right) =>
+        left.kind.localeCompare(right.kind) ||
+        left.code.localeCompare(right.code),
+    ),
   };
 }
