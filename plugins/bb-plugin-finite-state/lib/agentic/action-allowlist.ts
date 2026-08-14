@@ -127,10 +127,10 @@ export function assertActionBoundary(
   registeredToolNames?: readonly string[],
 ): void {
   const entries = Object.entries(registry.tools);
+  const ownToolKeys = Object.getOwnPropertyNames(registry.tools);
   if (
-    entries.some(
-      ([key, tool]) => key === "fs_sync_push" || tool.name === "fs_sync_push",
-    )
+    "fs_sync_push" in registry.tools ||
+    ownToolKeys.some((key) => registry.tools[key].name === "fs_sync_push")
   ) {
     throw new Error(
       "PROHIBITED_AGENT_PUSH_TOOL: fs_sync_push must never be registered",

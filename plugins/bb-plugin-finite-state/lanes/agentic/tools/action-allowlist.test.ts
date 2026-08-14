@@ -13,6 +13,7 @@ import {
   AGENT_SURFACE,
 } from "../../../lib/agentic/registry.js";
 import type { AgentSurfaceCandidate } from "../../../lib/agentic/registry.js";
+import type { AgentToolSpec } from "../../../lib/agentic/types.js";
 
 const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -84,6 +85,70 @@ describe("action allowlist guard", () => {
     expect(() => assertActionBoundary(candidate)).toThrow(
       /PROHIBITED_AGENT_PUSH_TOOL/iu,
     );
+  });
+
+  it("rejects non-enumerable push identities by registry key or tool.name", () => {
+    const pushByKey: Record<string, AgentToolSpec> = {
+      ...AGENT_SURFACE.tools,
+    };
+    Object.defineProperty(pushByKey, "fs_sync_push", {
+      value: {
+        name: "fs_sync_push",
+        class: "read",
+        server: "none",
+        idempotency: "idempotent",
+      },
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+    expect(() =>
+      assertActionBoundary({
+        tools: pushByKey,
+        directives: AGENT_SURFACE.directives,
+      }),
+    ).toThrow(/PROHIBITED_AGENT_PUSH_TOOL/iu);
+
+    const pushByName: Record<string, AgentToolSpec> = {
+      ...AGENT_SURFACE.tools,
+    };
+    Object.defineProperty(pushByName, "hidden_push", {
+      value: {
+        name: "fs_sync_push",
+        class: "read",
+        server: "none",
+        idempotency: "idempotent",
+      },
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+    expect(() =>
+      assertActionBoundary({
+        tools: pushByName,
+        directives: AGENT_SURFACE.directives,
+      }),
+    ).toThrow(/PROHIBITED_AGENT_PUSH_TOOL/iu);
+  });
+
+  it("rejects a prototype-inherited fs_sync_push registry key", () => {
+    const prototype: Record<string, AgentToolSpec> = {
+      fs_sync_push: {
+        name: "fs_sync_push",
+        class: "read",
+        server: "none",
+        idempotency: "idempotent",
+      },
+    };
+    const tools: Record<string, AgentToolSpec> = Object.create(prototype);
+    Object.assign(tools, AGENT_SURFACE.tools);
+
+    expect(() =>
+      assertActionBoundary({
+        tools,
+        directives: AGENT_SURFACE.directives,
+      }),
+    ).toThrow(/PROHIBITED_AGENT_PUSH_TOOL/iu);
   });
 
   it("rejects registry key and tool name identity splits", () => {
