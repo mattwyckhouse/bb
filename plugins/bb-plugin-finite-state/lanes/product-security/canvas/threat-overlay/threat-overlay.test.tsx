@@ -694,12 +694,7 @@ describe("WP-33 bidirectional selection and deep links", () => {
     );
     expect(
       slot.getByRole("button", {
-        name: "Expand threat overlay; attention required",
-      }),
-    ).toBeTruthy();
-    expect(
-      slot.getByRole("status", {
-        name: /1 cached threat row is malformed and omitted/,
+        name: /Expand threat overlay; attention required: 1 cached threat row is malformed and omitted/,
       }),
     ).toBeTruthy();
     expect(slot.getByText("Needs attention")).toBeTruthy();

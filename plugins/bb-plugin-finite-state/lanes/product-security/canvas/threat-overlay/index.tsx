@@ -891,17 +891,18 @@ function ConfiguredThreatOverlay({
         className={
           collapsed
             ? "absolute bottom-3 left-3 z-20 max-w-[calc(100%-1.5rem)]"
-            : "absolute bottom-3 left-3 z-20 flex h-[min(7.5rem,calc(100%-1.5rem))] w-[min(32rem,calc(100%-1.5rem))] min-h-0 overflow-hidden rounded-lg border border-border bg-card/95 text-card-foreground shadow-lg backdrop-blur-sm"
+            : "absolute bottom-3 left-3 z-20 flex w-[min(32rem,calc(100%-1.5rem))] min-h-0 overflow-hidden rounded-lg border border-border bg-card/95 text-card-foreground shadow-lg backdrop-blur-sm"
         }
         data-state={collapsed ? "collapsed" : "expanded"}
         data-threat-overlay-dock=""
+        style={collapsed ? undefined : { height: "40%", maxHeight: "16rem" }}
       >
         {collapsed ? (
           <button
             aria-expanded="false"
             aria-label={
               degradationMessage
-                ? "Expand threat overlay; attention required"
+                ? `Expand threat overlay; attention required: ${degradationMessage}`
                 : "Expand threat overlay"
             }
             className="flex min-h-10 max-w-full items-center gap-2 rounded-lg border border-border bg-card/95 px-3 py-2 text-xs font-medium text-card-foreground shadow-lg backdrop-blur-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -914,11 +915,7 @@ function ConfiguredThreatOverlay({
               {snapshot.state.data.threats.length}
             </span>
             {degradationMessage ? (
-              <span
-                aria-label={`Threat overlay needs attention: ${degradationMessage}`}
-                className="inline-flex shrink-0 items-center gap-1 text-destructive"
-                role="status"
-              >
+              <span className="inline-flex shrink-0 items-center gap-1 text-destructive">
                 <Icon
                   aria-hidden="true"
                   className="size-3.5"
