@@ -15,7 +15,7 @@ import type {
   ForgeProcessAdapter,
 } from "../../firmware/forge/handshake.js";
 import { storeEvidenceCheckpointWithResult } from "../store/results.js";
-import { getAcceptedBenchGeneration } from "../store/runs.js";
+import { ensureAcceptedBenchGeneration } from "../store/runs.js";
 import type { BenchEvidenceBundle, BenchRunRecord } from "../store/types.js";
 import {
   BENCH_DISPATCH_AMBIGUOUS_CODE,
@@ -834,7 +834,12 @@ async function executeRunBench(
   // A verification_run is generation-owned. Reject an invalid evidence scope
   // before minting an attempt id; after this boundary every minted attempt can
   // be checkpointed durably, including all later preflight failures.
-  getAcceptedBenchGeneration(deps.db, validated.projectId, validated.pvId);
+  ensureAcceptedBenchGeneration(
+    deps.db,
+    validated.projectId,
+    validated.pvId,
+    deps.now().toISOString(),
+  );
   const runId = requiredText("runId", deps.createRunId());
   const startedAt = deps.now().toISOString();
   let currentRun: BenchRunRecord = {
