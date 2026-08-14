@@ -1,22 +1,9 @@
 {
   "generatorVersion": "wp66-v1",
-  "project": {
-    "id": "project-ax3000-demo",
-    "product": "AX3000"
-  },
+  "project": { "id": "project-ax3000-demo", "product": "AX3000" },
   "versions": {
-    "v23": {
-      "pvId": "pv-ax3000-2.3",
-      "components": [
-        "COMP-httpd"
-      ]
-    },
-    "v24": {
-      "pvId": "pv-ax3000-2.4",
-      "components": [
-        "COMP-httpd"
-      ]
-    }
+    "v23": { "pvId": "pv-ax3000-2.3", "components": ["COMP-httpd"] },
+    "v24": { "pvId": "pv-ax3000-2.4", "components": ["COMP-httpd"] }
   },
   "counts": {
     "newUntriaged": 412,
@@ -64,10 +51,7 @@
       "STALE-8",
       "STALE-9"
     ],
-    "orphans": [
-      "ORPHAN-1",
-      "ORPHAN-2"
-    ]
+    "orphans": ["ORPHAN-1", "ORPHAN-2"]
   },
   "policy": {
     "matched": [
@@ -685,8 +669,6 @@
       "FINDING-0305",
       "FINDING-0306"
     ],
-    "held": [
-      "FINDING-0001"
-    ]
+    "held": ["FINDING-0001"]
   }
 }

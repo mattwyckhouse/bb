@@ -21,6 +21,7 @@ import { promisify } from "node:util";
 
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import Database from "better-sqlite3";
+import { format } from "prettier";
 
 import { openStore } from "../../../../lib/store/index.js";
 import { MIGRATIONS } from "../../../../lib/store/schema.js";
@@ -97,13 +98,13 @@ function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function json(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
-}
-
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, json(value), "utf8");
+  await writeFile(
+    path,
+    await format(JSON.stringify(value), { parser: "json" }),
+    "utf8",
+  );
 }
 
 function findingRows(seed: number): Record<string, Json>[] {

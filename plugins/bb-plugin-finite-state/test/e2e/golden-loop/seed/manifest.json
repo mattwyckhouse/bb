@@ -36,7 +36,7 @@
     },
     {
       "path": "generate.ts",
-      "sha256": "12c80e2e9e21fd316ac2a37ead309df1a10c55f39ee6e9cb9f700e2f20a0e866",
+      "sha256": "ac07cbddbb57f2846cb97e86ecd09f4219f7f417b1f8c067593c0e28c453aa75",
       "purpose": "versioned deterministic Golden Loop generator"
     },
     {
@@ -52,12 +52,12 @@
     },
     {
       "path": "warm-cache/run-events.json",
-      "sha256": "b6b82991097b3ba8151783c661a6212c4013883408b7c0051cae9020c7e3ae76",
+      "sha256": "fb629573545e814d153ed6ebd10f9501a1eca0265d9246ffe7f7ee49a9e4685d",
       "purpose": "deterministic offline bench run and event sequence"
     },
     {
       "path": "worktree/.fs-firmware/pv-ax3000-2.3/manifest.sqlite",
-      "sha256": "77083fffe6a1f93ada57e335769badda1c1c85f0695c1d7bc95c0b81bffd74d0",
+      "sha256": "6c45ea31f456f5d7d01ce28ac7e4f2931f71cf8a5630342782ebd68cefa3e626",
       "purpose": "production firmware mount manifest",
       "schemaVersion": 2
     },
@@ -83,7 +83,7 @@
     },
     {
       "path": "worktree/.fs-firmware/pv-ax3000-2.4/manifest.sqlite",
-      "sha256": "c889f19d5d9a940b612e231f4bc0b2b4480a5f60a76e3fc5e0b4a7361a7addc6",
+      "sha256": "e9a6d9f4ef30d6d6ecb83ec1d709cff679985f64a8d3e5edd566267f567ffe3d",
       "purpose": "production firmware mount manifest",
       "schemaVersion": 2
     },
@@ -109,7 +109,7 @@
     },
     {
       "path": "worktree/.fs-firmware/pv-ax3000-unpack-gap/manifest.sqlite",
-      "sha256": "282d8bf1a1748774e50854da063b186f0b316f9e0abf295aee98020531800808",
+      "sha256": "3201fa00e58ebb583edb28d1291c38bdc7f8cf07574aee5c6ed8c16906414192",
       "purpose": "production firmware mount manifest",
       "schemaVersion": 2
     },
@@ -125,7 +125,7 @@
     },
     {
       "path": "worktree/.fs/golden-loop/story.json",
-      "sha256": "8cbcaf97f5c87de32de23c763eb991bfeb998504852c81e9cd64f668e9dfa0b7",
+      "sha256": "8871fe14c4e5d100b4868bc8286888bce9ad51458f2cb11621d38738a47441ee",
       "purpose": "Golden Loop identities, counts, and drift cross-links"
     },
     {
@@ -135,7 +135,7 @@
     },
     {
       "path": "worktree/.fs/threats/THREAT-22.json",
-      "sha256": "a634c7e083771744981f828c357bbe7b1556e371ea81d404c0534bcac58c474e",
+      "sha256": "2b860d7cbd127a1c9195a341973372f2910ac57941c01fb5d5403c0d5d6ff479",
       "purpose": "reachable KEV threat and WAN attack-path fixture"
     },
     {
