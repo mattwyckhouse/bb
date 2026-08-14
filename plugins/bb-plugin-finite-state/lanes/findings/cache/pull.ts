@@ -101,6 +101,48 @@ function numberValue(
   return null;
 }
 
+const JSON_NUMBER = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/u;
+
+function epssValue(
+  row: Record<string, Json>,
+  keys: readonly string[],
+  code: string,
+): number | null {
+  for (const key of keys) {
+    const value = row[key];
+    if (value === undefined || value === null) continue;
+    const parsed =
+      typeof value === "number"
+        ? value
+        : typeof value === "string" && JSON_NUMBER.test(value.trim())
+          ? Number(value.trim())
+          : Number.NaN;
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) return parsed;
+    throw new FindingsCacheError(code, "Finding EPSS value is invalid");
+  }
+  return null;
+}
+
+function policyCount(
+  row: Record<string, Json>,
+  keys: readonly string[],
+  code: string,
+): number {
+  for (const key of keys) {
+    const value = row[key];
+    if (value === undefined) continue;
+    if (
+      typeof value === "number" &&
+      Number.isSafeInteger(value) &&
+      value >= 0
+    ) {
+      return value;
+    }
+    throw new FindingsCacheError(code, "Finding policy count is invalid");
+  }
+  return 0;
+}
+
 function booleanValue(
   row: Record<string, Json>,
   keys: readonly string[],
@@ -246,8 +288,19 @@ export function normalizeFinding(value: Json): NormalizedFinding {
     band: stringValue(row, ["band", "riskBand"]),
     cvssScore: numberValue(row, ["cvssScore", "cvss"]),
     cvssVector: stringValue(row, ["cvssVector", "vector"]),
-    epssScore: numberValue(row, ["epssScore", "epss"]),
-    epssPercentile: numberValue(row, ["epssPercentile"]),
+    // FindingV0 documents numeric EPSS values, while the sanitized production
+    // captures in the fixture corpus carry their JSON decimal representation
+    // as strings. Preserve both boundary representations as one cache number.
+    epssScore: epssValue(
+      row,
+      ["epssScore", "epss"],
+      "FINDING_EPSS_SCORE_INVALID",
+    ),
+    epssPercentile: epssValue(
+      row,
+      ["epssPercentile"],
+      "FINDING_EPSS_PERCENTILE_INVALID",
+    ),
     inKev: booleanValue(row, ["inKev", "kev"]),
     inVcKev: booleanValue(row, ["inVcKev", "vcKev"]),
     hasExploit: booleanValue(row, ["hasExploit"]),
@@ -264,8 +317,16 @@ export function normalizeFinding(value: Json): NormalizedFinding {
     ),
     vulnInDataset: nullableBoolean(row, ["vulnInDataset"]),
     cwes: memberships,
-    warningCount: numberValue(row, ["warningCount"]) ?? 0,
-    violationCount: numberValue(row, ["violationCount"]) ?? 0,
+    warningCount: policyCount(
+      row,
+      ["warningCount", "warnings"],
+      "FINDING_WARNING_COUNT_INVALID",
+    ),
+    violationCount: policyCount(
+      row,
+      ["violationCount", "violations"],
+      "FINDING_VIOLATION_COUNT_INVALID",
+    ),
     location: jsonField(row, ["location", "locations"], null),
     vexStatus: stringValue(row, ["vexStatus", "status"]),
     vexResponse: stringValue(row, ["vexResponse", "response"]),

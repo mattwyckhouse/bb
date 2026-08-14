@@ -78,7 +78,15 @@ describe("findings cache pull", () => {
     );
 
     const binarySastWire = fixture("fs193-binary-sast-specimen.json");
+    expect(Object.keys(binarySastWire)).toHaveLength(29);
     const binarySast = normalizeFinding(binarySastWire);
+    const priorProjection = normalizeFinding({
+      id: binarySastWire["id"] ?? null,
+      title: binarySastWire["title"] ?? null,
+      findingId: binarySastWire["findingId"] ?? null,
+      component: binarySastWire["component"] ?? null,
+      type: binarySastWire["type"] ?? null,
+    });
     expect(binarySast).toMatchObject({
       findingId: "00000000-0000-5000-8000-000000000193",
       cve: "FS-500-006",
@@ -87,8 +95,13 @@ describe("findings cache pull", () => {
       componentName: "ca-certificates.crt",
       componentVersion: null,
       componentPurl: null,
+      epssScore: 0.00426,
+      epssPercentile: 0.34936,
+      warningCount: 2,
+      violationCount: 1,
     });
     expect(JSON.parse(binarySast.raw)).toEqual(binarySastWire);
+    expect(binarySast.stableKey).toBe(priorProjection.stableKey);
     expect(binarySast.stableKey).toBe(
       findingStableKey(
         {
@@ -111,6 +124,35 @@ describe("findings cache pull", () => {
       },
     });
   });
+
+  it.each([
+    ["epssScore", "api_key=hostile-epss", "FINDING_EPSS_SCORE_INVALID"],
+    [
+      "epssPercentile",
+      "authorization hostile",
+      "FINDING_EPSS_PERCENTILE_INVALID",
+    ],
+    ["warnings", "credential=hostile-warning", "FINDING_WARNING_COUNT_INVALID"],
+    ["violations", -1, "FINDING_VIOLATION_COUNT_INVALID"],
+  ] as const)(
+    "rejects present but unmappable %s values with a value-free quarantine reason",
+    (field, hostileValue, code) => {
+      const attempt = () =>
+        normalizeFinding({
+          id: `hostile-${field}`,
+          findingId: "CVE-2026-19900",
+          component: { name: "library", version: "1.0.0" },
+          [field]: hostileValue,
+        });
+      try {
+        attempt();
+        throw new Error("hostile finding value was accepted");
+      } catch (error: unknown) {
+        expect(error).toMatchObject({ code });
+        expect(String(error)).not.toContain(String(hostileValue));
+      }
+    },
+  );
 
   it("preserves malformed escaping and keeps encoded and literal versions collision-free", () => {
     const malformed = normalizeFinding({

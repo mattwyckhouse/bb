@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -845,6 +846,7 @@ decisions:
         componentGroup: "debian",
         componentName: "libxml2",
         componentVersion: "2.9.4+dfsg1-2.2+deb9u2",
+        expectedRows: 2,
       },
       {
         projectId: "5d78bed3-fa8e-59cf-b8a1-6046853ba785",
@@ -854,6 +856,7 @@ decisions:
         componentGroup: null,
         componentName: "Mbed TLS",
         componentVersion: "3.0.0",
+        expectedRows: 1,
       },
     ]) {
       const result = await host.harness.behavior.runCli(
@@ -874,7 +877,13 @@ decisions:
       );
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(result.stdout)).toMatchObject({
-        kinds: { finding: { fetched: 1, baseRows: 1, quarantined: 0 } },
+        kinds: {
+          finding: {
+            fetched: captured.expectedRows,
+            baseRows: captured.expectedRows,
+            quarantined: 0,
+          },
+        },
       });
       const persisted = context
         .db()
@@ -920,17 +929,27 @@ decisions:
       ...templateVersion,
       id: mixedVersion,
     });
+    const realShape = JSON.parse(
+      readFileSync(
+        resolve(FIXTURE_ROOT, "platform/fs193-binary-sast-specimen.json"),
+        "utf8",
+      ),
+    ) as Record<string, Json>;
+    const realShapeProjectVersion = realShape["projectVersion"];
+    if (
+      realShapeProjectVersion === null ||
+      Array.isArray(realShapeProjectVersion) ||
+      typeof realShapeProjectVersion !== "object"
+    ) {
+      throw new Error("real-shape specimen has no projectVersion object");
+    }
     const mixedRows = [
       {
-        id: "fs193-binary-sast",
-        projectVersionId: mixedVersion,
-        findingId: "FS-500-006",
-        component: {
-          id: "fs193-component",
-          name: "/update/firmware-root/etc/ssl/certs/ca-certificates.crt",
-          version: "",
+        ...realShape,
+        projectVersion: {
+          ...realShapeProjectVersion,
+          id: mixedVersion,
         },
-        type: "binary-sast",
       },
       {
         id: "fs193-exact",
@@ -946,11 +965,21 @@ decisions:
         id: "fs193-quarantined",
         projectVersionId: mixedVersion,
         findingId: "CVE-2026-19301",
-        title: "https://remote.invalid/?token=must-not-reach-diagnostics",
-        component: { id: "fs193-invalid-component", version: "" },
+        title: "https://remote.invalid/?api_key=must-not-reach-diagnostics",
+        component: {
+          id: "fs193-invalid-component",
+          name: "hostile-library",
+          version: "1.0.0",
+        },
+        epssScore: "authorization must-not-reach-diagnostics",
       },
     ];
-    for (const row of mixedRows) state.findings.set(row.id, row);
+    for (const row of mixedRows) {
+      const rowId = row["id"];
+      if (typeof rowId !== "string")
+        throw new Error("mixed finding row has no string id");
+      state.findings.set(rowId, row);
+    }
     try {
       const mixed = await host.harness.behavior.callRpc("syncPull", {
         workspaceProjectId: "bb-project-sync",
@@ -972,7 +1001,9 @@ decisions:
       const persisted = context
         .db()
         .prepare(
-          `SELECT finding_id AS findingId, stable_key AS stableKey
+          `SELECT finding_id AS findingId, stable_key AS stableKey,
+                  epss_score AS epssScore, warning_count AS warningCount,
+                  violation_count AS violationCount
              FROM findings
             WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
             ORDER BY finding_id`,
@@ -980,14 +1011,64 @@ decisions:
         .all(scope.projectId, mixedVersion, mixed.generationId) as Array<{
         findingId: string;
         stableKey: string;
+        epssScore: number | null;
+        warningCount: number;
+        violationCount: number;
       }>;
       expect(persisted.map((row) => row.findingId)).toEqual([
-        "fs193-binary-sast",
+        "00000000-0000-5000-8000-000000000193",
         "fs193-exact",
       ]);
+      expect(persisted[0]).toMatchObject({
+        epssScore: 0.00426,
+        warningCount: 2,
+        violationCount: 1,
+      });
       expect(parseFindingStableKey(persisted[0]?.stableKey ?? "").tier).toBe(
         "name-group-any-version",
       );
+      const registeredList = await host.harness.behavior.callRpc(
+        "findingsUiList",
+        {
+          projectId: scope.projectId,
+          projectVersionId: mixedVersion,
+          pageSize: 100,
+          continuation: null,
+          filters: {},
+        },
+      );
+      expect(registeredList).toMatchObject({
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            key: "00000000-0000-5000-8000-000000000193",
+            fields: expect.objectContaining({
+              epssScore: 0.00426,
+              warningCount: 2,
+              violationCount: 1,
+            }),
+          }),
+        ]),
+      });
+      const registeredDetail = await host.harness.behavior.callRpc(
+        "findingDetailGet",
+        {
+          projectId: scope.projectId,
+          projectVersionId: mixedVersion,
+          stableKey: persisted[0]?.stableKey ?? "",
+        },
+      );
+      expect(registeredDetail).toMatchObject({
+        state: "resolved",
+        rows: [
+          expect.objectContaining({
+            fields: expect.objectContaining({
+              epssScore: 0.00426,
+              warningCount: 2,
+              violationCount: 1,
+            }),
+          }),
+        ],
+      });
       expect(host.harness.inspection.logEntries).toContainEqual({
         level: "warn",
         message: "Quarantined individually unkeyable Platform finding rows: 1",
