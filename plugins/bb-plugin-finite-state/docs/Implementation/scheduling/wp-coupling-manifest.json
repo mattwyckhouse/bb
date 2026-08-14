@@ -230,11 +230,15 @@
     "prohibitedWorkPackageReasons": {
       "WP02": "ADR — bb Is Not Modified: builtin registration is a BB release decision; dispatch is prohibited and FS-16 stays in backlog until the ADR is superseded."
     },
-    "stoppedWorkPackages": ["WP56"],
+    "stoppedWorkPackages": ["WP56", "WP74"],
     "stoppedWorkPackageReasons": {
       "WP56": {
         "reason": "At integration 056899c2d, local-auth plugin mutations reject multipart before dispatch and plugin HTTP routes match exact paths, blocking the required upload and content route.",
         "resumeCondition": "Resume only after an owner-approved interface revision supplies both multipart upload and parameterized document-content delivery without bb-core changes or forbidden escape hatches."
+      },
+      "WP74": {
+        "reason": "L9 is post-core per the AUTHORITY ruling (2026-08-14). The KiCanvas go/no-go spike completed with a NO-GO verdict (FS-109, PR #174 parked partial); the remaining lane build-out is parked so L9 does not creep open while core (G4 beats, AUTHORITY near-term set) is still building. FS-219 (missing GET /hw/artifact route) is parked under the same gate.",
+        "resumeCondition": "Core complete (G4 beats and the AUTHORITY near-term set WP99-WP102 landed) or explicit owner reprioritization of L9. Resumption inherits the FS-109 worktree and PR #174."
       }
     },
     "currentLaneCap": 6,
