@@ -141,12 +141,15 @@ export interface ReproRequest {
 }
 
 export interface RehostingObservation {
-  state: "completed" | "failed" | "running";
   output: string;
   command: readonly string[];
   evidence: readonly EvidenceArtifact[];
-  failureReason?: string;
 }
+
+export type RehostingRunState =
+  | { state: "running" }
+  | { state: "completed" }
+  | { state: "failed"; failureReason?: string };
 
 export interface RenodeReplayRequest {
   kind: "boot_chain" | "golden_regression" | "model_platform";
@@ -196,6 +199,10 @@ export interface CascadeDeps {
     request: BenchRunRequest,
     signal: AbortSignal,
   ): Promise<BenchRunStarted>;
+  waitForRehostingTerminal(
+    runId: string,
+    signal: AbortSignal,
+  ): Promise<RehostingRunState>;
   readRehostingObservation(
     runId: string,
     signal: AbortSignal,

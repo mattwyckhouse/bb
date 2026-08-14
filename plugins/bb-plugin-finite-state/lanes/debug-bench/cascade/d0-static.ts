@@ -1,3 +1,4 @@
+import { FirmwareCacheError } from "../../firmware/cache/layout.js";
 import type {
   CascadeDeps,
   CorpusObservation,
@@ -39,6 +40,12 @@ export async function runD0(
     query.projectVersionId,
     signal,
   );
+  if (mount.readiness !== "fully_materialized") {
+    throw new FirmwareCacheError(
+      "MOUNT_INCOMPLETE",
+      `Firmware bytes are not fully materialized (readiness: ${mount.readiness}).`,
+    );
+  }
   if (!deps.stp.configured) {
     throw new CascadeError(
       "STP_NOT_CONFIGURED",

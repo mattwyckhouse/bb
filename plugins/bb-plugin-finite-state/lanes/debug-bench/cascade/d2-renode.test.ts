@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRenodeDriver, runD2 } from "./d2-renode.js";
-import type { CascadeDeps, RenodeReplayRequest } from "./types.js";
+import { type CascadeDeps, type RenodeReplayRequest } from "./types.js";
 
 const roots: string[] = [];
 
@@ -76,6 +76,7 @@ function deps(
     loadFirmwareReadiness: vi.fn(),
     stp: { configured: false, run: vi.fn() },
     runBench: vi.fn(),
+    waitForRehostingTerminal: vi.fn(),
     readRehostingObservation: vi.fn(),
     renode: {
       executable: "/opt/renode/renode",
@@ -198,6 +199,27 @@ describe("D2 Renode replay", () => {
     await expect(
       runD2(dependencies, request, new AbortController().signal),
     ).resolves.toMatchObject({ outcome: "confirmed" });
+  });
+
+  it("enforces physical confirmation rules at the D2 boundary", async () => {
+    const { root, request } = await fixture();
+    const dependencies = deps(root, ["boot ok\n", "boot ok\n"]);
+    await expect(
+      runD2(
+        dependencies,
+        {
+          ...request,
+          hypothesis: { ...request.hypothesis, class: "power" },
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: "CASCADE_CONFIRM_REQUIRES_PHYSICAL",
+      coercedVerdict: {
+        outcome: "inconclusive",
+        forcedEscalation: true,
+      },
+    });
   });
 
   it("refuses untracked replay inputs", async () => {

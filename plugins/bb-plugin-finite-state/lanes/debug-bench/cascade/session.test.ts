@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { MIGRATIONS } from "../../../lib/store/schema.js";
+import { rpcContract } from "../../../shared/contract.js";
 import { listBenchDevelopmentRuns } from "../probes/runs.js";
 import {
   addCascadeHypothesis,
@@ -14,7 +15,11 @@ import {
   replayCascadeSession,
   type CascadeSessionDeps,
 } from "./session.js";
-import type { Hypothesis, TierVerdict } from "./types.js";
+import {
+  VerdictValidationError,
+  type Hypothesis,
+  type TierVerdict,
+} from "./types.js";
 
 const databases: Database.Database[] = [];
 
@@ -68,13 +73,32 @@ function verdict(
 
 function sessionDeps(db: Database.Database): {
   deps: CascadeSessionDeps;
-  hints: Array<{ runId: string }>;
+  hints: Array<{
+    projectId: string;
+    projectVersionId: string | null;
+    runId: string;
+  }>;
 } {
-  const hints: Array<{ runId: string }> = [];
+  const hints: Array<{
+    projectId: string;
+    projectVersionId: string | null;
+    runId: string;
+  }> = [];
+  const artifacts = new Map<string, string>();
   let tick = 0;
   return {
     deps: {
       db,
+      artifacts: {
+        read: (path) => artifacts.get(path) ?? null,
+        write(path, contents) {
+          const existing = artifacts.get(path);
+          if (existing !== undefined && existing !== contents) {
+            throw new Error("ARTIFACT_ALREADY_EXISTS");
+          }
+          artifacts.set(path, contents);
+        },
+      },
       now: () => new Date(Date.UTC(2026, 7, 14, 0, 0, tick++)),
       publish(channel, payload) {
         expect(channel).toBe("probe:changed");
@@ -104,7 +128,7 @@ describe("cascade sessions", () => {
       evidence: [{ kind: "log", path: ".fs-bench/d1.log" }],
     });
 
-    const replayed = replayCascadeSession(db, created);
+    const replayed = replayCascadeSession(deps, created);
     expect(replayed.hypotheses.map((item) => item.id)).toEqual([
       "hyp-0",
       "hyp-1",
@@ -123,16 +147,26 @@ describe("cascade sessions", () => {
     );
     expect(replayed.finishedAt).not.toBeNull();
     expect(hints).toHaveLength(5);
+    expect(hints).toEqual(
+      expect.arrayContaining([
+        {
+          projectId: "project-1",
+          projectVersionId: "pv-1",
+          runId: created.probeRunId,
+        },
+      ]),
+    );
   });
 
-  it("pages sessions and exposes their probe link through the registered runs repository", () => {
+  it("pages multi-step sessions without breaking the registered runs RPC contract", () => {
     const db = database();
     const { deps } = sessionDeps(db);
+    const boundaryHypothesis = { ...h0, text: "h".repeat(2000) };
     const first = createCascadeSession(deps, {
       sessionId: "session-a",
       projectId: "project-1",
       projectVersionId: "pv-1",
-      hypotheses: [h0],
+      hypotheses: [boundaryHypothesis],
     });
     createCascadeSession(deps, {
       sessionId: "session-b",
@@ -140,7 +174,22 @@ describe("cascade sessions", () => {
       projectVersionId: "pv-1",
       hypotheses: [h1],
     });
-    const pageOne = listCascadeSessions(db, {
+    recordCascadeStep(
+      deps,
+      first,
+      verdict(boundaryHypothesis.id, "d0", "inconclusive"),
+    );
+    recordCascadeStep(
+      deps,
+      first,
+      verdict(boundaryHypothesis.id, "d1", "inconclusive"),
+    );
+    recordCascadeStep(
+      deps,
+      first,
+      verdict(boundaryHypothesis.id, "d2", "refuted"),
+    );
+    const pageOne = listCascadeSessions(deps, {
       projectId: "project-1",
       projectVersionId: "pv-1",
       pageSize: 1,
@@ -152,7 +201,7 @@ describe("cascade sessions", () => {
     });
     expect(pageOne.cursor).not.toBeNull();
     expect(
-      listCascadeSessions(db, {
+      listCascadeSessions(deps, {
         projectId: "project-1",
         projectVersionId: "pv-1",
         pageSize: 1,
@@ -169,9 +218,24 @@ describe("cascade sessions", () => {
     });
     expect(registeredRows.items).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ runId: first.probeRunId, kind: "probe" }),
+        expect.objectContaining({
+          runId: first.probeRunId,
+          kind: "probe",
+          target: boundaryHypothesis.text,
+          artifact: expect.stringContaining("cascade-session-r3-"),
+        }),
       ]),
     );
+    expect(
+      rpcContract.benchDevRunsList.output.safeParse(registeredRows).success,
+    ).toBe(true);
+    const stored = db
+      .prepare<
+        [string],
+        { hypothesis: string }
+      >("SELECT hypothesis FROM probe_run WHERE run_id = ?")
+      .get(first.probeRunId);
+    expect(stored?.hypothesis).toBe(boundaryHypothesis.text);
   });
 
   it("derives persisted decisions from the rule table and cannot store an illegal emulated confirm", () => {
@@ -183,10 +247,19 @@ describe("cascade sessions", () => {
       projectVersionId: "pv-1",
       hypotheses: [h1],
     });
+    let validation: VerdictValidationError | null = null;
+    try {
+      recordCascadeStep(deps, created, verdict(h1.id, "d1", "confirmed"));
+    } catch (error) {
+      if (error instanceof VerdictValidationError) validation = error;
+      else throw error;
+    }
+    expect(validation).not.toBeNull();
+    expect(replayCascadeSession(deps, created).steps).toEqual([]);
     const recorded = recordCascadeStep(
       deps,
       created,
-      verdict(h1.id, "d1", "confirmed"),
+      validation!.coercedVerdict,
     );
     expect(recorded.steps[0]).toMatchObject({
       verdict: { outcome: "inconclusive", forcedEscalation: true },

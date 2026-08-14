@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { FirmwareCacheError } from "../../firmware/cache/layout.js";
 import type { FirmwareReadinessSnapshot } from "../../firmware/forge/readiness.js";
 import { runD0 } from "./d0-static.js";
 import type { CascadeDeps, Hypothesis, StaticQuery } from "./types.js";
@@ -69,10 +68,12 @@ function deps(overrides: Partial<CascadeDeps> = {}): CascadeDeps {
       status: "running" as const,
     })),
     readRehostingObservation: vi.fn(async () => ({
-      state: "completed" as const,
       output: "",
       command: ["unused"],
       evidence: [],
+    })),
+    waitForRehostingTerminal: vi.fn(async () => ({
+      state: "completed" as const,
     })),
     renode: {
       executable: "renode",
@@ -188,32 +189,35 @@ describe("D0 static cascade", () => {
     });
   });
 
-  it("propagates WP-47 MOUNT_INCOMPLETE and never dispatches byte analysis", async () => {
-    const run = vi.fn();
-    const dependencies = deps({
-      loadFirmwareReadiness: vi.fn(async () => {
-        throw new FirmwareCacheError(
-          "MOUNT_INCOMPLETE",
-          "Firmware bytes are not fully materialized.",
-        );
-      }),
-      stp: { configured: true, run },
-    });
-    await expect(
-      runD0(
-        dependencies,
-        {
-          kind: "call_path",
-          hypothesis: h,
-          projectVersionId: "pv-1",
-          fromSymbol: "a",
-          toSymbol: "b",
-        },
-        new AbortController().signal,
-      ),
-    ).rejects.toMatchObject({ code: "MOUNT_INCOMPLETE" });
-    expect(run).not.toHaveBeenCalled();
-  });
+  it.each(["partial", "metadata_only"] as const)(
+    "refuses a legal %s readiness snapshot before byte analysis",
+    async (mountReadiness) => {
+      const run = vi.fn();
+      const snapshot = readiness();
+      const dependencies = deps({
+        loadFirmwareReadiness: vi.fn(async () => ({
+          ...snapshot,
+          readiness: mountReadiness,
+          meta: { ...snapshot.meta, fullyMaterialized: false },
+        })),
+        stp: { configured: true, run },
+      });
+      await expect(
+        runD0(
+          dependencies,
+          {
+            kind: "call_path",
+            hypothesis: h,
+            projectVersionId: "pv-1",
+            fromSymbol: "a",
+            toSymbol: "b",
+          },
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code: "MOUNT_INCOMPLETE" });
+      expect(run).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects a corpus observation from the wrong silicon family", async () => {
     const dependencies = deps({

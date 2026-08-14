@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import { toStorageProjectVersionId } from "../../../lib/store/index.js";
+import type { ProbeChangedHint } from "../probes/runs.js";
 import { nextStep, validateVerdict } from "./escalation.js";
-import { VerdictValidationError } from "./types.js";
 import type {
   CascadeDiagnosis,
   CascadeSession,
@@ -50,7 +51,7 @@ const annotationSchema = z
 const hypothesisSchema = z
   .object({
     id: z.string().min(1).max(512),
-    text: z.string().min(1).max(20_000),
+    text: z.string().min(1).max(2000),
     class: z.enum([
       "logic",
       "state",
@@ -125,6 +126,7 @@ const sessionEnvelopeSchema = z
 interface SessionRow {
   run_id: string;
   hypothesis: string | null;
+  artifacts: string | null;
 }
 
 interface SessionPageRow extends SessionRow {
@@ -133,8 +135,12 @@ interface SessionPageRow extends SessionRow {
 
 export interface CascadeSessionDeps {
   db: Database.Database;
+  artifacts: {
+    read(path: string): string | null;
+    write(path: string, contents: string): void;
+  };
   now(): Date;
-  publish(channel: "probe:changed", payload: { runId: string }): void;
+  publish(channel: "probe:changed", payload: ProbeChangedHint): void;
 }
 
 export interface CreateCascadeSessionInput {
@@ -165,6 +171,43 @@ function serializeSession(session: CascadeSession): string {
   });
 }
 
+function parseArtifactPaths(value: string | null): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value ?? "[]");
+  } catch {
+    throw new Error("CASCADE_SESSION_INVALID");
+  }
+  const result = z.array(diagnosisEvidenceSchema.shape.path).safeParse(parsed);
+  if (!result.success || result.data.length === 0) {
+    throw new Error("CASCADE_SESSION_INVALID");
+  }
+  return result.data;
+}
+
+function sessionArtifactPath(
+  runId: string,
+  revision: number,
+  contents: string,
+): string {
+  if (!ID.test(runId) || !Number.isInteger(revision) || revision < 0) {
+    throw new Error("INVALID_CASCADE_SESSION_ID");
+  }
+  const digest = createHash("sha256")
+    .update(contents)
+    .digest("hex")
+    .slice(0, 16);
+  return `.fs-bench/probe-runs/${runId}/cascade-session-r${revision}-${digest}.json`;
+}
+
+function readSession(
+  deps: Pick<CascadeSessionDeps, "artifacts">,
+  row: SessionRow,
+): CascadeSession {
+  const [path] = parseArtifactPaths(row.artifacts);
+  return parseSession(deps.artifacts.read(path) ?? null);
+}
+
 function scriptPath(sessionId: string): string {
   if (!ID.test(sessionId)) throw new Error("INVALID_CASCADE_SESSION_ID");
   return `${CASCADE_SCRIPT_PREFIX}${sessionId}.json`;
@@ -178,7 +221,7 @@ function rowFor(
 ): SessionRow | undefined {
   return db
     .prepare<[string, string, string], SessionRow>(
-      `SELECT run_id, hypothesis FROM probe_run
+      `SELECT run_id, hypothesis, artifacts FROM probe_run
        WHERE project_id = ? AND project_version_id = ? AND script_path = ?`,
     )
     .get(
@@ -198,6 +241,9 @@ export function createCascadeSession(
   const hypotheses = input.hypotheses.map((hypothesis) =>
     hypothesisSchema.parse(hypothesis),
   );
+  if (hypotheses.length === 0) {
+    throw new Error("CASCADE_HYPOTHESIS_REQUIRED");
+  }
   if (
     new Set(hypotheses.map((hypothesis) => hypothesis.id)).size !==
     hypotheses.length
@@ -216,22 +262,38 @@ export function createCascadeSession(
     startedAt,
     finishedAt: null,
   };
+  const serialized = serializeSession(session);
+  const artifactPath = sessionArtifactPath(
+    probeRunId,
+    session.revision,
+    serialized,
+  );
   deps.db
-    .prepare(
-      `INSERT INTO probe_run (
-         project_id, project_version_id, run_id, script_path, devices,
-         hypothesis, outcome, artifacts, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, '[]', ?, NULL, '[]', ?, NULL)`,
-    )
-    .run(
-      input.projectId,
-      toStorageProjectVersionId(input.projectVersionId),
-      probeRunId,
-      scriptPath(input.sessionId),
-      serializeSession(session),
-      startedAt,
-    );
-  deps.publish("probe:changed", { runId: probeRunId });
+    .transaction(() => {
+      deps.artifacts.write(artifactPath, serialized);
+      deps.db
+        .prepare(
+          `INSERT INTO probe_run (
+             project_id, project_version_id, run_id, script_path, devices,
+             hypothesis, outcome, artifacts, started_at, finished_at
+           ) VALUES (?, ?, ?, ?, '[]', ?, NULL, ?, ?, NULL)`,
+        )
+        .run(
+          input.projectId,
+          toStorageProjectVersionId(input.projectVersionId),
+          probeRunId,
+          scriptPath(input.sessionId),
+          hypotheses[0]!.text,
+          JSON.stringify([artifactPath]),
+          startedAt,
+        );
+    })
+    .immediate();
+  deps.publish("probe:changed", {
+    projectId: input.projectId,
+    projectVersionId: input.projectVersionId,
+    runId: probeRunId,
+  });
   return session;
 }
 
@@ -249,28 +311,40 @@ function updateSession(
         scope.sessionId,
       );
       if (!row) throw new Error("CASCADE_SESSION_NOT_FOUND");
-      const previous = parseSession(row.hypothesis);
+      const previous = readSession(deps, row);
       if (previous.finishedAt !== null)
         throw new Error("CASCADE_SESSION_FINISHED");
       const next = update(previous);
       const serialized = serializeSession(next);
+      const previousArtifacts = parseArtifactPaths(row.artifacts);
+      const artifactPath = sessionArtifactPath(
+        row.run_id,
+        next.revision,
+        serialized,
+      );
+      const nextArtifacts = [artifactPath, ...previousArtifacts.slice(1)];
+      deps.artifacts.write(artifactPath, serialized);
       const changed = deps.db
         .prepare(
-          `UPDATE probe_run SET hypothesis = ?
-         WHERE project_id = ? AND project_version_id = ? AND run_id = ? AND hypothesis = ?`,
+          `UPDATE probe_run SET artifacts = ?
+         WHERE project_id = ? AND project_version_id = ? AND run_id = ? AND artifacts = ?`,
         )
         .run(
-          serialized,
+          JSON.stringify(nextArtifacts),
           scope.projectId,
           toStorageProjectVersionId(scope.projectVersionId),
           row.run_id,
-          row.hypothesis,
+          row.artifacts,
         ).changes;
       if (changed !== 1) throw new Error("CASCADE_SESSION_STALE");
       return next;
     })
     .immediate();
-  deps.publish("probe:changed", { runId: result.probeRunId });
+  deps.publish("probe:changed", {
+    projectId: result.projectId,
+    projectVersionId: result.projectVersionId,
+    runId: result.probeRunId,
+  });
   return result;
 }
 
@@ -304,14 +378,9 @@ export function recordCascadeStep(
     if (!hypothesis) {
       throw new Error("CASCADE_HYPOTHESIS_NOT_FOUND");
     }
-    let coercedVerdict: TierVerdict;
-    try {
-      coercedVerdict = validateVerdict(verdict, hypothesis);
-    } catch (error) {
-      if (!(error instanceof VerdictValidationError)) throw error;
-      coercedVerdict = error.coercedVerdict;
-    }
-    const validatedVerdict = verdictSchema.parse(coercedVerdict);
+    const validatedVerdict = verdictSchema.parse(
+      validateVerdict(verdict, hypothesis),
+    );
     const previousVerdicts = session.steps
       .filter((step) => step.hypothesisId === hypothesis.id)
       .map((step) => step.verdict);
@@ -348,7 +417,7 @@ export function finishCascadeSession(
         scope.sessionId,
       );
       if (!row) throw new Error("CASCADE_SESSION_NOT_FOUND");
-      const previous = parseSession(row.hypothesis);
+      const previous = readSession(deps, row);
       if (previous.finishedAt !== null)
         throw new Error("CASCADE_SESSION_FINISHED");
       const next: CascadeSession = {
@@ -357,46 +426,57 @@ export function finishCascadeSession(
         revision: previous.revision + 1,
         finishedAt,
       };
-      const artifacts = [
+      const diagnosisArtifacts = [
         ...new Set(validatedDiagnosis.evidence.map((item) => item.path)),
       ];
+      const serialized = serializeSession(next);
+      const sessionArtifact = sessionArtifactPath(
+        row.run_id,
+        next.revision,
+        serialized,
+      );
+      const artifacts = [sessionArtifact, ...diagnosisArtifacts];
+      deps.artifacts.write(sessionArtifact, serialized);
       const changed = deps.db
         .prepare(
           `UPDATE probe_run
-         SET hypothesis = ?, outcome = ?, artifacts = ?, finished_at = ?
+         SET outcome = ?, artifacts = ?, finished_at = ?
          WHERE project_id = ? AND project_version_id = ? AND run_id = ?
-           AND hypothesis = ? AND finished_at IS NULL`,
+           AND artifacts = ? AND finished_at IS NULL`,
         )
         .run(
-          serializeSession(next),
           validatedDiagnosis.outcome,
           JSON.stringify(artifacts),
           finishedAt,
           scope.projectId,
           toStorageProjectVersionId(scope.projectVersionId),
           row.run_id,
-          row.hypothesis,
+          row.artifacts,
         ).changes;
       if (changed !== 1) throw new Error("CASCADE_SESSION_STALE");
       return next;
     })
     .immediate();
-  deps.publish("probe:changed", { runId: result.probeRunId });
+  deps.publish("probe:changed", {
+    projectId: result.projectId,
+    projectVersionId: result.projectVersionId,
+    runId: result.probeRunId,
+  });
   return result;
 }
 
 export function replayCascadeSession(
-  db: Database.Database,
+  deps: Pick<CascadeSessionDeps, "db" | "artifacts">,
   scope: Pick<CascadeSession, "projectId" | "projectVersionId" | "sessionId">,
 ): CascadeSession {
   const row = rowFor(
-    db,
+    deps.db,
     scope.projectId,
     scope.projectVersionId,
     scope.sessionId,
   );
   if (!row) throw new Error("CASCADE_SESSION_NOT_FOUND");
-  return parseSession(row.hypothesis);
+  return readSession(deps, row);
 }
 
 interface CascadeSessionCursor {
@@ -421,7 +501,7 @@ function decodeCursor(cursor: string | null): CascadeSessionCursor | null {
 }
 
 export function listCascadeSessions(
-  db: Database.Database,
+  deps: Pick<CascadeSessionDeps, "db" | "artifacts">,
   input: {
     projectId: string;
     projectVersionId: string | null;
@@ -447,9 +527,9 @@ export function listCascadeSessions(
   const params = cursor
     ? [...scope, cursor.startedAt, cursor.startedAt, cursor.runId]
     : scope;
-  const rows = db
+  const rows = deps.db
     .prepare<(string | number)[], SessionPageRow>(
-      `SELECT run_id, hypothesis, started_at FROM probe_run
+      `SELECT run_id, hypothesis, artifacts, started_at FROM probe_run
        WHERE project_id = ? AND project_version_id = ?
          AND script_path LIKE '${CASCADE_SCRIPT_PREFIX}%'
          ${cursorSql}
@@ -457,7 +537,7 @@ export function listCascadeSessions(
     )
     .all(...params, input.pageSize + 1);
   const total =
-    db
+    deps.db
       .prepare<[string, string], { count: number }>(
         `SELECT count(*) AS count FROM probe_run
          WHERE project_id = ? AND project_version_id = ?
@@ -467,7 +547,7 @@ export function listCascadeSessions(
   const visible = rows.slice(0, input.pageSize);
   const last = visible.at(-1);
   return {
-    items: visible.map((row) => parseSession(row.hypothesis)),
+    items: visible.map((row) => readSession(deps, row)),
     total,
     cursor:
       rows.length > input.pageSize && last

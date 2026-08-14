@@ -9,6 +9,7 @@ import type {
   TierVerdict,
 } from "./types.js";
 import { CascadeError } from "./types.js";
+import { validateVerdict } from "./escalation.js";
 
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const TIMESTAMP = /^\s*(?:\d{2}:){2}\d{2}(?:\.\d+)?\s+/u;
@@ -225,7 +226,7 @@ export async function runD2(
   }
   const golden = normalizeLog(await deps.readText(goldenLogPath, signal), root);
   await deps.writeText(artifactOutputPath, `${firstLog}\n`, signal);
-  return {
+  const verdict: TierVerdict = {
     tier: "d2",
     hypothesisId: request.hypothesis.id,
     outcome: firstLog === golden ? "confirmed" : "refuted",
@@ -241,6 +242,7 @@ export async function runD2(
       },
     },
   };
+  return validateVerdict(verdict, request.hypothesis);
 }
 
 export const runD2Renode = runD2;
