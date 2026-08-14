@@ -27,9 +27,14 @@ interface PlatformConnection {
   message: string | null;
 }
 
+interface RemoteConnections {
+  platform: PlatformConnection;
+  assuranceStudio: PlatformConnection;
+}
+
 type ConnectionGateState =
   | { kind: "loading" }
-  | { kind: "ready"; platform: PlatformConnection }
+  | { kind: "ready"; connections: RemoteConnections }
   | { kind: "error" };
 
 const SETTINGS_PATH = "/settings/plugins/finite-state";
@@ -52,7 +57,11 @@ function LoadingState(): React.JSX.Element {
   );
 }
 
-function UnconfiguredState({ message }: { message: string | null }): React.JSX.Element {
+function UnconfiguredState({
+  message,
+}: {
+  message: string | null;
+}): React.JSX.Element {
   return (
     <div className="flex h-full items-center justify-center bg-background p-6 text-foreground">
       <section
@@ -83,7 +92,8 @@ function UnconfiguredState({ message }: { message: string | null }): React.JSX.E
               "Configure the Platform URL and API token to load Finite State data in this panel."}
           </p>
           <p className="mt-2 text-xs leading-5 text-muted-foreground">
-            Optional Assurance Studio and Forge Compute connections remain independent.
+            Optional Assurance Studio and Forge Compute connections remain
+            independent.
           </p>
           <Button asChild className="mt-5">
             <a href={SETTINGS_PATH}>
@@ -96,6 +106,35 @@ function UnconfiguredState({ message }: { message: string | null }): React.JSX.E
       </section>
     </div>
   );
+}
+
+function ConnectionIssue({
+  connection,
+  name,
+}: {
+  connection: PlatformConnection;
+  name: string;
+}): React.JSX.Element | null {
+  if (!hasConnectionIssue(connection)) return null;
+  return (
+    <Alert className="m-3 w-auto shrink-0" variant="destructive">
+      <Icon name="AlertCircle" />
+      <AlertDescription className="flex items-center gap-3">
+        <span>
+          <span className="font-medium text-foreground">{name}: </span>
+          {connection.message ?? `${name} connection failed.`}
+        </span>
+        <Button asChild className="ml-auto" size="sm" variant="outline">
+          <a href={SETTINGS_PATH}>Open settings</a>
+        </Button>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function hasConnectionIssue(connection: PlatformConnection): boolean {
+  const malformed = connection.message?.includes(" is malformed.") ?? false;
+  return connection.state === "unreachable" || malformed;
 }
 
 export function PlatformConnectionGate({
@@ -111,7 +150,7 @@ export function PlatformConnectionGate({
   const refresh = useCallback(async () => {
     try {
       const status = await rpc.call("connectionsStatus", null);
-      setState({ kind: "ready", platform: status.platform });
+      setState({ kind: "ready", connections: status });
     } catch {
       setState({ kind: "error" });
     }
@@ -132,9 +171,9 @@ export function PlatformConnectionGate({
   if (state.kind === "loading") return <LoadingState />;
   if (
     state.kind === "ready" &&
-    state.platform.state === "needs-configuration"
+    state.connections.platform.state === "needs-configuration"
   ) {
-    return <UnconfiguredState message={state.platform.message} />;
+    return <UnconfiguredState message={state.connections.platform.message} />;
   }
   if (state.kind === "error") {
     return (
@@ -145,7 +184,12 @@ export function PlatformConnectionGate({
             <span>
               Connection status is unavailable. Panel data remains accessible.
             </span>
-            <Button className="ml-auto" onClick={() => void refresh()} size="sm" variant="outline">
+            <Button
+              className="ml-auto"
+              onClick={() => void refresh()}
+              size="sm"
+              variant="outline"
+            >
               Retry
             </Button>
           </AlertDescription>
@@ -154,5 +198,28 @@ export function PlatformConnectionGate({
       </div>
     );
   }
-  return <>{children}</>;
+  if (
+    state.kind === "ready" &&
+    !hasConnectionIssue(state.connections.platform) &&
+    !hasConnectionIssue(state.connections.assuranceStudio)
+  ) {
+    return <>{children}</>;
+  }
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {state.kind === "ready" ? (
+        <>
+          <ConnectionIssue
+            connection={state.connections.platform}
+            name="Platform"
+          />
+          <ConnectionIssue
+            connection={state.connections.assuranceStudio}
+            name="Assurance Studio"
+          />
+        </>
+      ) : null}
+      <div className="min-h-0 flex-1">{children}</div>
+    </div>
+  );
 }

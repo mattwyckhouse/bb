@@ -8,7 +8,7 @@ import {
   type RemoteConfig,
   type RemoteSettingValues,
 } from "./config.js";
-import { unavailableError } from "./errors.js";
+import { diagnoseRemoteFailure, unavailableError } from "./errors.js";
 import { ForgeComputeClient } from "./forge-compute/client.js";
 import { createForgeMcpTransport } from "./forge-compute/mcp-transport.js";
 import { PlatformClient } from "./platform/client.js";
@@ -364,6 +364,18 @@ function originLabel(value: string | null): string | null {
   }
 }
 
+function isAbsoluteHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.host.length > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
 function emptySlot<Client>(status: ConnectionStatus): Slot<Client> {
   return {
     client: null,
@@ -434,7 +446,7 @@ export function createRemoteServiceController(
               : `${service} at ${label} is connected`,
           checkedAt: new Date().toISOString(),
         };
-    } catch {
+    } catch (error: unknown) {
       if (
         !disposed &&
         slot.generation === generation &&
@@ -442,10 +454,7 @@ export function createRemoteServiceController(
       )
         slot.status = {
           state: "unreachable",
-          message:
-            label === null
-              ? `${service} is unreachable`
-              : `${service} at ${label} is unreachable`,
+          message: diagnoseRemoteFailure(error).message,
           checkedAt: new Date().toISOString(),
         };
     }
@@ -463,11 +472,25 @@ export function createRemoteServiceController(
       });
       return;
     }
-    const client = new PlatformClient({
-      baseUrl: next.platformBaseUrl,
-      token: next.platformToken,
-      concurrency: next.platformConcurrency,
-    });
+    let client: PlatformClient;
+    try {
+      if (!isAbsoluteHttpUrl(next.platformBaseUrl))
+        throw new TypeError("invalid URL");
+      client = new PlatformClient({
+        baseUrl: next.platformBaseUrl,
+        token: next.platformToken,
+        concurrency: next.platformConcurrency,
+      });
+    } catch {
+      platform = emptySlot({
+        state: "needs-configuration",
+        message:
+          "Platform URL (platformBaseUrl) is malformed. Enter an absolute HTTP(S) URL in connection settings.",
+        checkedAt: new Date().toISOString(),
+      });
+      platform.generation = old.generation + 1;
+      return;
+    }
     platform = {
       client,
       close: () => client.close(),
@@ -494,11 +517,25 @@ export function createRemoteServiceController(
       });
       return;
     }
-    const client = new AssuranceStudioClient({
-      baseUrl: next.asBaseUrl,
-      apiKey: next.asApiKey,
-      concurrency: next.asConcurrency,
-    });
+    let client: AssuranceStudioClient;
+    try {
+      if (!isAbsoluteHttpUrl(next.asBaseUrl))
+        throw new TypeError("invalid URL");
+      client = new AssuranceStudioClient({
+        baseUrl: next.asBaseUrl,
+        apiKey: next.asApiKey,
+        concurrency: next.asConcurrency,
+      });
+    } catch {
+      assuranceStudio = emptySlot({
+        state: "disabled",
+        message:
+          "Assurance Studio URL (asBaseUrl) is malformed. Enter an absolute HTTP(S) URL in connection settings.",
+        checkedAt: new Date().toISOString(),
+      });
+      assuranceStudio.generation = old.generation + 1;
+      return;
+    }
     assuranceStudio = {
       client,
       close: () => client.close(),
