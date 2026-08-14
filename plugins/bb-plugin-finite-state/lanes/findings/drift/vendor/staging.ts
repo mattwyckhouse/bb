@@ -29,6 +29,16 @@ interface PersistedRunRow {
   report_json: string;
 }
 
+/**
+ * Staging is a short-lived preview→apply buffer. Documents are base64-encoded
+ * into triage_runs.report_json (up to ~6.7 MiB each). Seven days is far longer
+ * than any interactive import session, but short enough to bound data.db growth
+ * when users preview many supplier docs and never apply (FS-147 R3 MEDIUM-1 /
+ * FS-212). Sweep is opportunistic on the next vendor-VEX operation — plugins
+ * must not add idle wakeups (see JOURNEY-BEAT-BACKLOG.md performance beat).
+ */
+export const VENDOR_STAGING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 function documentRunId(documentSha256: string): string {
   return `vendor-document-${documentSha256}`;
 }
@@ -53,6 +63,7 @@ function persist(
        status = excluded.status,
        input_digest = excluded.input_digest,
        report_json = excluded.report_json,
+       created_at = excluded.created_at,
        finished_at = excluded.finished_at`,
   ).run(
     input.projectId,
@@ -79,6 +90,120 @@ function read(
     )
     .get(input.projectId, input.pvId, input.runId);
   return row ? JSON.parse(row.report_json) : null;
+}
+
+/**
+ * Deletes stale `vendor_import` staging rows.
+ *
+ * Two passes: age out import handles first, then age out document blobs that
+ * no live import still references. A day-6.9 preview therefore cannot lose its
+ * blob to a near-TTL sweep before apply (FS-212 MEDIUM-1). The
+ * `source = 'vendor_import'` predicate is load-bearing: without it this would
+ * wipe policy/drift/manual triage history older than the TTL.
+ */
+export function pruneStaleVendorStaging(
+  db: Database.Database,
+  now: Date = new Date(),
+): number {
+  const cutoff = new Date(now.getTime() - VENDOR_STAGING_TTL_MS).toISOString();
+  const imports = db
+    .prepare(
+      `DELETE FROM triage_runs
+        WHERE source = 'vendor_import'
+          AND created_at < ?
+          AND run_id NOT LIKE 'vendor-document-%'`,
+    )
+    .run(cutoff);
+  const documents = db
+    .prepare(
+      `DELETE FROM triage_runs
+        WHERE source = 'vendor_import'
+          AND created_at < ?
+          AND run_id LIKE 'vendor-document-%'
+          AND NOT EXISTS (
+            SELECT 1
+              FROM triage_runs AS live
+             WHERE live.project_id = triage_runs.project_id
+               AND live.project_version_id = triage_runs.project_version_id
+               AND live.source = 'vendor_import'
+               AND live.input_digest = triage_runs.input_digest
+               AND live.run_id NOT LIKE 'vendor-document-%'
+          )`,
+    )
+    .run(cutoff);
+  return imports.changes + documents.changes;
+}
+
+/** Refreshes a staged document's TTL clock (preview proves the blob is wanted). */
+export function touchVendorDocumentStaging(
+  db: Database.Database,
+  input: StagingScope & { documentSha256: string },
+  now: Date = new Date(),
+): void {
+  const ts = now.toISOString();
+  db.prepare(
+    `UPDATE triage_runs
+        SET created_at = ?, finished_at = ?
+      WHERE project_id = ? AND project_version_id = ? AND run_id = ?
+        AND source = 'vendor_import'`,
+  ).run(
+    ts,
+    ts,
+    input.projectId,
+    input.pvId,
+    documentRunId(input.documentSha256),
+  );
+}
+
+/** True when another unspent import handle still references this document sha. */
+export function hasOtherVendorImportForDocument(
+  db: Database.Database,
+  input: StagingScope & { documentSha256: string; exceptImportId: string },
+): boolean {
+  const count = db
+    .prepare(
+      `SELECT COUNT(*)
+         FROM triage_runs
+        WHERE project_id = ?
+          AND project_version_id = ?
+          AND source = 'vendor_import'
+          AND input_digest = ?
+          AND run_id != ?
+          AND run_id != ?`,
+    )
+    .pluck()
+    .get(
+      input.projectId,
+      input.pvId,
+      input.documentSha256,
+      documentRunId(input.documentSha256),
+      input.exceptImportId,
+    ) as number;
+  return count > 0;
+}
+
+/** Drops the staged document blob after a successful apply (dead weight). */
+export function deleteVendorDocumentStaging(
+  db: Database.Database,
+  input: StagingScope & { documentSha256: string },
+): void {
+  db.prepare(
+    `DELETE FROM triage_runs
+      WHERE project_id = ? AND project_version_id = ? AND run_id = ?
+        AND source = 'vendor_import'`,
+  ).run(input.projectId, input.pvId, documentRunId(input.documentSha256));
+}
+
+/** Drops the preview import handle after a successful apply. */
+export function deleteVendorImportStaging(
+  db: Database.Database,
+  input: StagingScope & { importId: string },
+): void {
+  db.prepare(
+    `DELETE FROM triage_runs
+      WHERE project_id = ? AND project_version_id = ? AND run_id = ?
+        AND source = 'vendor_import'`,
+  ).run(input.projectId, input.pvId, input.importId);
 }
 
 export function persistVendorDocument(

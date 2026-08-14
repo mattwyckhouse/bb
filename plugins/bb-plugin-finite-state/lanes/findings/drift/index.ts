@@ -8,10 +8,15 @@ import { orphanBaseState, pruneOrphans } from "./orphans.js";
 import { importVendorVexBytes, vendorImportId } from "./vendor/import.js";
 import { parseVendorVexBytes } from "./vendor/parse.js";
 import {
+  deleteVendorDocumentStaging,
+  deleteVendorImportStaging,
+  hasOtherVendorImportForDocument,
   persistVendorDocument,
   persistVendorImport,
+  pruneStaleVendorStaging,
   readVendorDocument,
   readVendorImport,
+  touchVendorDocumentStaging,
 } from "./vendor/staging.js";
 import { FINDINGS_DRIFT_CHANGED_CHANNEL, type DriftReport } from "./report.js";
 import type { VendorImportResult } from "./vendor/import.js";
@@ -143,11 +148,19 @@ export function registerFindingsDrift(ctx: PluginContext): void {
         bytes: input.bytes,
         documentSha256: parsed.digest,
       });
+      pruneStaleVendorStaging(db);
       return { documentSha256: parsed.digest };
     },
     async previewVendorVex(input) {
       const document = readVendorDocument(db, input);
       if (!document) throw new Error("VENDOR_DOCUMENT_NOT_STAGED");
+      // Preview refreshes the document TTL clock so a day-6.9 preview cannot
+      // lose its blob before apply (FS-212 MEDIUM-1).
+      touchVendorDocumentStaging(db, {
+        projectId: input.projectId,
+        pvId: input.pvId,
+        documentSha256: input.documentSha256,
+      });
       const result = await importVendorVexBytes(
         { db, root: input.root, projectId: input.projectId, pvId: input.pvId },
         document.file,
@@ -162,6 +175,7 @@ export function registerFindingsDrift(ctx: PluginContext): void {
         projectId: input.projectId,
         pvId: input.pvId,
       });
+      pruneStaleVendorStaging(db);
       return { ...result, importId: id };
     },
     async applyVendorVex(input) {
@@ -195,6 +209,32 @@ export function registerFindingsDrift(ctx: PluginContext): void {
           pvId: input.pvId,
         });
       }
+      // Spent only when every proposal succeeded (errors empty). Do not gate
+      // on written > 0 — idempotent re-applies are legitimately spent with
+      // written: 0. Deletes run after classifyDrift so a classify throw cannot
+      // destroy staging needed for retry (FS-212 BLOCKER-1).
+      if (result.errors.length === 0) {
+        deleteVendorImportStaging(db, {
+          projectId: input.projectId,
+          pvId: input.pvId,
+          importId: input.importId,
+        });
+        if (
+          !hasOtherVendorImportForDocument(db, {
+            projectId: input.projectId,
+            pvId: input.pvId,
+            documentSha256: staged.documentSha256,
+            exceptImportId: input.importId,
+          })
+        ) {
+          deleteVendorDocumentStaging(db, {
+            projectId: input.projectId,
+            pvId: input.pvId,
+            documentSha256: staged.documentSha256,
+          });
+        }
+      }
+      pruneStaleVendorStaging(db);
       return { ...result, importId: input.importId };
     },
     async pruneOrphans(input) {
