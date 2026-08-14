@@ -472,11 +472,12 @@ async function ensureFirmware(runtime: Runtime, pvId: string): Promise<void> {
       object(mount, "selected firmware mount")["fields"],
       "firmware mount fields",
     );
-    if (
-      fields["state"] !== "ready" ||
-      fields["files"] !== fields["materializedFiles"] ||
-      fields["errors"] !== 0
-    ) {
+    const apiMetadataReady =
+      fields["source"] === "api" &&
+      fields["state"] === "metadata_only" &&
+      number(fields["files"], "firmware files") > 0 &&
+      typeof fields["artifactHash"] === "string";
+    if (!apiMetadataReady) {
       throw new Error(`firmware mount is not ready: ${JSON.stringify(fields)}`);
     }
   });
@@ -1924,7 +1925,7 @@ async function createRun(
         throw new Error("Mock Platform seed is empty");
       const projectId = string(templateProject["id"], "Platform project id");
       const bomVersion = string(templateVersion["id"], "Platform version id");
-      const findingVersion = "golden-finding-version";
+      const findingVersion = BENCH_VERSION;
       const fs167Version = "golden-fs167-version";
       state.versions.set(findingVersion, {
         ...templateVersion,
