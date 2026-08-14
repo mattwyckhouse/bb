@@ -67,11 +67,11 @@ test("missing dependency targets and dependency cycles are rejected", () => {
   const missingTarget = errorsFor((manifest) => {
     manifest.workPackages
       .find((entry) => entry.wp === "WP15")
-      .dependencies.push("WP99");
+      .dependencies.push("WP999");
   });
   assert(
     missingTarget.some((error) =>
-      error.includes("depends on missing target WP99"),
+      error.includes("depends on missing target WP999"),
     ),
   );
 
@@ -151,7 +151,9 @@ function explicitWpDependencies(markdown) {
     .slice(header.indexOf("**Depends on:**"))
     .split("· **Blocks:**")[0];
   const dependencies = new Set();
-  const pattern = /WP-(\d{2})(?:\s*[–-]\s*(?:WP-)?(\d{2}))?/g;
+  // Three-digit WPs exist from WP-100 on; a two-digit-only pattern would
+  // misread "WP-100" as WP-10.
+  const pattern = /WP-(\d{2,3})(?:\s*[–-]\s*(?:WP-)?(\d{2,3}))?/g;
   for (const match of dependsOn.matchAll(pattern)) {
     const start = Number(match[1]);
     const end = match[2] ? Number(match[2]) : start;

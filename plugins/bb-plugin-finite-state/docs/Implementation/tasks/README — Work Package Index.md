@@ -1,6 +1,6 @@
 # Work Package Index
 
-_98 work packages across eleven logical lanes (WP-71…98 added 2026-08-12 for SPECs 07–08). Start with `HANDOFF — Product & Architecture.md`, then the accepted direct-API ADR and `api-reference/README.md`, then the Master Plan, AGENTS, the scheduling bootstrap/manifest, and your WP. The ADR and frozen interfaces outrank historical Forge-first recon on transport ownership._
+_102 work packages across eleven logical lanes (WP-71…98 added 2026-08-12 for SPECs 07–08; WP-99…102 added and owner-ratified 2026-08-14 for the AUTHORITY near-term sequence). Start with `HANDOFF — Product & Architecture.md`, then the accepted direct-API ADR and `api-reference/README.md`, then the Master Plan, AGENTS, the scheduling bootstrap/manifest, and your WP. The ADR and frozen interfaces outrank historical Forge-first recon on transport ownership._
 
 **Status legend:** ✅ detailed implementation spec written
 
@@ -287,6 +287,27 @@ Staff this path with your strongest agents. Keep a human reviewer on WP-03/04/05
 | 97  | RE-corpus grounding _(the moat — start on corpus access, longest lead)_                  | 5 d    | 82, corpus-access decision 9.1 | ✅     |
 
 **The lane in one sentence:** the loop from requirement to running, instrumented firmware on real silicon — grounded in datasheets and the schematic, gated by citations, coupled to the verification layer. Citation gating is the core mechanic: **an uncited hardware constant is quarantined, not written.** Tier D is diagnostic, never evidentiary. The cascade rule: answer at the cheapest tier that can answer (D0 static → D1 rehosted → D2 deterministic → D3 physical); a D1/D2 result may _refute_ but never _confirm_ a timing-, power-, or analog-class hypothesis. WP-92/93/94 are independently valuable and independently deferrable; the production/ATE bench (SPEC 09) is deferred per decision 9.6, but the driver interface takes a transport so the rack is not foreclosed. **Skills in WP-96 are hand-written by people who have brought up hardware** — IoT-SkillsBench is unambiguous that self-generated skills underperform.
+
+---
+
+## AUTHORITY near-term set — Git SoR keystone _(ratified 2026-08-14 23:21Z)_ · AUTHORITY doc
+
+Commissioned by owner decision 2026-08-14 (22:05Z) and ratified the same day from the near-term sequence in `AUTHORITY — Git SoR, Platform Graph & AS Seed`. Dispatch order: WP-99 keystone first; WP-101 in parallel after the keystone lands; WP-100 → WP-102 sequential in the cluster. Binding constraints baked into every acceptance set: no beat or criterion may require an AS round-trip; `.fs/` YAML is the truth surface; the kept-frozen AS export rule (bugfix only, do not remove) stands. WP-101 carries an owner condition: one live `fs-cli` evidence capture before stage 0 is declared proven (not a CI dependency).
+
+| WP  | Title                                                         | Effort | Depends on |
+| --- | ------------------------------------------------------------- | ------ | ---------- |
+| 99  | **Repo contract load on checkout (YAML → SQLite) — KEYSTONE** | 3 d    | 16, 17     |
+| 100 | `seed --from as` writes `.fs/` once for human commit          | 2 d    | 99         |
+| 101 | Stage-0 Code Assurance binding against `.fs/requirements`     | 2 d    | 99         |
+| 102 | Optional `publish` target — truthful stub                     | 0.5 d  | 99, 100    |
+
+**WP-99 scope.** The keystone: on activation and checkout movement, rebuild the SQLite projection from `.fs/**` YAML keyed on HEAD + content hash, fully offline. SQLite is disposable; agents author YAML, never the projection. Gates the other three.
+
+**WP-100 scope.** One-shot AS import riding the frozen FS-198 picker as seed UX: write the `.fs/` tree, stop, let the human review the diff and commit. Never silently overwrites `human_edited` content; absent from agent tool surfaces.
+
+**WP-101 scope.** Prove stage 0 binds `fs-cli` / SEI Code Assurance against committed `.fs/requirements` — offline, AS unconfigured, explicitly not blocked on Graph publish. Read-side adapter plus proof harness with stable-key rename/edit stability.
+
+**WP-102 scope.** Human-only `publish` verb that truthfully reports the Platform Graph target is a stub until Platform has TARA entities. Zero side effects, zero network. The `GraphClient` facade remains a future amendment, not part of this set.
 
 ---
 

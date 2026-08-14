@@ -164,7 +164,8 @@ test("the shipped manifest prohibits WP02", async () => {
 });
 
 // WP71 was stopped here between intake and owner approval; AMD-0010…0015
-// were approved 2026-08-13 and WP71 is dispatchable again.
+// were approved 2026-08-13 and WP71 is dispatchable again. WP99-WP102 were
+// stopped here between drafting and owner ratification (both 2026-08-14).
 test("the shipped manifest temporarily stops WP56 with a resume condition", async () => {
   const { readFileSync } = await import("node:fs");
   const shipped = JSON.parse(
@@ -222,12 +223,9 @@ test("a frozen board with in-flight tasks stalls after the threshold", () => {
 
 test("any board transition resets the stall clock", () => {
   const t0 = 1_000_000;
-  const before = detectStall(
-    statuses({ "FS-1": "in_progress" }),
-    {},
-    t0,
-    { stallMs: 90 * MIN },
-  );
+  const before = detectStall(statuses({ "FS-1": "in_progress" }), {}, t0, {
+    stallMs: 90 * MIN,
+  });
   const after = detectStall(
     statuses({ "FS-1": "in_review" }),
     { fingerprint: before.fingerprint, fingerprintSince: before.since },

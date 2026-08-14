@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "auditBase": "1a7aaea1fd308f6817d40f81a6619b6fc46635d8",
-  "effectiveWorkPackageCount": 98,
-  "remainingUnstartedCount": 92,
-  "remainingDecisionClusterCount": 41,
+  "effectiveWorkPackageCount": 102,
+  "remainingUnstartedCount": 96,
+  "remainingDecisionClusterCount": 43,
   "scope": {
     "knownWorkPackages": [
       "WP01",
@@ -103,7 +103,11 @@
       "WP95",
       "WP96",
       "WP97",
-      "WP98"
+      "WP98",
+      "WP99",
+      "WP100",
+      "WP101",
+      "WP102"
     ],
     "remainingUnstarted": [
       "WP02",
@@ -197,7 +201,11 @@
       "WP95",
       "WP96",
       "WP97",
-      "WP98"
+      "WP98",
+      "WP99",
+      "WP100",
+      "WP101",
+      "WP102"
     ]
   },
   "presets": {
@@ -1581,6 +1589,58 @@
       "preset": "fs-standard",
       "dependencies": ["WP69", "WP95", "WP96"],
       "reason": "The authoring-grade beat 11 is additive post-G4 demo material with its own runbook decisions."
+    },
+    {
+      "wp": "WP99",
+      "task": "FS-215",
+      "lane": "L2",
+      "clusterId": "C-REPO-CONTRACT",
+      "ownerKey": "owner-repo-contract",
+      "executionMode": "sequential",
+      "sequence": 1,
+      "riskTier": "critical",
+      "preset": "fs-critical",
+      "dependencies": ["WP16", "WP17"],
+      "reason": "The offline YAML-to-SQLite loader is the keystone of the AUTHORITY near-term sequence; seed, binding proof, and publish stub all consume its projection semantics."
+    },
+    {
+      "wp": "WP100",
+      "task": "FS-216",
+      "lane": "L2",
+      "clusterId": "C-REPO-CONTRACT",
+      "ownerKey": "owner-repo-contract",
+      "executionMode": "sequential",
+      "sequence": 2,
+      "riskTier": "critical",
+      "preset": "fs-critical",
+      "dependencies": ["WP99"],
+      "reason": "Seed writes the .fs/ tree that WP-99's loader projects; write-once and overwrite-guard semantics are one decision owner with the loader."
+    },
+    {
+      "wp": "WP102",
+      "task": "FS-218",
+      "lane": "L2",
+      "clusterId": "C-REPO-CONTRACT",
+      "ownerKey": "owner-repo-contract",
+      "executionMode": "sequential",
+      "sequence": 3,
+      "riskTier": "critical",
+      "preset": "fs-critical",
+      "dependencies": ["WP99", "WP100"],
+      "reason": "The truthful publish stub rides the same sync CLI surface and truth-surface rules the loader and seed establish; it must land after both to avoid contradicting their verbs."
+    },
+    {
+      "wp": "WP101",
+      "task": "FS-217",
+      "lane": "integration",
+      "clusterId": "C-CODE-ASSURANCE-BIND",
+      "ownerKey": "owner-code-assurance-bind",
+      "executionMode": "sequential",
+      "sequence": 1,
+      "riskTier": "standard",
+      "preset": "fs-standard",
+      "dependencies": ["WP99"],
+      "reason": "The stage-0 binding proof is a read-side consumer of the WP-99 projection and carries its own evidence decisions, independent of seed and publish."
     }
   ]
 }
