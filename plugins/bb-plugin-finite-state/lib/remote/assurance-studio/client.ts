@@ -82,6 +82,102 @@ function object(value: unknown): Record<string, Json> {
   return normalized;
 }
 
+/**
+ * Live AS sometimes returns HTTP 200 with an application error body
+ * (`{"error":"Failed to fetch threats"}`, optional `details`) instead of a
+ * list/item envelope. Envelope detection belongs only at HTTP/list boundaries
+ * (`#json` / `pagePayload`) — never inside entity `payload()` unwrap, because
+ * OpenAPI reserves `error` for ErrorResponse envelopes, not TARA entity fields.
+ */
+function envelopeErrorMessage(value: unknown): string | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const error = (value as Record<string, unknown>).error;
+  if (typeof error !== "string") return null;
+  const trimmed = error.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
+function envelopeDetails(value: unknown): string | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const details = (value as Record<string, unknown>).details;
+  return typeof details === "string" ? details : null;
+}
+
+function asReportedErrorEnvelope(
+  value: unknown,
+): { error: string; details: string | null } | null {
+  const error = envelopeErrorMessage(value);
+  if (error === null) return null;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const data = (value as Record<string, unknown>).data;
+  const details = envelopeDetails(value);
+  if (data === undefined || data === null) return { error, details };
+  if (Array.isArray(data)) {
+    // `{"error":"Failed","data":[]}` must not publish empty.
+    return data.length === 0 ? { error, details } : null;
+  }
+  if (typeof data === "object") {
+    const arrays = Object.values(data).filter(Array.isArray);
+    if (arrays.length > 0) {
+      // List-shaped `data.<collection>`: empty collections + error => envelope.
+      // Non-empty rows alongside an `error` key stay successful.
+      return arrays.every((items) => items.length === 0)
+        ? { error, details }
+        : null;
+    }
+    // Entity-shaped object (no arrays) is not a list error envelope — entity
+    // fields named `error` are handled by payload()/normalizeEntity only.
+    return null;
+  }
+  return { error, details };
+}
+
+function throwReportedErrorEnvelope(
+  reported: { error: string; details: string | null },
+  status: number | null,
+): never {
+  const detailText =
+    reported.details === null
+      ? ""
+      : reported.details.replace(/\s+/gu, " ").trim();
+  const detailSuffix =
+    detailText.length === 0 ? "" : `: ${detailText.slice(0, 200)}`;
+  throw new RemoteError(
+    `Assurance Studio reported an error: ${reported.error.slice(0, 200)}${detailSuffix}`.slice(
+      0,
+      500,
+    ),
+    {
+      service: "assurance-studio",
+      code: "AS_REMOTE_REPORTED_ERROR",
+      status,
+      retryable: false,
+      retryAfterMs: null,
+      details: {
+        error: reported.error.slice(0, 200),
+        ...(detailText.length === 0
+          ? {}
+          : { details: detailText.slice(0, 500) }),
+      },
+    },
+  );
+}
+
+function rejectReportedErrorEnvelope(
+  value: unknown,
+  status: number | null,
+): void {
+  const reported = asReportedErrorEnvelope(value);
+  if (reported === null) return;
+  throwReportedErrorEnvelope(reported, status);
+}
+
 function payload(value: unknown): Record<string, Json> {
   const envelope = object(value);
   const nested = envelope.data ?? envelope.result ?? envelope.entity;
@@ -294,6 +390,8 @@ function pagePayload(
   itemKeys: readonly string[],
 ): { items: unknown[]; total: number | null; hasMore?: boolean } {
   if (Array.isArray(value)) return { items: value, total: null };
+  // List-envelope boundary only — never applied to entity unwrap.
+  rejectReportedErrorEnvelope(value, null);
   const envelope = object(value);
   const data = envelope.data;
   const nested =
@@ -316,7 +414,14 @@ function pagePayload(
     Array.isArray(data) ? data : undefined,
   ];
   const items = candidates.find(Array.isArray);
-  if (!Array.isArray(items))
+  if (!Array.isArray(items)) {
+    const reported = envelopeErrorMessage(value);
+    if (reported !== null) {
+      throwReportedErrorEnvelope(
+        { error: reported, details: envelopeDetails(value) },
+        null,
+      );
+    }
     throw new RemoteError("Assurance Studio list response had no items", {
       service: "assurance-studio",
       code: "AS_INVALID_RESPONSE",
@@ -325,6 +430,17 @@ function pagePayload(
       retryAfterMs: null,
       details: null,
     });
+  }
+  // Non-empty error + empty resolved collection must not publish empty.
+  if (items.length === 0) {
+    const reported = envelopeErrorMessage(value);
+    if (reported !== null) {
+      throwReportedErrorEnvelope(
+        { error: reported, details: envelopeDetails(value) },
+        null,
+      );
+    }
+  }
   const paginationValue = nested.pagination ?? envelope.pagination;
   const pagination =
     paginationValue !== null &&
@@ -585,8 +701,9 @@ export class AssuranceStudioClient implements AssuranceStudioClientContract {
       [],
       singleAttempt,
     );
+    let parsed: unknown;
     try {
-      return await response.json();
+      parsed = await response.json();
     } catch {
       throw new RemoteError("Assurance Studio returned invalid JSON", {
         service: "assurance-studio",
@@ -597,6 +714,10 @@ export class AssuranceStudioClient implements AssuranceStudioClientContract {
         details: null,
       });
     }
+    // Preserve the real HTTP status (often 200) so taxonomy stays `http`,
+    // never network-unreachable / authentication.
+    rejectReportedErrorEnvelope(parsed, response.status);
+    return parsed;
   }
 
   async health(ctx?: RemoteCallContext): Promise<RemoteHealth> {

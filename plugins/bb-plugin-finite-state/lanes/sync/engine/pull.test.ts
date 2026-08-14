@@ -1100,6 +1100,109 @@ decisions:
     ).toHaveLength(0);
   });
 
+  it("isolates an HTTP-200 AS error envelope as http without publishing that kind", async () => {
+    // Mirrors FS-211 live specimens: HTTP 200 + {"error":"Failed to fetch threats"}.
+    const scope = {
+      projectId: "project-200-error-envelope",
+      projectVersionId: "v1",
+    };
+    const requirement: EntityAdapter = {
+      kind: "requirement",
+      klass: "VERSIONED",
+      serializer: createSerializer("requirement"),
+      async *fetchRemote(_scope, progress) {
+        progress({ page: 1, of: 1 });
+        yield [
+          {
+            key: ENTITIES.requirement.key({ reqId: "REQ-200-ENV" }),
+            remoteId: "remote-requirement-200-env",
+            payload: {
+              id: "remote-requirement-200-env",
+              projectId: scope.projectId,
+              kind: "requirement",
+              fields: { reqId: "REQ-200-ENV", title: "Published" },
+              humanEdited: null,
+              reviewStatus: null,
+              reviewVersion: null,
+            },
+          },
+        ];
+      },
+      async readWorking() {
+        return [];
+      },
+    };
+    const threat: EntityAdapter = {
+      kind: "threat",
+      klass: "VERSIONED",
+      serializer: createSerializer("threat"),
+      async *fetchRemote() {
+        throw new RemoteError(
+          "Assurance Studio reported an error: Failed to fetch threats",
+          {
+            service: "assurance-studio",
+            code: "AS_REMOTE_REPORTED_ERROR",
+            status: 200,
+            retryable: false,
+            retryAfterMs: null,
+            details: { error: "Failed to fetch threats" },
+          },
+        );
+      },
+      async readWorking() {
+        return [];
+      },
+    };
+    const emitted: EntityKind[][] = [];
+    let generation = 0;
+    const deps = engine(requirement, {
+      adapters: [requirement, threat],
+      cachePullers: [],
+      createGenerationId: () => `isolated-200-envelope-${++generation}`,
+      published: ({ kinds }) => emitted.push([...kinds]),
+    });
+
+    const report = await pullIsolated(deps, scope, undefined, {
+      assuranceStudioProjectId: "as-selected",
+    });
+
+    expect(report.kinds).toEqual({
+      requirement: {
+        status: "published",
+        generationId: "isolated-200-envelope-1",
+        acceptedAt: "2026-08-12T19:00:00.000Z",
+        fetched: 1,
+        baseRows: 1,
+        quarantined: 0,
+        reasons: [],
+      },
+      threat: {
+        status: "failed",
+        generationId: "isolated-200-envelope-2",
+        acceptedAt: null,
+        fetched: 0,
+        baseRows: 0,
+        quarantined: 0,
+        reasons: [{ code: "http", count: 1 }],
+      },
+    });
+    expect(emitted).toEqual([["requirement"]]);
+    expect(
+      new BaseSnapshotStore(deps.db).listAccepted(
+        scope.projectId,
+        scope.projectVersionId,
+        "requirement",
+      ),
+    ).toHaveLength(1);
+    expect(
+      new BaseSnapshotStore(deps.db).listAccepted(
+        scope.projectId,
+        scope.projectVersionId,
+        "threat",
+      ),
+    ).toHaveLength(0);
+  });
+
   it("reports an unselected AS kind as a pre-generation failure while Platform publishes", async () => {
     const scope = {
       projectId: "platform-project-unselected",

@@ -28,6 +28,14 @@ routes omit `/api`, while Assurance Studio routes include `/api`. The HTTP
 diagnostic makes a duplicated `/api/api/` path visible without trying to enforce
 that settings policy in the transport layer.
 
+Assurance Studio may also return HTTP 200 with an application error body such
+as `{"error":"Failed to fetch threats"}` (optional `details`, including upstream
+Cloudflare HTML). That shape is neither transport failure nor authentication
+failure: the client raises `AS_REMOTE_REPORTED_ERROR` with the real status
+(usually 200), `diagnoseRemoteFailure` maps it to `http`, and self-diagnosis
+surfaces `request-failed`. The body must never be treated as an empty
+collection or cached as a valid snapshot.
+
 The transport keeps the internal non-auth `RemoteError.message` stable while
 storing request metadata in `details`; `diagnoseRemoteFailure` renders the
 actionable presentation. This prevents error prose from changing cache/recovery

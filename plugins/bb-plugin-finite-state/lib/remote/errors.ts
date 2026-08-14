@@ -363,10 +363,14 @@ export function diagnoseRemoteFailure(error: unknown): RemoteFailureDiagnostic {
           : error.code === "REMOTE_TRANSPORT_ERROR"
             ? REMOTE_FAILURE_KINDS.networkUnreachable
             : REMOTE_FAILURE_KINDS.http;
+  // HTTP 200 application error envelopes keep their remote-reported message;
+  // other HTTP rejections use the method/URL/status presentation.
   const message =
-    kind === REMOTE_FAILURE_KINDS.http && error.status !== null
-      ? rejectedRequestMessage(error)
-      : error.message;
+    error.code === "AS_REMOTE_REPORTED_ERROR"
+      ? error.message
+      : kind === REMOTE_FAILURE_KINDS.http && error.status !== null
+        ? rejectedRequestMessage(error)
+        : error.message;
   const presentation = SERVICE_PRESENTATION[error.service];
   return {
     kind,
