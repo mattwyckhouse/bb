@@ -16,6 +16,10 @@ import { Icon } from "@bb/shared-ui/icon";
 import { Skeleton } from "@bb/shared-ui/skeleton";
 import type { rpcContract } from "../../shared/contract.js";
 import { REMOTE_CONNECTIONS_CHANGED_CHANNEL } from "./connection-state.js";
+import {
+  remoteDiagnosticsRpcContract,
+  type RemoteFailureDiagnosticView,
+} from "./diagnostics-contract.js";
 
 interface PlatformConnection {
   state:
@@ -25,6 +29,7 @@ interface PlatformConnection {
     | "connected"
     | "unreachable";
   message: string | null;
+  diagnostic: RemoteFailureDiagnosticView | null;
 }
 
 interface RemoteConnections {
@@ -122,7 +127,9 @@ function ConnectionIssue({
       <AlertDescription className="flex items-center gap-3">
         <span>
           <span className="font-medium text-foreground">{name}: </span>
-          {connection.message ?? `${name} connection failed.`}
+          {connection.diagnostic === null
+            ? (connection.message ?? `${name} connection failed.`)
+            : formatDiagnostic(connection.diagnostic, name)}
         </span>
         <Button asChild className="ml-auto" size="sm" variant="outline">
           <a href={SETTINGS_PATH}>Open settings</a>
@@ -133,8 +140,35 @@ function ConnectionIssue({
 }
 
 function hasConnectionIssue(connection: PlatformConnection): boolean {
-  const malformed = connection.message?.includes(" is malformed.") ?? false;
-  return connection.state === "unreachable" || malformed;
+  return (
+    connection.state === "unreachable" ||
+    connection.diagnostic?.kind === "settings"
+  );
+}
+
+function formatDiagnostic(
+  diagnostic: RemoteFailureDiagnosticView,
+  name: string,
+): string {
+  const request = diagnostic.request;
+  if (
+    diagnostic.kind === "authentication" &&
+    diagnostic.status !== null &&
+    request !== null &&
+    diagnostic.credential !== null
+  ) {
+    const failure =
+      diagnostic.status === 403 ? "authorization" : "authentication";
+    return `${name} ${failure} failed for ${request.method} ${request.url} with HTTP ${diagnostic.status} using ${diagnostic.credential.header}. Refresh ${diagnostic.credential.label} (${diagnostic.credential.setting}).`;
+  }
+  if (
+    diagnostic.kind === "http" &&
+    diagnostic.status !== null &&
+    request !== null
+  ) {
+    return `${name} rejected ${request.method} ${request.url} with HTTP ${diagnostic.status}.`;
+  }
+  return diagnostic.message;
 }
 
 export function PlatformConnectionGate({
@@ -142,7 +176,9 @@ export function PlatformConnectionGate({
 }: {
   children: ReactNode;
 }): React.JSX.Element {
-  const rpc = useRpc<typeof rpcContract>();
+  const rpc = useRpc<
+    typeof rpcContract & typeof remoteDiagnosticsRpcContract
+  >();
   const realtimeConnection = useRealtimeConnectionState();
   const connectedOnce = useRef(false);
   const [state, setState] = useState<ConnectionGateState>({ kind: "loading" });
@@ -150,7 +186,32 @@ export function PlatformConnectionGate({
   const refresh = useCallback(async () => {
     try {
       const status = await rpc.call("connectionsStatus", null);
-      setState({ kind: "ready", connections: status });
+      const needsDiagnostics = [status.platform, status.assuranceStudio].some(
+        (connection) =>
+          connection.state === "unreachable" ||
+          connection.state === "needs-configuration",
+      );
+      const diagnostics = needsDiagnostics
+        ? await rpc.call("remoteConnectionDiagnostics", null).catch(() => ({
+            platform: null,
+            assuranceStudio: null,
+            forgeCompute: null,
+          }))
+        : {
+            platform: null,
+            assuranceStudio: null,
+            forgeCompute: null,
+          };
+      setState({
+        kind: "ready",
+        connections: {
+          platform: { ...status.platform, diagnostic: diagnostics.platform },
+          assuranceStudio: {
+            ...status.assuranceStudio,
+            diagnostic: diagnostics.assuranceStudio,
+          },
+        },
+      });
     } catch {
       setState({ kind: "error" });
     }
@@ -171,7 +232,8 @@ export function PlatformConnectionGate({
   if (state.kind === "loading") return <LoadingState />;
   if (
     state.kind === "ready" &&
-    state.connections.platform.state === "needs-configuration"
+    state.connections.platform.state === "needs-configuration" &&
+    state.connections.platform.diagnostic?.kind !== "settings"
   ) {
     return <UnconfiguredState message={state.connections.platform.message} />;
   }

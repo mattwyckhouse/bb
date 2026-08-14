@@ -140,6 +140,16 @@ export class PullFailedError extends Error {
     );
     this.name = "PullFailedError";
   }
+
+  /** Safe presentation for frozen RPC error channels; CLI keeps the rich message. */
+  get contractSafeMessage(): string {
+    return `Pull generation ${this.generationId} did not publish: ${this.failures
+      .map((item) => {
+        const remoteCode = /\b(REMOTE_[A-Z0-9_]+):/u.exec(item.message)?.[1];
+        return `${item.kind}: ${remoteCode === undefined ? item.message : `${remoteCode}: remote request failed`}`;
+      })
+      .join("; ")}`;
+  }
 }
 
 /** A kind failure whose staged generation must not be resumed. */

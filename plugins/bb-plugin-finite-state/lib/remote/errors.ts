@@ -6,6 +6,7 @@ export const REMOTE_FAILURE_KINDS = {
   networkUnreachable: "network-unreachable",
   settings: "settings",
   timeout: "timeout",
+  unknown: "unknown",
 } as const;
 
 export type RemoteFailureKind =
@@ -21,6 +22,14 @@ export interface RemoteFailureDiagnostic {
   kind: RemoteFailureKind;
   message: string;
   retryable: boolean;
+  service: RemoteService | null;
+  status: number | null;
+  request: RemoteRequestDescription | null;
+  credential: {
+    header: string;
+    label: string;
+    setting: string;
+  } | null;
 }
 
 export const REMOTE_REQUEST_TIMEOUT_MS = {
@@ -305,7 +314,7 @@ function diagnosticRequest(
   const details = error.details;
   if (details === null || typeof details !== "object" || Array.isArray(details))
     return null;
-  const candidate = details["request"];
+  const candidate = details["request"] ?? details;
   if (
     candidate === null ||
     typeof candidate !== "object" ||
@@ -334,10 +343,14 @@ function rejectedRequestMessage(error: RemoteError): string {
 export function diagnoseRemoteFailure(error: unknown): RemoteFailureDiagnostic {
   if (!(error instanceof RemoteError)) {
     return {
-      kind: REMOTE_FAILURE_KINDS.networkUnreachable,
+      kind: REMOTE_FAILURE_KINDS.unknown,
       message:
-        "Remote service could not be reached. Check DNS, proxy, and network connectivity.",
-      retryable: true,
+        "Remote request failed unexpectedly. Retry, then inspect the plugin logs if the failure persists.",
+      retryable: false,
+      service: null,
+      status: null,
+      request: null,
+      credential: null,
     };
   }
   const kind =
@@ -354,5 +367,64 @@ export function diagnoseRemoteFailure(error: unknown): RemoteFailureDiagnostic {
     kind === REMOTE_FAILURE_KINDS.http && error.status !== null
       ? rejectedRequestMessage(error)
       : error.message;
-  return { kind, message, retryable: error.retryable };
+  const presentation = SERVICE_PRESENTATION[error.service];
+  return {
+    kind,
+    message,
+    retryable: error.retryable,
+    service: error.service,
+    status: error.status,
+    request: diagnosticRequest(error),
+    credential:
+      kind === REMOTE_FAILURE_KINDS.authentication
+        ? {
+            header: presentation.credentialHeader,
+            label: presentation.credentialLabel,
+            setting: presentation.credentialSetting,
+          }
+        : null,
+  };
+}
+
+export function settingsFailureDiagnostic(
+  service: RemoteService,
+  message: string,
+): RemoteFailureDiagnostic {
+  return {
+    kind: REMOTE_FAILURE_KINDS.settings,
+    message,
+    retryable: false,
+    service,
+    status: null,
+    request: null,
+    credential: null,
+  };
+}
+
+/**
+ * Keep frozen connections.status detail intentionally terse. Request metadata
+ * belongs to the structured remoteConnectionDiagnostics RPC, whose fields are
+ * not constrained by safeDetailSchema's credential-pattern guard.
+ */
+export function connectionStatusMessage(
+  diagnostic: RemoteFailureDiagnostic,
+): string {
+  const name =
+    diagnostic.service === null
+      ? "Remote service"
+      : SERVICE_PRESENTATION[diagnostic.service].name;
+  switch (diagnostic.kind) {
+    case REMOTE_FAILURE_KINDS.authentication:
+      return `${name} credentials were rejected${diagnostic.status === null ? "" : ` (HTTP ${diagnostic.status})`}.`;
+    case REMOTE_FAILURE_KINDS.http:
+      return `${name} request was rejected${diagnostic.status === null ? "" : ` (HTTP ${diagnostic.status})`}.`;
+    case REMOTE_FAILURE_KINDS.networkUnreachable:
+      return `${name} could not be reached.`;
+    case REMOTE_FAILURE_KINDS.settings:
+      return `${name} settings are invalid.`;
+    case REMOTE_FAILURE_KINDS.timeout:
+      return `${name} request timed out.`;
+    case REMOTE_FAILURE_KINDS.unknown:
+      return `${name} request failed unexpectedly.`;
+  }
 }

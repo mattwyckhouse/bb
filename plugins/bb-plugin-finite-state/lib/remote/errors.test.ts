@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  connectionStatusMessage,
   diagnoseRemoteFailure,
   responseError,
   transportError,
@@ -30,6 +31,14 @@ describe("remote failure diagnostics", () => {
       message:
         "Assurance Studio authentication failed for GET https://fs-alpha.finitestate.io/api/api/projects?limit=1 with HTTP 401 using X-API-Key. Refresh Assurance Studio API key (asApiKey).",
       retryable: false,
+      service: "assurance-studio",
+      status: 401,
+      request,
+      credential: {
+        header: "X-API-Key",
+        label: "Assurance Studio API key",
+        setting: "asApiKey",
+      },
     });
     expect(unauthorized).toMatchObject({
       code: "REMOTE_HTTP_401",
@@ -58,6 +67,10 @@ describe("remote failure diagnostics", () => {
       message:
         "Assurance Studio rejected GET https://fs-alpha.finitestate.io/api/api/projects?limit=1 with HTTP 404.",
       retryable: false,
+      service: "assurance-studio",
+      status: 404,
+      request,
+      credential: null,
     });
   });
 
@@ -67,6 +80,10 @@ describe("remote failure diagnostics", () => {
       message:
         "Platform is not configured. Set Platform URL (platformBaseUrl) and Platform token (platformToken).",
       retryable: false,
+      service: "platform",
+      status: null,
+      request: null,
+      credential: null,
     });
     expect(
       diagnoseRemoteFailure(
@@ -87,7 +104,33 @@ describe("remote failure diagnostics", () => {
       message:
         "Platform could not be reached during GET https://platform.example/api/public/v0/projects. Check DNS, proxy, and network connectivity.",
       retryable: true,
+      service: "platform",
+      status: null,
+      request: {
+        method: "GET",
+        url: "https://platform.example/api/public/v0/projects",
+        phase: "request headers for getProjectsV0",
+      },
+      credential: null,
     });
+  });
+
+  it("does not misclassify an internal exception as network unreachability", () => {
+    const diagnostic = diagnoseRemoteFailure(new TypeError("client defect"));
+
+    expect(diagnostic).toEqual({
+      kind: "unknown",
+      message:
+        "Remote request failed unexpectedly. Retry, then inspect the plugin logs if the failure persists.",
+      retryable: false,
+      service: null,
+      status: null,
+      request: null,
+      credential: null,
+    });
+    expect(connectionStatusMessage(diagnostic)).toBe(
+      "Remote service request failed unexpectedly.",
+    );
   });
 
   it("reports elapsed time and phase without retrying a timed-out request", async () => {

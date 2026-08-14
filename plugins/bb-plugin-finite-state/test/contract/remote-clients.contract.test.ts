@@ -18,6 +18,7 @@ import type { Scheduler } from "../../lib/remote/rate-limit.js";
 import { PLATFORM_REFERENCE_ROUTES } from "../mock-remote/generated/platform-routes.js";
 import { ASSURANCE_STUDIO_REFERENCE_ROUTES } from "../mock-remote/generated/assurance-studio-routes.js";
 import { registerRemoteServices } from "../../lanes/remote/register.js";
+import { rpcContract } from "../../shared/contract.js";
 import { createMockRemote } from "../mock-remote/server.js";
 
 async function firstPage<T>(
@@ -407,8 +408,8 @@ describe("direct remote and compute contract", () => {
     fetchMock.mockRestore();
   });
 
-  it("publishes remote-specific auth failures through connection status", async () => {
-    const values: RemoteSettingValues = {
+  it("keeps registered connection status contract-safe while publishing structured auth diagnostics for both remotes", async () => {
+    const values = {
       platformBaseUrl: "https://platform.example/api",
       platformToken: "p",
       platformConcurrency: "8",
@@ -418,36 +419,77 @@ describe("direct remote and compute contract", () => {
       forgeTransport: "disabled",
       forgeUrl: "",
       forgeCommand: "",
-      forgeAuthToken: undefined,
+      forgeAuthToken: "",
       forgeConcurrency: "4",
       standaloneUnpackExecutablePath: "",
       standaloneUnpackImage: "localhost:5000/services-unpack:latest",
-    };
+    } satisfies RemoteSettingValues;
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(
         Response.json({ error: "unauthorized" }, { status: 401 }),
       );
     const host = createFakePluginHost({ pluginId: "finite-state-auth-status" });
-    const controller = createRemoteServiceController(
-      createPluginContext(host.bb),
-      values,
-    );
+    await registerRemoteServices(host.bb, createPluginContext(host.bb));
+    await host.harness.setSettings({ ...values });
 
-    await vi.waitFor(() => {
-      expect(controller.connectionStatus().platform.message).toContain(
-        "using X-Authorization. Refresh Platform token (platformToken)",
-      );
-      expect(controller.connectionStatus().assuranceStudio.message).toContain(
-        "using X-API-Key. Refresh Assurance Studio API key (asApiKey)",
-      );
+    await vi.waitFor(async () => {
+      expect(await host.harness.callRpc("connectionsStatus")).toMatchObject({
+        platform: { state: "unreachable" },
+        assuranceStudio: { state: "unreachable" },
+      });
     });
-    expect(controller.connectionStatus()).toMatchObject({
-      platform: { state: "unreachable" },
-      assuranceStudio: { state: "unreachable" },
+    const registeredStatus = rpcContract.connectionsStatus.output.parse(
+      await host.harness.callRpc("connectionsStatus"),
+    );
+    expect(registeredStatus).toMatchObject({
+      platform: {
+        state: "unreachable",
+        message: "Platform credentials were rejected (HTTP 401).",
+      },
+      assuranceStudio: {
+        state: "unreachable",
+        message: "Assurance Studio credentials were rejected (HTTP 401).",
+      },
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    await controller.dispose();
+    for (const connection of [
+      registeredStatus.platform,
+      registeredStatus.assuranceStudio,
+    ]) {
+      expect(connection.message?.length).toBeLessThan(200);
+      expect(connection.message).not.toMatch(
+        /(?:authorization|api[_-]?key|https?:\/\/|[?@])/iu,
+      );
+    }
+    await expect(
+      host.harness.callRpc("remoteConnectionDiagnostics"),
+    ).resolves.toMatchObject({
+      platform: {
+        kind: "authentication",
+        status: 401,
+        request: {
+          method: "GET",
+          url: "https://platform.example/api/public/v0/projects?offset=0&limit=1",
+        },
+        credential: {
+          header: "X-Authorization",
+          setting: "platformToken",
+        },
+      },
+      assuranceStudio: {
+        kind: "authentication",
+        status: 401,
+        request: {
+          method: "GET",
+          url: "https://fs-alpha.finitestate.io/api/projects?page=1&limit=1",
+        },
+        credential: {
+          header: "X-API-Key",
+          setting: "asApiKey",
+        },
+      },
+    });
+    await host.harness.lifecycle.dispose();
     fetchMock.mockRestore();
   });
 
@@ -483,7 +525,7 @@ describe("direct remote and compute contract", () => {
         ),
       },
       assuranceStudio: {
-        state: "disabled",
+        state: "needs-configuration",
         message: expect.stringContaining(
           "Assurance Studio URL (asBaseUrl) is malformed",
         ),

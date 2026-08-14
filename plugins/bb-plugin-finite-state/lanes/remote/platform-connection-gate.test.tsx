@@ -47,6 +47,33 @@ function panel(id: string) {
   return registration;
 }
 
+function authDiagnostic(
+  service: "platform" | "assurance-studio",
+  status: 401 | 403,
+  request: { method: string; url: string; phase: string },
+) {
+  const platform = service === "platform";
+  return {
+    kind: "authentication" as const,
+    message: "contract-safe fallback",
+    retryable: false,
+    service,
+    status,
+    request,
+    credential: platform
+      ? {
+          header: "X-Authorization",
+          label: "Platform token",
+          setting: "platformToken",
+        }
+      : {
+          header: "X-API-Key",
+          label: "Assurance Studio API key",
+          setting: "asApiKey",
+        },
+  };
+}
+
 afterEach(() => cleanup());
 
 describe("Platform connection panel gate", () => {
@@ -140,12 +167,25 @@ describe("Platform connection panel gate", () => {
           connectionsStatus: () =>
             status(
               "unreachable",
-              "Platform authentication failed for GET https://platform.example/api/public/v0/projects with HTTP 401 using X-Authorization. Refresh Platform token (platformToken).",
+              "Platform credentials were rejected (HTTP 401).",
               connection(
                 "unreachable",
-                "Assurance Studio authorization failed for GET https://fs-alpha.finitestate.io/api/projects with HTTP 403 using X-API-Key. Refresh Assurance Studio API key (asApiKey).",
+                "Assurance Studio credentials were rejected (HTTP 403).",
               ),
             ),
+          remoteConnectionDiagnostics: () => ({
+            platform: authDiagnostic("platform", 401, {
+              method: "GET",
+              url: "https://platform.example/api/public/v0/projects?offset=0&limit=1",
+              phase: "request headers for getProjectsV0",
+            }),
+            assuranceStudio: authDiagnostic("assurance-studio", 403, {
+              method: "GET",
+              url: "https://fs-alpha.finitestate.io/api/projects?page=1&limit=1",
+              phase: "request headers for /api/projects",
+            }),
+            forgeCompute: null,
+          }),
         },
         sidebarThreads: { status: "ready", projects: [] },
       },
@@ -156,8 +196,43 @@ describe("Platform connection panel gate", () => {
     expect(
       slot.getByText(/Assurance Studio authorization failed/u),
     ).toBeTruthy();
+    expect(
+      slot.getByText(/public\/v0\/projects\?offset=0&limit=1/u),
+    ).toBeTruthy();
+    expect(slot.getByText(/\/api\/projects\?page=1&limit=1/u)).toBeTruthy();
     expect(slot.getAllByRole("link", { name: "Open settings" })).toHaveLength(
       2,
     );
+  });
+
+  it("uses the settings taxonomy kind instead of parsing diagnostic prose", async () => {
+    const message = "The configured Platform endpoint needs attention.";
+    const slot = renderSlot(
+      panel("product-security"),
+      { subPath: "tara" },
+      {
+        rpc: {
+          connectionsStatus: () => status("needs-configuration", message),
+          remoteConnectionDiagnostics: () => ({
+            platform: {
+              kind: "settings",
+              message,
+              retryable: false,
+              service: "platform",
+              status: null,
+              request: null,
+              credential: null,
+            },
+            assuranceStudio: null,
+            forgeCompute: null,
+          }),
+        },
+        sidebarThreads: { status: "ready", projects: [] },
+      },
+    );
+
+    expect(await slot.findByText("Choose a project")).toBeTruthy();
+    expect(slot.getByText(message)).toBeTruthy();
+    expect(slot.queryByText("Connect Finite State Platform")).toBeNull();
   });
 });

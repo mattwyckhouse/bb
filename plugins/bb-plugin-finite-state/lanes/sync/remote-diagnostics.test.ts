@@ -6,6 +6,7 @@ import { AssuranceStudioClient } from "../../lib/remote/assurance-studio/client.
 import { PlatformClient } from "../../lib/remote/platform/client.js";
 import { RemoteLimiter, systemScheduler } from "../../lib/remote/rate-limit.js";
 import { registerCachePuller } from "./engine/adapter.js";
+import { PullFailedError } from "./engine/pull.js";
 import { registerSyncCli } from "./cli.js";
 
 type Fetch = (
@@ -88,6 +89,24 @@ async function runCli(
 const unusedFetch: Fetch = async () => Response.json({ items: [], total: 0 });
 
 describe("registered sync CLI remote diagnostics", () => {
+  it("offers a contract-safe pull failure while retaining rich CLI diagnostics", () => {
+    const failure = new PullFailedError("generation-1", [
+      {
+        kind: "finding",
+        message:
+          "REMOTE_HTTP_401: Platform authentication failed for GET https://platform.example/api/findings?token=secret using X-Authorization.",
+      },
+    ]);
+
+    expect(failure.message).toContain("https://platform.example");
+    expect(failure.contractSafeMessage).toBe(
+      "Pull generation generation-1 did not publish: finding: REMOTE_HTTP_401: remote request failed",
+    );
+    expect(failure.contractSafeMessage).not.toMatch(
+      /(?:authorization|api[_-]?key|token=|https?:\/\/)/iu,
+    );
+  });
+
   it("prints the Platform 401 diagnostic when a pull hits the remote", async () => {
     const platformFetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>

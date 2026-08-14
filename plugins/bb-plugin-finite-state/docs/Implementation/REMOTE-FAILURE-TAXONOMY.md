@@ -17,6 +17,9 @@ Connection failures are classified as:
   include elapsed milliseconds and the request phase. Platform uses 30 seconds;
   Assurance Studio uses 45 seconds to accommodate observed cold starts around
   21 seconds.
+- `unknown`: an unexpected in-process exception. It is deliberately distinct
+  from transport failure so a client defect cannot send users to DNS or proxy
+  debugging.
 
 Other HTTP rejections use the `http` kind. Every rejected-response diagnostic
 includes the request method, credential-free full URL, and HTTP status. This is
@@ -30,6 +33,18 @@ storing request metadata in `details`; `diagnoseRemoteFailure` renders the
 actionable presentation. This prevents error prose from changing cache/recovery
 semantics while keeping every CLI, probe, and panel rejection diagnostic rich.
 
+The frozen `connectionsStatus.message` remains a short, credential-pattern-safe
+summary. The lane-owned `remoteConnectionDiagnostics` RPC carries the failure
+kind and structured request method, full URL, phase, HTTP status, and credential
+setting metadata used by panels. Consumers must branch on `kind`; parsing prose
+is not part of the contract.
+
+The timeout budget currently covers the fetch through receipt of response
+headers. Reading or parsing a response body is not separately timed, so the
+reported phase remains `request headers ...`; a future body budget must use a
+distinct phase rather than relabeling this timeout.
+
 The exported entry points are `REMOTE_FAILURE_KINDS`,
 `REMOTE_REQUEST_TIMEOUT_MS`, `RemoteFailureKind`, `RemoteFailureDiagnostic`,
-and `diagnoseRemoteFailure`.
+`diagnoseRemoteFailure`, `connectionStatusMessage`, and
+`remoteDiagnosticsRpcContract`.
