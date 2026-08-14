@@ -1,16 +1,22 @@
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import type { PluginContext } from "../../lib/context.js";
 import type { RemoteServices } from "../../lib/remote/types.js";
+import type { NamespacedCliRunner } from "../sync/cli.js";
 import { registerCachePuller } from "../sync/engine/adapter.js";
 import { hydrateFindingActivity } from "./cache/activity.js";
 import { hydrateFindingComments } from "./cache/comments.js";
 import { pullFindings } from "./cache/pull.js";
 import { registerFindingsBulk } from "./bulk/index.js";
-import { registerFindingsDrift } from "./drift/index.js";
+import {
+  registerFindingsDrift,
+  type FindingsDriftService,
+} from "./drift/index.js";
 import { registerFindingsOverlay } from "./overlay/index.js";
 import { registerFindingsPolicyStub } from "./policy/index.js";
 import { registerFindingsStableKeyStub } from "./stable-key/index.js";
 import { registerFindingsRpc } from "./rpc.js";
+import { createFindingsCliRunner } from "./cli.js";
+import { assertAcceptedFindingsScope } from "./scope.js";
 
 interface PersistedPullAdvisories {
   generationId: string;
@@ -148,7 +154,17 @@ export function registerFindings(bb: BbPluginApi, ctx: PluginContext): void {
       findingId: string;
     }) => hydrateFindingComments(db, remote.platform, input),
   }));
+  registerFindingsDrift(ctx);
+  const drift = ctx.service<FindingsDriftService>("findings.drift", () => {
+    throw new Error("Findings drift services are unavailable");
+  });
+  ctx.service<{ run: NamespacedCliRunner }>("findings.cli", () => ({
+    run: createFindingsCliRunner(bb, drift, (input) =>
+      assertAcceptedFindingsScope(db, input),
+    ),
+  }));
   registerFindingsRpc(bb, db, {
+    drift,
     hydrateActivity: (input) =>
       hydrateFindingActivity(db, remote.platform, input),
     async pullAdvisories(input) {
@@ -169,5 +185,4 @@ export function registerFindings(bb: BbPluginApi, ctx: PluginContext): void {
     publish: (progress) =>
       bb.realtime.publish("fs-vex-push-progress", progress),
   });
-  registerFindingsDrift(ctx);
 }

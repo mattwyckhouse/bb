@@ -107,7 +107,10 @@ bb finite-state
   # ── surface groups ──
   triage                                    # SPEC 02 §6.6
     list [--filter …] | set <stableKey> --status … | apply-policy [--dry-run]
-    import-vex <file> --vendor <name> [--overwrite] | orphans [--prune]
+    drift report|refresh --project <id> --version <pv> [--cursor …] [--limit …]
+    import-vex <file> --vendor <name> --project <id> --version <pv> [--dry-run] [--overwrite]
+    orphans --project <id> --version <pv>
+    orphans --prune --stable-key <key> --expected-base <sha256> --confirm --project <id> --version <pv> [--dry-run]
     pull | status | plan | push             # aliases of the top-level verbs, scoped ⚑6
 
   tara    show <slug>                       # SPEC 03 §6.5

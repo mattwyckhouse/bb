@@ -21,6 +21,9 @@ import {
 import { getCachedFinding, queryFindings } from "./cache/query.js";
 import { findingsCacheState } from "./cache/query.js";
 import type { CachedFinding, FindingsFilter } from "./cache/types.js";
+import type { FindingsDriftService } from "./drift/index.js";
+import { DRIFT_REPORT_MAX_LIMIT, type DriftState } from "./drift/report.js";
+import { MAX_VENDOR_VEX_BYTES } from "./drift/vendor/parse.js";
 import {
   decisionFromInput,
   OverlayCasConflictError,
@@ -36,6 +39,7 @@ import {
   parseEncodedFindingKey,
   resolveEncodedFinding,
 } from "./stable-key/index.js";
+import { assertAcceptedFindingsScope } from "./scope.js";
 
 const findingsRpcContract = {
   findingsList: rpcContract.findingsList,
@@ -237,7 +241,158 @@ const triageWriteFailureSchema = z
   })
   .strict();
 
+const driftStates = [
+  "reattached_noop",
+  "reapply",
+  "stale",
+  "orphaned",
+  "conflict",
+  "needs_completion",
+] as const satisfies readonly DriftState[];
+const driftTotalsSchema = z
+  .object(
+    Object.fromEntries(
+      driftStates.map((state) => [state, z.number().int().nonnegative()]),
+    ) as Record<DriftState, z.ZodNumber>,
+  )
+  .strict();
+const driftItemSchema = z
+  .object({
+    stableKey: z.string().min(1).max(2_048),
+    state: z.enum(driftStates),
+    tier: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
+    reason: z.string().min(1).max(2_000),
+    previousVersion: z.string().max(1_024).optional(),
+    currentVersion: z.string().max(1_024).optional(),
+  })
+  .strict();
+const driftReportSchema = z
+  .object({
+    pvId: z.string().min(1).max(512),
+    runId: z.string().min(1).max(512),
+    createdAt: z.string().min(1).max(128),
+    unclassifiedCount: z.number().int().nonnegative(),
+    totals: driftTotalsSchema,
+    items: z.array(driftItemSchema).max(DRIFT_REPORT_MAX_LIMIT),
+    nextCursor: z.string().max(2_048).nullable(),
+  })
+  .strict();
+const driftScopeSchema = z
+  .object({
+    workspaceProjectId: z.string().min(1).max(512),
+    platformProjectId: z.string().min(1).max(512),
+    projectVersionId: z.string().min(1).max(512),
+  })
+  .strict();
+const vendorImportResultSchema = z
+  .object({
+    source: z
+      .object({
+        format: z.enum(["cyclonedx", "csaf", "openvex"]),
+        digest: z.string().length(64),
+        vendor: z.string().min(1).max(500),
+      })
+      .strict(),
+    matched: z.number().int().nonnegative(),
+    unmatched: z.number().int().nonnegative(),
+    needsCompletion: z.number().int().nonnegative(),
+    keptLocal: z.number().int().nonnegative(),
+    written: z.number().int().nonnegative(),
+    proposals: z.array(
+      z
+        .object({
+          stableKey: z.string().max(2_048).optional(),
+          state: z.string().min(1).max(128),
+          sourceRef: z.string().min(1).max(4_096),
+        })
+        .strict(),
+    ),
+    errors: z.array(
+      z
+        .object({
+          sourceRef: z.string().max(4_096).optional(),
+          code: z.string().min(1).max(128),
+          message: z.string().min(1).max(2_000),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+const driftPruneInputSchema = driftScopeSchema
+  .extend({
+    stableKeys: z.array(z.string().min(1).max(2_048)).min(1).max(500),
+    dryRun: z.boolean(),
+    confirmed: z.boolean(),
+    expectedBaseStateSha256: z.string().length(64),
+  })
+  .superRefine((input, context) => {
+    if (!input.dryRun && !input.confirmed) {
+      context.addIssue({
+        code: "custom",
+        path: ["confirmed"],
+        message: "Orphan prune requires explicit confirmation",
+      });
+    }
+    if (input.dryRun && input.confirmed) {
+      context.addIssue({
+        code: "custom",
+        path: ["confirmed"],
+        message: "Dry-run preview cannot carry confirmation",
+      });
+    }
+  });
+
 export const findingsUiRpcContract = defineRpcContract({
+  findingsDriftReport: {
+    input: z
+      .object({
+        platformProjectId: z.string().min(1).max(512),
+        projectVersionId: z.string().min(1).max(512),
+        cursor: z.string().min(1).max(2_048).nullable(),
+        limit: z.number().int().min(1).max(DRIFT_REPORT_MAX_LIMIT),
+      })
+      .strict(),
+    output: driftReportSchema,
+  },
+  findingsDriftRefresh: {
+    input: driftScopeSchema,
+    output: driftReportSchema,
+  },
+  findingsDriftOrphanState: {
+    input: z
+      .object({
+        platformProjectId: z.string().min(1).max(512),
+        projectVersionId: z.string().min(1).max(512),
+      })
+      .strict(),
+    output: z
+      .object({
+        baseStateSha256: z.string().length(64),
+        total: z.number().int().nonnegative(),
+      })
+      .strict(),
+  },
+  findingsDriftPrune: {
+    input: driftPruneInputSchema,
+    output: z
+      .object({
+        baseStateSha256: z.string().length(64),
+        selected: z.number().int().nonnegative(),
+        pruned: z.number().int().nonnegative(),
+        files: z.array(z.string().min(1).max(4_096)),
+      })
+      .strict(),
+  },
+  findingsDriftImportVendorVex: {
+    input: driftScopeSchema.extend({
+      fileName: z.string().min(1).max(1_024),
+      document: z.string().min(1).max(MAX_VENDOR_VEX_BYTES),
+      vendor: z.string().trim().min(1).max(500),
+      overwrite: z.boolean(),
+      dryRun: z.boolean(),
+    }),
+    output: vendorImportResultSchema,
+  },
   findingsPullAdvisories: {
     input: z
       .object({
@@ -985,6 +1140,7 @@ export function registerFindingsRpc(
       projectVersionId: string;
       generationId: string;
     }) => Promise<ReadonlyArray<{ code: string; count: number }>>;
+    drift?: FindingsDriftService;
   } = {},
 ): void {
   bb.rpc.register(findingsRpcContract, {
@@ -1100,6 +1256,61 @@ export function registerFindingsRpc(
     },
   });
   bb.rpc.register(findingsUiRpcContract, {
+    findingsDriftReport(input) {
+      if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
+      return deps.drift.report({
+        projectId: input.platformProjectId,
+        pvId: input.projectVersionId,
+        cursor: input.cursor,
+        limit: input.limit,
+      });
+    },
+    async findingsDriftRefresh(input) {
+      if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
+      assertAcceptedFindingsScope(db, input);
+      const source = await projectSource(bb, input.workspaceProjectId);
+      return deps.drift.refresh({
+        root: source.path,
+        projectId: input.platformProjectId,
+        pvId: input.projectVersionId,
+      });
+    },
+    findingsDriftOrphanState(input) {
+      if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
+      return deps.drift.orphanState({
+        projectId: input.platformProjectId,
+        pvId: input.projectVersionId,
+      });
+    },
+    async findingsDriftPrune(input) {
+      if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
+      assertAcceptedFindingsScope(db, input);
+      const source = await projectSource(bb, input.workspaceProjectId);
+      return deps.drift.pruneOrphans({
+        root: source.path,
+        projectId: input.platformProjectId,
+        pvId: input.projectVersionId,
+        stableKeys: input.stableKeys,
+        dryRun: input.dryRun,
+        confirmed: input.confirmed,
+        expectedBaseStateSha256: input.expectedBaseStateSha256,
+      });
+    },
+    async findingsDriftImportVendorVex(input) {
+      if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
+      assertAcceptedFindingsScope(db, input);
+      const source = await projectSource(bb, input.workspaceProjectId);
+      return deps.drift.importVendorVex({
+        root: source.path,
+        projectId: input.platformProjectId,
+        pvId: input.projectVersionId,
+        file: input.fileName,
+        bytes: Buffer.from(input.document, "utf8"),
+        vendor: input.vendor,
+        overwrite: input.overwrite,
+        dryRun: input.dryRun,
+      });
+    },
     async findingsPullAdvisories(input) {
       return {
         generationId: input.generationId,

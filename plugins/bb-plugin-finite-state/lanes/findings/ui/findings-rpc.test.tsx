@@ -396,4 +396,160 @@ describe("findings UI RPC seams", () => {
       }),
     ).resolves.toMatchObject({ total: 1, items: [{ key: "event-1" }] });
   });
+
+  it("registers zero-write drift reads and human import flags without adding an agent tool", async () => {
+    const host = createFakePluginHost({
+      pluginId: "findings-drift-rpc",
+      sdk: {
+        projects: {
+          get: ({ projectId }) => ({
+            id: projectId,
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
+      },
+    });
+    hosts.push(host);
+    const db = createPluginContext(host.bb).db();
+    db.prepare(
+      `INSERT INTO workspace_platform_project_binding
+       (workspace_project_id, platform_project_id)
+       VALUES ('workspace-1', 'platform-1')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO pull_generation
+       (project_id, project_version_id, generation_id, status,
+        requested_kinds_json, started_at, completed_at, accepted_at)
+       VALUES ('platform-1', 'version-1', 'generation-1', 'accepted',
+               '["finding"]', ?, ?, ?)`,
+    ).run(
+      "2026-08-14T12:00:00.000Z",
+      "2026-08-14T12:00:00.000Z",
+      "2026-08-14T12:00:00.000Z",
+    );
+    db.prepare(
+      `INSERT INTO sync_state
+       (project_id, project_version_id, entity_kind, accepted_generation_id)
+       VALUES ('platform-1', 'version-1', 'finding', 'generation-1')`,
+    ).run();
+    const report = {
+      pvId: "version-1",
+      runId: "drift-run-1",
+      createdAt: "2026-08-14T12:00:00.000Z",
+      unclassifiedCount: 2,
+      totals: {
+        reattached_noop: 1,
+        reapply: 0,
+        stale: 0,
+        orphaned: 0,
+        conflict: 0,
+        needs_completion: 0,
+      },
+      items: [
+        {
+          stableKey: "stable-key-1",
+          state: "reattached_noop" as const,
+          tier: 1 as const,
+          reason: "Server tuple matches",
+        },
+      ],
+      nextCursor: null,
+    };
+    const drift = {
+      refresh: vi.fn(() => report),
+      report: vi.fn(() => report),
+      orphanState: vi.fn(() => ({
+        baseStateSha256: "a".repeat(64),
+        total: 0,
+      })),
+      importVendorVex: vi.fn(async () => ({
+        source: {
+          format: "openvex" as const,
+          digest: "b".repeat(64),
+          vendor: "Supplier",
+        },
+        matched: 0,
+        unmatched: 0,
+        needsCompletion: 0,
+        keptLocal: 0,
+        written: 0,
+        proposals: [],
+        errors: [],
+      })),
+      pruneOrphans: vi.fn(async () => ({
+        baseStateSha256: "a".repeat(64),
+        selected: 0,
+        pruned: 0,
+        files: [],
+      })),
+    };
+    registerFindingsRpc(host.bb, db, { drift });
+
+    const changes = db.prepare("SELECT total_changes()").pluck().get();
+    await expect(
+      host.harness.behavior.callRpc("findingsDriftReport", {
+        platformProjectId: "platform-1",
+        projectVersionId: "version-1",
+        cursor: null,
+        limit: 100,
+      }),
+    ).resolves.toEqual(report);
+    expect(db.prepare("SELECT total_changes()").pluck().get()).toBe(changes);
+    expect(drift.report).toHaveBeenCalledWith({
+      projectId: "platform-1",
+      pvId: "version-1",
+      cursor: null,
+      limit: 100,
+    });
+
+    await host.harness.behavior.callRpc("findingsDriftImportVendorVex", {
+      workspaceProjectId: "workspace-1",
+      platformProjectId: "platform-1",
+      projectVersionId: "version-1",
+      fileName: "vendor/openvex.json",
+      document: '{"@context":"https://openvex.dev/ns/v0.2.0","statements":[]}',
+      vendor: "Supplier",
+      overwrite: true,
+      dryRun: true,
+    });
+    expect(drift.importVendorVex).toHaveBeenCalledWith(
+      expect.objectContaining({
+        root: "/workspace",
+        overwrite: true,
+        dryRun: true,
+        bytes: expect.any(Uint8Array),
+      }),
+    );
+    await expect(
+      host.harness.behavior.callRpc("findingsDriftImportVendorVex", {
+        workspaceProjectId: "foreign-workspace",
+        platformProjectId: "platform-1",
+        projectVersionId: "version-1",
+        fileName: "vendor/openvex.json",
+        document:
+          '{"@context":"https://openvex.dev/ns/v0.2.0","statements":[]}',
+        vendor: "Supplier",
+        overwrite: true,
+        dryRun: true,
+      }),
+    ).rejects.toThrow("FINDINGS_ACCEPTED_SCOPE_REQUIRED");
+    expect(drift.importVendorVex).toHaveBeenCalledTimes(1);
+    await expect(
+      host.harness.behavior.callRpc("findingsDriftPrune", {
+        workspaceProjectId: "workspace-1",
+        platformProjectId: "platform-1",
+        projectVersionId: "version-1",
+        stableKeys: ["stable-key-1"],
+        dryRun: false,
+        confirmed: false,
+        expectedBaseStateSha256: "a".repeat(64),
+      }),
+    ).rejects.toThrow(/input validation failed/iu);
+    expect(drift.pruneOrphans).not.toHaveBeenCalled();
+    expect(
+      host.harness.inspection.registrations.agentTools.map((tool) => tool.name),
+    ).not.toContain(expect.stringMatching(/drift|orphan|vendor/iu));
+  });
 });

@@ -4,8 +4,10 @@ import {
   registeredCachePullers,
 } from "../../sync/engine/adapter.js";
 import { classifyDrift, readDriftReport } from "./classify.js";
-import { pruneOrphans } from "./orphans.js";
-import { importVendorVex } from "./vendor/import.js";
+import { orphanBaseState, pruneOrphans } from "./orphans.js";
+import { importVendorVexBytes } from "./vendor/import.js";
+import { FINDINGS_DRIFT_CHANGED_CHANNEL, type DriftReport } from "./report.js";
+import type { VendorImportResult } from "./vendor/import.js";
 
 export * from "./classify.js";
 export * from "./orphans.js";
@@ -14,7 +16,48 @@ export * from "./vendor/import.js";
 export * from "./vendor/map.js";
 export * from "./vendor/parse.js";
 
-export const FINDINGS_DRIFT_CHANGED_CHANNEL = "fs-findings-drift-changed";
+export interface FindingsDriftService {
+  refresh(input: {
+    root: string;
+    projectId: string;
+    pvId: string;
+    limit?: number;
+  }): DriftReport;
+  report(input: {
+    projectId: string;
+    pvId: string;
+    cursor?: string | null;
+    limit?: number;
+  }): DriftReport;
+  orphanState(input: { projectId: string; pvId: string }): {
+    baseStateSha256: string;
+    total: number;
+  };
+  importVendorVex(input: {
+    root: string;
+    projectId: string;
+    pvId: string;
+    file: string;
+    bytes: Uint8Array;
+    vendor: string;
+    overwrite: boolean;
+    dryRun: boolean;
+  }): Promise<VendorImportResult>;
+  pruneOrphans(input: {
+    root: string;
+    projectId: string;
+    pvId: string;
+    stableKeys: string[];
+    dryRun: boolean;
+    confirmed: boolean;
+    expectedBaseStateSha256: string;
+  }): Promise<{
+    baseStateSha256: string;
+    selected: number;
+    pruned: number;
+    files: string[];
+  }>;
+}
 
 /** Installs local drift/import services and one post-publication refetch hint. */
 export function registerFindingsDrift(ctx: PluginContext): void {
@@ -33,14 +76,9 @@ export function registerFindingsDrift(ctx: PluginContext): void {
     });
     return report;
   });
-  ctx.service("findings.drift", () => ({
-    refresh: (input: {
-      root: string;
-      projectId: string;
-      pvId: string;
-      limit?: number;
-    }) =>
-      classifyDrift(
+  ctx.service<FindingsDriftService>("findings.drift", () => ({
+    refresh(input) {
+      const report = classifyDrift(
         {
           db,
           root: input.root,
@@ -48,13 +86,13 @@ export function registerFindingsDrift(ctx: PluginContext): void {
           limit: input.limit,
         },
         input.pvId,
-      ),
-    report: (input: {
-      projectId: string;
-      pvId: string;
-      cursor?: string | null;
-      limit?: number;
-    }) =>
+      );
+      ctx.bb.realtime.publish(FINDINGS_DRIFT_CHANGED_CHANNEL, {
+        pvId: input.pvId,
+      });
+      return report;
+    },
+    report: (input) =>
       readDriftReport(
         {
           db,
@@ -64,32 +102,39 @@ export function registerFindingsDrift(ctx: PluginContext): void {
         },
         input.pvId,
       ),
-    importVendorVex: (input: {
-      root: string;
-      projectId: string;
-      pvId: string;
-      file: string;
-      vendor: string;
-      overwrite: boolean;
-      dryRun: boolean;
-    }) =>
-      importVendorVex(
+    orphanState(input) {
+      const state = orphanBaseState(db, input.projectId, input.pvId);
+      return { baseStateSha256: state.sha256, total: state.rows.length };
+    },
+    async importVendorVex(input) {
+      const result = await importVendorVexBytes(
         { db, root: input.root, projectId: input.projectId, pvId: input.pvId },
         input.file,
+        input.bytes,
         input,
-      ),
-    pruneOrphans: (input: {
-      root: string;
-      projectId: string;
-      pvId: string;
-      stableKeys: string[];
-      dryRun: boolean;
-      confirmed: boolean;
-      expectedBaseStateSha256: string;
-    }) =>
-      pruneOrphans(
+      );
+      if (!input.dryRun && result.written > 0) {
+        classifyDrift(
+          { db, root: input.root, projectId: input.projectId },
+          input.pvId,
+        );
+        ctx.bb.realtime.publish(FINDINGS_DRIFT_CHANGED_CHANNEL, {
+          pvId: input.pvId,
+        });
+      }
+      return result;
+    },
+    async pruneOrphans(input) {
+      const result = await pruneOrphans(
         { db, root: input.root, projectId: input.projectId, pvId: input.pvId },
         input,
-      ),
+      );
+      if (!input.dryRun && result.pruned > 0) {
+        ctx.bb.realtime.publish(FINDINGS_DRIFT_CHANGED_CHANNEL, {
+          pvId: input.pvId,
+        });
+      }
+      return result;
+    },
   }));
 }

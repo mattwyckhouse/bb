@@ -154,6 +154,7 @@ beforeAll(async () => {
   host.harness.sdk.stub("environments.get", async () => ({
     id: "environment-sync-cli",
     projectId: "bb-project-sync",
+    hostId: "host-sync",
     path: root,
   }));
   host.harness.sdk.stub("projects.get", async ({ projectId }) => {
@@ -1459,6 +1460,84 @@ decisions:
       })}\n`,
       stderr: "",
     });
+  });
+
+  it("runs the registered triage drift namespace and keeps confirmation outside agent tools", async () => {
+    const scope = platformScope();
+    const usage = await host.harness.behavior.runCli(["finite-state"], {});
+    expect(usage).toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining("triage"),
+    });
+    const refreshed = await host.harness.behavior.runCli(
+      [
+        "finite-state",
+        "triage",
+        "drift",
+        "refresh",
+        "--project",
+        scope.projectId,
+        "--version",
+        scope.projectVersionId,
+        "--json",
+      ],
+      { threadId: "thread-sync-cli", projectId: "bb-project-sync" },
+    );
+    expect(refreshed).toMatchObject({ exitCode: 0, stderr: "" });
+    const refreshReport = JSON.parse(refreshed.stdout) as {
+      runId: string;
+      createdAt: string;
+      unclassifiedCount: number;
+    };
+    expect(refreshReport).toMatchObject({
+      runId: expect.stringMatching(/^drift-/u),
+      createdAt: expect.any(String),
+      unclassifiedCount: 0,
+    });
+
+    const read = await host.harness.behavior.runCli(
+      [
+        "triage",
+        "drift",
+        "report",
+        "--project",
+        scope.projectId,
+        "--version",
+        scope.projectVersionId,
+        "--json",
+      ],
+      {},
+    );
+    expect(JSON.parse(read.stdout)).toMatchObject({
+      runId: refreshReport.runId,
+      createdAt: refreshReport.createdAt,
+    });
+
+    const refused = await host.harness.behavior.runCli(
+      [
+        "triage",
+        "orphans",
+        "--prune",
+        "--stable-key",
+        "stable-1",
+        "--expected-base",
+        "a".repeat(64),
+        "--project",
+        scope.projectId,
+        "--version",
+        scope.projectVersionId,
+      ],
+      { threadId: "thread-sync-cli", projectId: "bb-project-sync" },
+    );
+    expect(refused).toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining("requires --confirm"),
+    });
+    expect(
+      host.harness.inspection.registrations.agentTools.some((tool) =>
+        /drift|orphan|vendor/iu.test(tool.name),
+      ),
+    ).toBe(false);
   });
 
   it("refuses CLI working-tree access without a bb thread identity", async () => {

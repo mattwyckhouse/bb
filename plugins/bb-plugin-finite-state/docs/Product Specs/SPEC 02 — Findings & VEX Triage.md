@@ -536,10 +536,14 @@ bb finite-state triage                          # surface group — domain verbs
   list [--filter …] [--json]         # query the cache (CLI twin of fs_findings_query)
   set <stableKey> --status … [--justification …] [--reason …] [--pin …]   # single YAML write
   apply-policy [--filter …] [--dry-run]
-  import-vex <file> --vendor <name> [--overwrite]
-  orphans [--prune]                  # list / clean orphaned decisions (§8.2)
+  drift report|refresh --project <id> --version <pv> [--cursor …] [--limit …]
+  import-vex <file> --vendor <name> --project <id> --version <pv> [--dry-run] [--overwrite]
+  orphans --project <id> --version <pv> [--json]
+  orphans --prune --stable-key <key> --expected-base <sha256> --confirm --project <id> --version <pv> [--dry-run]
   pull | status | plan | push        # scoped aliases; push is the same non-mutating panel handoff
 ```
+
+`drift report` is a zero-write persisted-index read and returns freshness metadata plus a keyset cursor. `--overwrite` remains a human CLI/panel import affordance and is not registered as an agent-tool parameter. Orphan pruning edits local YAML only after an explicit selection, a fresh base-state digest, and human confirmation; `--dry-run` previews the selected edit.
 
 The four sync verbs are **verb-first at top level** (SPEC 00 §9, SPEC 06 §2.4) — deliberately git/Terraform-shaped. The `triage`-scoped forms are retained as documented aliases with no behavior difference. In v1 both `push` spellings are non-mutating review-panel handoffs; only the panel can apply or resolve conflicts.
 
