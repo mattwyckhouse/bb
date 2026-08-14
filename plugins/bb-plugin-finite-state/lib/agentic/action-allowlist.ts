@@ -108,9 +108,28 @@ export function assertActionBoundary(
   registry: AgentSurfaceCandidate,
   registeredToolNames?: readonly string[],
 ): void {
+  const entries = Object.entries(registry.tools);
+  if (
+    entries.some(
+      ([key, tool]) => key === "fs_sync_push" || tool.name === "fs_sync_push",
+    )
+  ) {
+    throw new Error(
+      "PROHIBITED_AGENT_PUSH_TOOL: fs_sync_push must never be registered",
+    );
+  }
+  const splitIdentities = entries
+    .filter(([key, tool]) => key !== tool.name)
+    .map(([key, tool]) => `${key}=>${tool.name}`);
+  if (splitIdentities.length > 0) {
+    throw new Error(
+      `AGENT_TOOL_REGISTRY_DRIFT: registry keys must match tool.name: ${sorted(splitIdentities).join(", ")}`,
+    );
+  }
   const allowed = sorted(ACTION_TOOL_ALLOWLIST);
   const canonical = sorted(
-    Object.values(registry.tools)
+    entries
+      .map(([, tool]) => tool)
       .filter((tool) => tool.class === "action")
       .map((tool) => tool.name),
   );
@@ -121,9 +140,6 @@ export function assertActionBoundary(
   }
   if (ACTION_TOOL_NAMES.length !== ACTION_TOOL_ALLOWLIST.length) {
     throw new Error("ACTION_ALLOWLIST_COMPILE_RUNTIME_DRIFT");
-  }
-  if (Object.hasOwn(registry.tools, "fs_sync_push")) {
-    throw new Error("PROHIBITED_AGENT_PUSH_TOOL: fs_sync_push must never be registered");
   }
   if (registeredToolNames === undefined) return;
 

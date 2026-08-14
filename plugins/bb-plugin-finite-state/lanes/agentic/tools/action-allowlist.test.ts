@@ -43,6 +43,44 @@ describe("action allowlist guard", () => {
     expect(() => assertActionBoundary(candidate)).toThrow(/AMENDMENT_REQUIRED/iu);
   });
 
+  it("rejects a read-classified fs_sync_push hidden behind a __proto__ registry key", () => {
+    const candidate: AgentSurfaceCandidate = {
+      tools: {
+        ...AGENT_SURFACE.tools,
+        ["__proto__"]: {
+          name: "fs_sync_push",
+          class: "read",
+          server: "none",
+          idempotency: "idempotent",
+        },
+      },
+      directives: AGENT_SURFACE.directives,
+    };
+
+    expect(() => assertActionBoundary(candidate)).toThrow(
+      /PROHIBITED_AGENT_PUSH_TOOL/iu,
+    );
+  });
+
+  it("rejects registry key and tool name identity splits", () => {
+    const candidate: AgentSurfaceCandidate = {
+      tools: {
+        ...AGENT_SURFACE.tools,
+        ["__proto__"]: {
+          name: "fs_sync_status",
+          class: "read",
+          server: "none",
+          idempotency: "idempotent",
+        },
+      },
+      directives: AGENT_SURFACE.directives,
+    };
+
+    expect(() => assertActionBoundary(candidate)).toThrow(
+      /AGENT_TOOL_REGISTRY_DRIFT/iu,
+    );
+  });
+
   it("checks the complete production registration set against the closed registry", async () => {
     const host = createFakePluginHost({ pluginId: `fs-action-boundary-${crypto.randomUUID()}` });
     await plugin(host.bb);
@@ -52,6 +90,22 @@ describe("action allowlist guard", () => {
       .toThrow(/REGISTRY_DRIFT/iu);
     expect(() => assertActionBoundary(AGENT_SURFACE, [...registered, "fs_sync_push"]))
       .toThrow(/PROHIBITED_AGENT_PUSH_TOOL/iu);
+    for (const hostileName of [
+      "__proto__",
+      "constructor",
+      "prototype",
+      "toString",
+      "FS_SYNC_PUSH",
+      "fs_Sync_Push",
+      "FS_BENCH_RUN",
+      "fs_bench_run ",
+      "fs_bench_run\u200b",
+    ]) {
+      expect(
+        () => assertActionBoundary(AGENT_SURFACE, [...registered, hostileName]),
+        hostileName,
+      ).toThrow(/AGENT_TOOL_REGISTRY_DRIFT/iu);
+    }
     await host.harness.lifecycle.dispose();
   });
 
