@@ -3,7 +3,7 @@ import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPluginContext } from "../../../../lib/context.js";
 import { ENTITIES } from "../../../../lib/sync/registry.js";
-import { rpcContract } from "../../../../shared/contract.js";
+import { cacheStateSchema, rpcContract } from "../../../../shared/contract.js";
 import { registerProductSecurity } from "../../register.js";
 import { registerCanvasEditingBackend } from "./backend.js";
 import {
@@ -21,6 +21,7 @@ const GENERATION = "generation-read-only";
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     hosts.splice(0).map((host) => host.harness.lifecycle.dispose()),
   );
@@ -234,13 +235,18 @@ describe("WP-35 read-classified editing RPCs", () => {
       ["unknown-3.yaml", "api-key-vault"],
       ["unknown-4.yaml", "authorization_service"],
       ["api-key-manager.yaml", "quantum_widget"],
+      ["unknown-5.yaml", "http://wiki/types see options@team"],
+      ["unknown-6.yaml", "http://wiki/types see options?team"],
     ] as const;
     const files = new Map(
       cases.map(([name, value], index) => [
         `${directory}/${name}`,
         serializeCanvasEntity(
           component(`unknown-${index + 1}`, "hardware"),
-        ).replace("component_type: hardware", `component_type: ${value}`),
+        ).replace(
+          "component_type: hardware",
+          `component_type: ${JSON.stringify(value)}`,
+        ),
       ]),
     );
 
@@ -255,6 +261,97 @@ describe("WP-35 read-classified editing RPCs", () => {
       /(?:authorization|bearer\s|api[_-]?key|token=|https?:\/\/[^\s]*[?@])/iu,
     );
     expect(page.cache.message?.length).toBeLessThanOrEqual(500);
+  });
+
+  it.each([
+    "http://wiki/types see options@team",
+    "http://wiki/types see options?team",
+  ])(
+    "keeps the canvas readable when compaction rejoins a credentialed URL: %s",
+    async (componentType) => {
+      const directory = "/workspace/product-security/architecture/components";
+      const page = await registeredComponentPage(
+        new Map([
+          [
+            `${directory}/unknown-url-probe.yaml`,
+            serializeCanvasEntity(
+              component("unknown-url-probe", "hardware"),
+            ).replace(
+              "component_type: hardware",
+              `component_type: ${JSON.stringify(componentType)}`,
+            ),
+          ],
+        ]),
+      );
+
+      expect(page.items.map((item) => item.key)).toEqual([
+        "accepted-controller",
+      ]);
+      expect(page.cache.message).toContain("Unsupported component type");
+      expect(page.cache.message).toContain("[redacted]");
+      expect(
+        cacheStateSchema.shape.message.safeParse(page.cache.message).success,
+      ).toBe(true);
+    },
+  );
+
+  it("binds cache-detail sanitizing and fallback behavior to the taraList output contract", async () => {
+    const messageSchema = cacheStateSchema.shape.message;
+    const unsafeContractResult = messageSchema.safeParse(
+      "authorization_service",
+    );
+    expect(unsafeContractResult.success).toBe(false);
+    expect(messageSchema.safeParse("credential_service").success).toBe(true);
+
+    const directory = "/workspace/product-security/architecture/components";
+    const alignedPage = await registeredComponentPage(
+      new Map([
+        [
+          `${directory}/accepted-by-contract.yaml`,
+          serializeCanvasEntity(
+            component("accepted-by-contract", "hardware"),
+          ).replace(
+            "component_type: hardware",
+            "component_type: credential_service",
+          ),
+        ],
+        [
+          `${directory}/rejected-by-contract.yaml`,
+          serializeCanvasEntity(
+            component("rejected-by-contract", "hardware"),
+          ).replace(
+            "component_type: hardware",
+            "component_type: authorization_service",
+          ),
+        ],
+      ]),
+    );
+    expect(alignedPage.cache.message).toContain("credential_service");
+    expect(alignedPage.cache.message).toContain("[redacted]");
+    expect(messageSchema.safeParse(alignedPage.cache.message).success).toBe(
+      true,
+    );
+
+    vi.spyOn(messageSchema, "safeParse").mockReturnValueOnce(
+      unsafeContractResult,
+    );
+    const page = await registeredComponentPage(
+      new Map([
+        [
+          `${directory}/unknown-contract-probe.yaml`,
+          serializeCanvasEntity(
+            component("unknown-contract-probe", "hardware"),
+          ).replace(
+            "component_type: hardware",
+            "component_type: mystery_contract_probe",
+          ),
+        ],
+      ]),
+    );
+
+    expect(page.items.map((item) => item.key)).toEqual(["accepted-controller"]);
+    expect(page.cache.message).toBe("Unsupported component types: 1.");
+    expect(messageSchema.safeParse(page.cache.message).success).toBe(true);
   });
 
   it("preserves every diagnostic class and remainder count under the 500-character budget", async () => {

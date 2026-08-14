@@ -2,7 +2,11 @@ import { basename } from "node:path";
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import type Database from "better-sqlite3";
 import type { JsonValue } from "../../shared/contract.js";
-import { jsonValueSchema, rpcContract } from "../../shared/contract.js";
+import {
+  cacheStateSchema,
+  jsonValueSchema,
+  rpcContract,
+} from "../../shared/contract.js";
 import type { PluginContext } from "../../lib/context.js";
 import { toStorageProjectVersionId } from "../../lib/store/index.js";
 import { registerCanvasEditingBackend } from "./canvas/editing/backend.js";
@@ -167,7 +171,9 @@ function compactDetail(value: string, maxLength: number): string {
   if (maxLength <= 1) return safe.slice(0, maxLength);
   const suffixLength = Math.min(12, Math.floor((maxLength - 1) / 2));
   const prefixLength = maxLength - suffixLength - 1;
-  return `${safe.slice(0, prefixLength)}…${safe.slice(-suffixLength)}`;
+  return sanitizeCacheDetail(
+    `${safe.slice(0, prefixLength)}…${safe.slice(-suffixLength)}`,
+  );
 }
 
 function diagnosticFileLabel(file: string, maxLength: number): string {
@@ -286,7 +292,31 @@ function workingDiagnosticMessage(
     remainingBudget -= budget;
     return diagnosticGroupMessage(group, budget);
   });
-  return [safeBase, ...groups].filter(Boolean).join(" ");
+  const message = [safeBase, ...groups].filter(Boolean).join(" ");
+  const validated = cacheStateSchema.shape.message.safeParse(message);
+  if (validated.success) return validated.data;
+
+  const counts = diagnosticCodes.flatMap((code) => {
+    const count = diagnostics.filter(
+      (diagnostic) => diagnostic.code === code,
+    ).length;
+    if (count === 0) return [];
+    if (code === "UNSUPPORTED_COMPONENT_TYPE") {
+      return [`Unsupported component types: ${count}.`];
+    }
+    if (code === "RETIRED_COMPONENT_TYPE") {
+      return [`Retired component types requiring migration: ${count}.`];
+    }
+    return [`Invalid working YAML files quarantined: ${count}.`];
+  });
+  const fallback = [
+    ...(baseMessage
+      ? ["Product-security refresh failed; showing accepted cache."]
+      : []),
+    ...counts,
+  ].join(" ");
+  const validatedFallback = cacheStateSchema.shape.message.safeParse(fallback);
+  return validatedFallback.success ? validatedFallback.data : null;
 }
 
 export async function listTara(
