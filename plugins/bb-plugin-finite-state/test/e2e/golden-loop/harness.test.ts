@@ -71,17 +71,8 @@ function scenario(
   }));
 }
 
-async function removePreserved(
-  repositoryRoot: string,
-  harness: GoldenLoopHarness,
-): Promise<void> {
+async function removePreserved(harness: GoldenLoopHarness): Promise<void> {
   await harness.dispose();
-  await git(repositoryRoot, [
-    "worktree",
-    "remove",
-    "--force",
-    harness.worktree,
-  ]);
   await rm(harness.runDirectory, { recursive: true, force: true });
 }
 
@@ -147,7 +138,43 @@ describe.sequential("Golden Loop harness", () => {
       );
       await expect(access(harness.runDirectory)).resolves.toBeUndefined();
     } finally {
-      await removePreserved(repository.root, harness);
+      const registered = await git(repository.root, [
+        "worktree",
+        "list",
+        "--porcelain",
+      ]);
+      await removePreserved(harness);
+      expect(registered).toContain(harness.worktree);
+      expect(
+        await git(repository.root, ["worktree", "list", "--porcelain"]),
+      ).not.toContain(harness.worktree);
+      await repository.cleanup();
+    }
+  });
+
+  it("guards configure-time egress and removes its partial worktree", async () => {
+    const repository = await temporaryRepository();
+    const before = await git(repository.root, [
+      "worktree",
+      "list",
+      "--porcelain",
+    ]);
+    try {
+      await expect(
+        createGoldenLoopHarness({
+          repositoryRoot: repository.root,
+          scenario: scenario(),
+          configure: async () => {
+            await fetch("https://example.invalid/configure-egress");
+          },
+        }),
+      ).rejects.toThrow(
+        /OFFLINE_NETWORK_VIOLATION beat=setup.*example\.invalid.*harness\.test/isu,
+      );
+      expect(
+        await git(repository.root, ["worktree", "list", "--porcelain"]),
+      ).toBe(before);
+    } finally {
       await repository.cleanup();
     }
   });
@@ -187,7 +214,46 @@ describe.sequential("Golden Loop harness", () => {
         access(join(harness.runDirectory, "artifacts", "PRESERVED.json")),
       ).resolves.toBeUndefined();
     } finally {
-      await removePreserved(repository.root, harness);
+      await removePreserved(harness);
+      await repository.cleanup();
+    }
+  });
+
+  it("fails when an expected failure does not match its refusal signature", async () => {
+    const repository = await temporaryRepository();
+    const harness = await createGoldenLoopHarness({
+      repositoryRoot: repository.root,
+      scenario: scenario({
+        7: {
+          expectedFailure: {
+            task: "FS-201",
+            reason: "requirement puller is pending",
+            signature: "No puller is registered for requirement",
+          },
+          action: async () => {
+            throw new Error("version selection failed before requirement pull");
+          },
+        },
+      }),
+    });
+    try {
+      const result = await harness.runBeat(7);
+      expect(result.status).toBe("failed");
+      expect(result.assertions.at(-1)?.detail).toContain(
+        "expected refusal containing",
+      );
+      await expect(
+        access(
+          join(
+            harness.runDirectory,
+            "artifacts",
+            "beat-07",
+            "expected-failure-mismatch.json",
+          ),
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      await removePreserved(harness);
       await repository.cleanup();
     }
   });
@@ -290,6 +356,7 @@ describe.sequential("Golden Loop harness", () => {
       expect(results[0]?.assertions[0]?.detail).toMatch(
         /CONNECTED_MODE_UNAVAILABLE.*tenant.*bench.*reset/isu,
       );
+      expect(harness.report?.status).toBe("failed");
     } finally {
       await harness.dispose();
       await repository.cleanup();

@@ -87,6 +87,7 @@ export interface GoldenLoopBeat {
   readonly expectedFailure?: Readonly<{
     task: string;
     reason: string;
+    signature: string;
   }>;
   setup?(context: GoldenLoopBeatContext): Promise<void>;
   action(context: GoldenLoopBeatContext): Promise<void>;
@@ -118,9 +119,6 @@ export const GOLDEN_LOOP_BEATS = [
   name: string;
   maxMs: number;
 }[];
-
-export const GOLDEN_LOOP_LOCAL_COMMAND =
-  "pnpm exec turbo run test --filter=bb-plugin-finite-state -- test/e2e/golden-loop/golden-loop.e2e.test.ts";
 
 const ALL_BEATS = new Set<BeatNumber>(
   GOLDEN_LOOP_BEATS.map(({ number }) => number),

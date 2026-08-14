@@ -350,21 +350,40 @@ export async function createGoldenLoopHarness(
     ...options.host,
     pluginId: "finite-state",
   });
+  const guard = new OfflineNetworkGuard(
+    new Set(options.allowedLoopbackPorts ?? []),
+    new Set((options.allowedSocketPaths ?? []).map((path) => resolve(path))),
+  );
   const connectedUnavailable =
     mode === "connected" &&
     (!options.connected ||
       options.connected.optIn !== true ||
       options.connected.tenant.trim() === "" ||
       options.connected.bench.trim() === "");
-  if (!connectedUnavailable) {
-    if (mode === "connected") await options.connected!.reset();
-    await options.configure?.({ bb: host.bb, host, worktree });
+  try {
+    if (mode === "offline") guard.install();
+    if (!connectedUnavailable) {
+      if (mode === "connected") await options.connected!.reset();
+      await options.configure?.({ bb: host.bb, host, worktree });
+    }
+  } catch (error) {
+    try {
+      await host.harness.lifecycle.dispose();
+    } finally {
+      try {
+        await run(
+          "git",
+          ["worktree", "remove", "--force", worktree],
+          repositoryRoot,
+        );
+      } finally {
+        await rm(runDirectory, { recursive: true, force: true });
+      }
+    }
+    throw error;
+  } finally {
+    guard.restore();
   }
-
-  const guard = new OfflineNetworkGuard(
-    new Set(options.allowedLoopbackPorts ?? []),
-    new Set((options.allowedSocketPaths ?? []).map((path) => resolve(path))),
-  );
   const clock = deterministicClock();
   const ids = new Map<string, number>();
   const jobs = new Map<string, number>();
@@ -535,24 +554,33 @@ export async function createGoldenLoopHarness(
         }
       } catch (error) {
         if (beat.expectedFailure) {
-          status = "skipped";
+          const observed =
+            error instanceof Error ? error.message : String(error);
+          const matches = observed.includes(beat.expectedFailure.signature);
+          status = matches ? "skipped" : "failed";
           assertions.push({
-            name: `pending ${beat.expectedFailure.task}`,
+            name: `${matches ? "pending" : "mismatched pending"} ${beat.expectedFailure.task}`,
             passed: false,
-            detail: `${beat.expectedFailure.reason}; observed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            detail: matches
+              ? `${beat.expectedFailure.reason}; observed: ${observed}`
+              : `expected refusal containing ${JSON.stringify(beat.expectedFailure.signature)}, observed: ${observed}`,
           });
           artifacts.push(
             relativeArtifact(
-              await beatWriter.writeJson("expected-failure.json", {
-                task: beat.expectedFailure.task,
-                reason: beat.expectedFailure.reason,
-                observed:
-                  error instanceof Error ? error.message : String(error),
-              }),
+              await beatWriter.writeJson(
+                matches
+                  ? "expected-failure.json"
+                  : "expected-failure-mismatch.json",
+                {
+                  task: beat.expectedFailure.task,
+                  reason: beat.expectedFailure.reason,
+                  signature: beat.expectedFailure.signature,
+                  observed,
+                },
+              ),
             ),
           );
+          if (!matches) await harness.preserveOnFailure();
         } else {
           status = "failed";
           assertions.push(failedAssertion(error));
@@ -592,9 +620,11 @@ export async function createGoldenLoopHarness(
         seed,
         startedAt,
         durationMs: Math.round(performance.now() - startedPerformance),
-        status: ordered.some(({ status }) => status === "failed")
-          ? "failed"
-          : "passed",
+        status:
+          ordered.some(({ status }) => status === "failed") ||
+          ordered.every(({ status }) => status === "skipped")
+            ? "failed"
+            : "passed",
         results: ordered,
         offlineViolations: [...guard.violations],
         ohMoments: Object.fromEntries(
@@ -622,23 +652,30 @@ export async function createGoldenLoopHarness(
       preserved = true;
       await writer.writeJson("PRESERVED.json", {
         reason: "Golden Loop failure evidence",
-        worktree: "./worktree",
+        worktree:
+          "unregistered during disposal; inspect captured tree and git artifacts",
       });
       return runDirectory;
     },
     async dispose() {
       if (disposed) return;
       guard.restore();
-      await host.harness.lifecycle.dispose();
-      if (!preserved) {
-        await run(
-          "git",
-          ["worktree", "remove", "--force", worktree],
-          repositoryRoot,
-        );
-        await rm(runDirectory, { recursive: true, force: true });
+      try {
+        await host.harness.lifecycle.dispose();
+      } finally {
+        try {
+          await run(
+            "git",
+            ["worktree", "remove", "--force", worktree],
+            repositoryRoot,
+          );
+          if (!preserved) {
+            await rm(runDirectory, { recursive: true, force: true });
+          }
+        } finally {
+          disposed = true;
+        }
       }
-      disposed = true;
     },
   };
   return harness;

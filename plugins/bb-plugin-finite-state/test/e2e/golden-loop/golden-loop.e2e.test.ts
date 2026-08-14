@@ -1,17 +1,23 @@
 // @vitest-environment jsdom
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import type { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import {
   installTestPluginRuntime,
+  loadPluginApp,
   renderSlot,
 } from "@bb/plugin-sdk/testing/app";
-import type Database from "better-sqlite3";
-import { cleanup } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  cleanup,
+  configure,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { assertion, fileAssertion } from "./assertions.js";
 import { createGoldenLoopHarness, type GoldenLoopHarness } from "./harness.js";
@@ -22,22 +28,105 @@ const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../../../..");
 const FIXTURE_ROOT = resolve(import.meta.dirname, "../../mock-remote/fixtures");
 const WORKSPACE_PROJECT_ID = "workspace-golden-loop";
 const BENCH_VERSION = "golden-bench-version";
-const DIGEST = "a".repeat(64);
 
 interface Runtime {
   host: ReturnType<typeof createFakePluginHost>;
-  db: Database.Database;
   worktree: string;
   projectId: string;
   findingVersion: string;
+  fs167Version: string;
   bomVersion: string;
   fs193Version: string;
   findings: Map<string, Record<string, unknown>>;
   versions: Map<string, Record<string, unknown>>;
   evidence: Map<string, unknown>;
   failSbom: boolean;
+  failNextTriageWrite: boolean;
+  failNextThreadSpawn: boolean;
+  firmwareReady: Set<string>;
+  benchReady: boolean;
   human: GoldenLoopHarness["human"] | null;
 }
+
+class GoldenLoopResizeObserver implements ResizeObserver {
+  constructor(private readonly callback: ResizeObserverCallback) {}
+  observe(target: Element): void {
+    queueMicrotask(() =>
+      this.callback(
+        [
+          {
+            target,
+            contentRect: new DOMRectReadOnly(0, 0, 1200, 640),
+            borderBoxSize: [{ blockSize: 640, inlineSize: 1200 }],
+            contentBoxSize: [{ blockSize: 640, inlineSize: 1200 }],
+            devicePixelContentBoxSize: [{ blockSize: 640, inlineSize: 1200 }],
+          },
+        ],
+        this,
+      ),
+    );
+  }
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
+beforeAll(() => {
+  configure({ asyncUtilTimeout: 10_000 });
+  vi.stubGlobal("ResizeObserver", GoldenLoopResizeObserver);
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+    dispatchEvent: () => false,
+  }));
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get: () => 640,
+  });
+  HTMLElement.prototype.scrollIntoView = function scrollIntoView(): void {};
+  HTMLElement.prototype.scrollTo = function scrollTo(
+    options?: ScrollToOptions | number,
+    y?: number,
+  ): void {
+    this.scrollTop =
+      typeof options === "number" ? (y ?? 0) : (options?.top ?? 0);
+    this.dispatchEvent(new Event("scroll"));
+  };
+});
+
+const FAKE_UNPACK_WRAPPER = String.raw`
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
+const argv = process.argv.slice(2);
+const input = argv[0];
+const output = argv[argv.indexOf("-d") + 1];
+const snapshotPath = argv[argv.indexOf("-o") + 1];
+const bytes = await readFile(input);
+const payload = Buffer.from("golden:" + bytes.toString());
+const inputHash = createHash("sha256").update(bytes).digest("hex");
+const fileHash = createHash("sha256").update(payload).digest("hex");
+await mkdir(join(output, "bin"), { recursive: true });
+await writeFile(join(output, "bin", "firmware.txt"), payload);
+await writeFile(snapshotPath, JSON.stringify({
+  input_file: basename(input),
+  input_sha256: inputHash,
+  file_tree: [{
+    file_path: "/bin/firmware.txt",
+    file_hash: fileHash,
+    file_name: "firmware.txt",
+    mime_type: "text/plain",
+    full_type: "ASCII text",
+    file_size: payload.length,
+  }],
+  unpack_metadata: {},
+  errors: [],
+}));
+`;
 
 function human(runtime: Runtime): GoldenLoopHarness["human"] {
   if (runtime.human === null) {
@@ -140,46 +229,174 @@ function decision(target: unknown, reason: string) {
   };
 }
 
-function seedBench(runtime: Runtime): void {
-  runtime.db
-    .prepare(
-      `INSERT OR IGNORE INTO pull_generation
-       (project_id, project_version_id, generation_id, status,
-        requested_kinds_json, started_at, completed_at, accepted_at)
-       VALUES (?, ?, 'golden-bench-generation', 'accepted',
-               '["verificationRun"]', ?, ?, ?)`,
-    )
-    .run(
-      runtime.projectId,
-      BENCH_VERSION,
-      "2026-08-14T12:00:00.000Z",
-      "2026-08-14T12:00:00.000Z",
-      "2026-08-14T12:00:00.000Z",
+async function registeredPanel(path: string) {
+  const app = await loadPluginApp(() => import("../../../app.js"));
+  const panels = app.navPanels.filter((candidate) => candidate.path === path);
+  if (panels.length !== 1 || !panels[0]) {
+    throw new Error(`Expected exactly one registered ${path} panel`);
+  }
+  return panels[0];
+}
+
+function registeredRpc(
+  runtime: Runtime,
+): Record<string, (input: unknown) => Promise<unknown> | unknown> {
+  const connected = {
+    platform: { state: "connected", message: null, checkedAt: null },
+    assuranceStudio: { state: "connected", message: null, checkedAt: null },
+    forgeCompute: { state: "disabled", message: null, checkedAt: null },
+  };
+  return new Proxy(
+    {},
+    {
+      get(_target, property) {
+        if (property === "connectionsStatus") return () => connected;
+        if (typeof property !== "string") return undefined;
+        return (input: unknown) => {
+          if (
+            property === "triageDecisionsWrite" &&
+            runtime.failNextTriageWrite
+          ) {
+            runtime.failNextTriageWrite = false;
+            return {
+              results: array(
+                object(input, "triage write input")["decisions"],
+                "triage decisions",
+              ).map((decision) => {
+                const item = object(decision, "triage decision");
+                return {
+                  success: false,
+                  findingId: string(item["findingId"], "finding id"),
+                  stableKey: string(item["stableKey"], "stable key"),
+                  code: "OVERLAY_CAS_CONFLICT",
+                  message: "induced registered-panel write conflict",
+                  retryable: true,
+                };
+              }),
+            };
+          }
+          return runtime.host.harness.behavior.callRpc(property, input);
+        };
+      },
+    },
+  );
+}
+
+function panelRuntime(runtime: Runtime) {
+  return {
+    context: { projectId: WORKSPACE_PROJECT_ID },
+    sidebarThreads: {
+      status: "ready" as const,
+      projects: [
+        {
+          id: WORKSPACE_PROJECT_ID,
+          name: "Golden Loop",
+          isPersonal: false,
+        },
+      ],
+    },
+    rpc: registeredRpc(runtime),
+  };
+}
+
+async function filesBelow(root: string): Promise<string[]> {
+  const files: string[] = [];
+  const walk = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true }).catch(
+      () => [],
+    )) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.isFile()) files.push(path);
+    }
+  };
+  await walk(root);
+  return files.sort();
+}
+
+async function ensureFirmware(runtime: Runtime, pvId: string): Promise<void> {
+  if (runtime.firmwareReady.has(pvId)) return;
+  const image = `golden-${pvId}.bin`;
+  await writeFile(join(runtime.worktree, image), `firmware:${pvId}\n`, "utf8");
+  const pull = await runtime.host.harness.behavior.runCli(
+    [
+      "finite-state",
+      "firmware",
+      "pull",
+      pvId,
+      "--image",
+      image,
+      "--max-depth",
+      "4",
+    ],
+    { projectId: runtime.projectId, threadId: "thread-firmware-golden" },
+  );
+  if (!successfulCli(pull)) {
+    throw new Error(
+      `Firmware pull failed: ${String(object(pull, "firmware pull")["stderr"])}`,
     );
-  runtime.db
-    .prepare(
-      `INSERT OR IGNORE INTO sync_state
-       (project_id, project_version_id, entity_kind, accepted_generation_id,
-        base_revision, last_pull)
-       VALUES (?, ?, 'verificationRun', 'golden-bench-generation', 1, ?)`,
-    )
-    .run(runtime.projectId, BENCH_VERSION, "2026-08-14T12:00:00.000Z");
-  runtime.db
-    .prepare(
-      `INSERT OR IGNORE INTO workspace_platform_project_binding
-       (workspace_project_id, platform_project_id) VALUES (?, ?)`,
-    )
-    .run(WORKSPACE_PROJECT_ID, runtime.projectId);
-  runtime.db
-    .prepare(
-      `INSERT OR IGNORE INTO firmware_mounts
-       (project_id, project_version_id, generation_id, source, state,
-        input_sha256, artifact_hash, root_path, file_count,
-        materialized_files, error_count, pulled_at)
-       VALUES (?, ?, 'golden-bench-generation', 'standalone_unpack',
-               'metadata_only', ?, NULL, '/golden/firmware', 0, 0, 0, ?)`,
-    )
-    .run(runtime.projectId, BENCH_VERSION, DIGEST, "2026-08-14T12:00:00.000Z");
+  }
+  await waitFor(async () => {
+    const page = object(
+      await runtime.host.harness.behavior.callRpc("firmwareMountsList", {
+        projectId: runtime.projectId,
+        projectVersionId: pvId,
+        pageSize: 100,
+        continuation: null,
+      }),
+      "firmware mounts",
+    );
+    const mount = array(page["items"], "firmware mount rows")
+      .map((item) => object(item, "firmware mount"))
+      .find((item) => item["projectVersionId"] === pvId);
+    const fields = object(
+      object(mount, "selected firmware mount")["fields"],
+      "firmware mount fields",
+    );
+    if (
+      fields["state"] !== "ready" ||
+      fields["files"] !== fields["materializedFiles"] ||
+      fields["errors"] !== 0
+    ) {
+      throw new Error(`firmware mount is not ready: ${JSON.stringify(fields)}`);
+    }
+  });
+  runtime.firmwareReady.add(pvId);
+}
+
+async function ensureBenchReady(runtime: Runtime): Promise<void> {
+  if (runtime.benchReady) return;
+  await runtime.host.harness.behavior.callRpc("syncPull", {
+    workspaceProjectId: WORKSPACE_PROJECT_ID,
+    projectId: runtime.projectId,
+    projectVersionId: BENCH_VERSION,
+    kinds: ["verificationRun"],
+  });
+  await ensureFirmware(runtime, BENCH_VERSION);
+  runtime.benchReady = true;
+}
+
+async function mountedFirmwareDigest(
+  runtime: Runtime,
+  pvId: string,
+): Promise<string> {
+  const page = object(
+    await runtime.host.harness.behavior.callRpc("firmwareMountsList", {
+      projectId: runtime.projectId,
+      projectVersionId: pvId,
+      pageSize: 100,
+      continuation: null,
+    }),
+    "firmware mounts",
+  );
+  const mount = array(page["items"], "firmware mount rows")
+    .map((item) => object(item, "firmware mount"))
+    .find((item) => item["projectVersionId"] === pvId);
+  const fields = object(mount?.["fields"], "firmware mount fields");
+  return string(
+    fields["artifactHash"] ?? fields["inputSha256"],
+    "firmware digest",
+  );
 }
 
 async function ensureSbomPull(runtime: Runtime): Promise<void> {
@@ -210,55 +427,87 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
     {
       ...metadata(1),
       action: async ({ artifacts }) => {
-        await ensureFindingPull(runtime);
-        const reviewPull = await runtime.host.harness.behavior.callRpc(
-          "syncPull",
+        const pull = await runtime.host.harness.behavior.runCli(
+          [
+            "finite-state",
+            "pull",
+            "vexDecision",
+            "--project",
+            runtime.projectId,
+            "--version",
+            runtime.fs167Version,
+            "--json",
+          ],
+          cliContext(),
+        );
+        if (!successfulCli(pull)) {
+          throw new Error(
+            `FS-167 first pull failed: ${String(object(pull, "pull")["stderr"])}`,
+          );
+        }
+        const slot = renderSlot(
+          await registeredPanel("sync"),
           {
-            workspaceProjectId: WORKSPACE_PROJECT_ID,
-            projectId: runtime.projectId,
-            projectVersionId: runtime.findingVersion,
-            kinds: ["vexDecision"],
+            subPath: `scope/${runtime.projectId}/${runtime.fs167Version}/surface/vexDecision`,
           },
+          panelRuntime(runtime),
+        );
+        expect(await slot.findByText("No local changes")).toBeTruthy();
+        fireEvent.click(slot.getByRole("button", { name: "Refresh" }));
+        await waitFor(() =>
+          expect(
+            slot.getByText("vexDecision · 0 proposed changes"),
+          ).toBeTruthy(),
         );
         const status = await runtime.host.harness.behavior.callRpc(
           "syncStatus",
           {
             projectId: runtime.projectId,
-            projectVersionId: runtime.findingVersion,
+            projectVersionId: runtime.fs167Version,
             kinds: ["vexDecision"],
           },
         );
-        const plan = await runtime.host.harness.behavior.callRpc("syncPlan", {
-          projectId: runtime.projectId,
-          projectVersionId: runtime.findingVersion,
-          kinds: ["vexDecision"],
-          pageSize: 100,
-          continuation: null,
-        });
-        runtime.evidence.set("fs167-status", status);
-        await artifacts.writeJson("sync-rpc-transcript.json", {
-          pull: reviewPull,
+        await artifacts.writeJson("sync-panel-transcript.json", {
+          pull,
           status,
         });
-        await artifacts.writeJson("plan.json", plan);
+        await artifacts.writeText(
+          "sync-review.dom.html",
+          slot.container.innerHTML,
+        );
+        slot.unmount();
       },
       assert: async () => {
-        const pull = object(
-          runtime.evidence.get("finding-pull"),
-          "finding pull",
+        const status = object(
+          await runtime.host.harness.behavior.callRpc("syncStatus", {
+            projectId: runtime.projectId,
+            projectVersionId: runtime.fs167Version,
+            kinds: ["vexDecision"],
+          }),
+          "sync status",
         );
-        const kind = object(
-          object(pull["kinds"], "pull kinds")["finding"],
-          "finding counts",
+        const plan = object(
+          await runtime.host.harness.behavior.callRpc("syncPlan", {
+            projectId: runtime.projectId,
+            projectVersionId: runtime.fs167Version,
+            kinds: ["vexDecision"],
+            pageSize: 200,
+            continuation: null,
+          }),
+          "sync plan",
         );
         return [
           assertion(
-            "fresh finding pull accepted",
-            number(kind["baseRows"], "base rows") === 3,
+            "fresh VEX generation is durably accepted",
+            typeof object(
+              status["acceptedGenerationIds"],
+              "accepted generations",
+            )["vexDecision"] === "string",
           ),
           assertion(
-            "review status reads durable accepted state",
-            runtime.evidence.has("fs167-status"),
+            "registered panel had to drain the multi-page plan",
+            number(plan["total"], "plan total") === 201 &&
+              plan["next"] !== null,
           ),
         ];
       },
@@ -266,90 +515,109 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
     {
       ...metadata(2),
       action: async ({ artifacts }) => {
-        const page = await triageTargets(runtime, [
-          "golden-finding-1",
-          "golden-finding-2",
-        ]);
-        const items = array(page["items"], "triage items");
-        const written = await runtime.host.harness.behavior.callRpc(
-          "triageDecisionsWrite",
-          {
-            workspaceProjectId: WORKSPACE_PROJECT_ID,
-            platformProjectId: runtime.projectId,
-            projectVersionId: runtime.findingVersion,
-            decisions: items.map((item, index) =>
-              decision(item, `Golden Loop bulk review rationale ${index + 1}`),
-            ),
-          },
+        cleanup();
+        await ensureFindingPull(runtime);
+        const slot = renderSlot(
+          await registeredPanel("findings"),
+          { subPath: "" },
+          panelRuntime(runtime),
         );
-        const stale = await runtime.host.harness.behavior.callRpc(
-          "triageDecisionsWrite",
-          {
-            workspaceProjectId: WORKSPACE_PROJECT_ID,
-            platformProjectId: runtime.projectId,
-            projectVersionId: runtime.findingVersion,
-            decisions: items.map((item, index) =>
-              decision(item, `Golden Loop stale retry rationale ${index + 1}`),
-            ),
-          },
+        await waitFor(() =>
+          expect(
+            slot.container.querySelectorAll("[data-finding-row]"),
+          ).toHaveLength(3),
         );
-        runtime.evidence.set("fs168-written", written);
-        runtime.evidence.set("fs168-stale", stale);
-        await artifacts.writeJson("triage-rpc-transcript.json", {
-          written,
-          stale,
+        fireEvent.click(slot.getByRole("button", { name: "Select all 3" }));
+        fireEvent.keyDown(window, { key: "b" });
+        fireEvent.click(slot.getByRole("button", { name: /eEXPLOITABLE/u }));
+        const editor = await slot.findByRole("form", {
+          name: /3 local overlay identities/u,
         });
+        fireEvent.change(within(editor).getByLabelText("Reason"), {
+          target: { value: "Golden Loop registered-panel bulk review" },
+        });
+        fireEvent.change(within(editor).getByLabelText("Evidence reviewed"), {
+          target: { value: "Golden Loop cached finding rows and reachability" },
+        });
+        fireEvent.click(within(editor).getByRole("checkbox"));
+        fireEvent.click(
+          within(editor).getByRole("button", { name: /Write YAML/u }),
+        );
+        const confirm = await slot.findByRole("button", {
+          name: "Confirm local writes",
+        });
+        runtime.failNextTriageWrite = true;
+        fireEvent.keyDown(confirm, { key: "Enter", metaKey: true });
+        const failure = await slot.findByRole("alert");
+        expect(failure.textContent).toContain("decisions failed");
+        fireEvent.click(
+          within(failure).getByRole("button", { name: "Retry failed" }),
+        );
+        expect(
+          await slot.findByText("3 local YAML decisions written; 0 failed."),
+        ).toBeTruthy();
+        await artifacts.writeText(
+          "triage-panel.dom.html",
+          slot.container.innerHTML,
+        );
+        slot.unmount();
       },
       assert: async ({ worktree }) => {
-        const results = array(
-          object(runtime.evidence.get("fs168-written"), "bulk write")[
-            "results"
-          ],
-          "bulk results",
-        ).map((item) => object(item, "bulk result"));
-        const stale = array(
-          object(runtime.evidence.get("fs168-stale"), "stale write")["results"],
-          "stale results",
-        ).map((item) => object(item, "stale result"));
-        const files = await Promise.all(
-          results.map((result) =>
-            fileAssertion(
-              worktree,
-              string(result["file"], "triage file"),
-              "status: NOT_AFFECTED",
-            ),
-          ),
-        );
+        const files = (
+          await filesBelow(join(worktree, ".fs", "triage"))
+        ).filter((file) => file.endsWith(".yaml"));
+        const yaml = (
+          await Promise.all(files.map((file) => readFile(file, "utf8")))
+        ).join("\n");
         return [
           assertion(
-            "both bulk decisions wrote YAML",
-            results.length === 2 &&
-              results.every((item) => item["success"] === true),
+            "registered panel wrote all selected decisions durably",
+            files.length > 0 &&
+              ["CVE-2026-65001", "CVE-2026-65002", "CVE-2026-65003"].every(
+                (cve) => yaml.includes(cve),
+              ),
           ),
-          ...files,
           assertion(
-            "stale bulk failure is visible and truthful",
-            stale.every(
-              (item) =>
-                item["success"] === false &&
-                item["code"] === "OVERLAY_CAS_CONFLICT",
-            ),
+            "durable YAML contains the user-selected status",
+            (yaml.match(/status: EXPLOITABLE/gu) ?? []).length === 3,
           ),
         ];
       },
     },
     {
       ...metadata(3),
-      setup: async () => seedBench(runtime),
+      setup: async () => ensureBenchReady(runtime),
       action: async ({ artifacts }) => {
-        const started = await runtime.host.harness.behavior.callRpc(
-          "benchRunStart",
-          {
-            projectId: runtime.projectId,
-            projectVersionId: BENCH_VERSION,
-            tier: "tier0",
-            hostId: "golden-host",
-          },
+        cleanup();
+        const panel = await registeredPanel("bench");
+        const slot = renderSlot(panel, { subPath: "" }, panelRuntime(runtime));
+        expect(
+          await slot.findByRole("option", {
+            name: `${runtime.projectId} / ${BENCH_VERSION}`,
+          }),
+        ).toBeTruthy();
+        const runButtons = await slot.findAllByRole("button", { name: "Run" });
+        fireEvent.click(runButtons[0]!);
+        fireEvent.change(await slot.findByLabelText("Host"), {
+          target: { value: "golden-host" },
+        });
+        fireEvent.click(
+          slot.getByLabelText(
+            /I confirm this version, host, firmware digest, and deployment scope/u,
+          ),
+        );
+        runtime.failNextThreadSpawn = true;
+        fireEvent.click(slot.getByRole("button", { name: "Start Tier 0" }));
+        await waitFor(() =>
+          expect(
+            slot.inspection.navigateCalls.some(
+              (call) =>
+                call.method === "toPluginPanel" &&
+                call.path === "bench" &&
+                typeof call.options?.subPath === "string" &&
+                call.options.subPath.length > 0,
+            ),
+          ).toBe(true),
         );
         const runs = await runtime.host.harness.behavior.callRpc(
           "benchRunsList",
@@ -360,19 +628,55 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
             continuation: null,
           },
         );
-        runtime.evidence.set("fs171-started", started);
-        runtime.evidence.set("fs171-runs", runs);
-        await artifacts.writeJson("bench-dispatch-rpc.json", { started, runs });
+        const failed = array(object(runs, "runs")["items"], "run rows")
+          .map((item) => object(item, "run row"))
+          .find(
+            (item) =>
+              object(item["fields"], "run fields")["status"] === "failed",
+          );
+        const runId = string(failed?.["key"], "failed run id");
+        slot.unmount();
+        const detail = renderSlot(
+          panel,
+          { subPath: runId },
+          panelRuntime(runtime),
+        );
+        expect(
+          await detail.findAllByText(
+            "induced registered bench dispatch failure",
+          ),
+        ).not.toHaveLength(0);
+        await artifacts.writeJson("bench-failed-dispatch.json", { runs });
+        await artifacts.writeText(
+          "bench-failed-dispatch.dom.html",
+          detail.container.innerHTML,
+        );
+        detail.unmount();
       },
       assert: async () => {
-        const rows = array(
-          object(runtime.evidence.get("fs171-runs"), "runs")["items"],
-          "run rows",
+        const page = object(
+          await runtime.host.harness.behavior.callRpc("benchRunsList", {
+            projectId: runtime.projectId,
+            projectVersionId: BENCH_VERSION,
+            pageSize: 20,
+            continuation: null,
+          }),
+          "runs",
+        );
+        const rows = array(page["items"], "run rows").map((item) =>
+          object(item, "run row"),
         );
         return [
           assertion(
-            "registered runs list contains dispatched row",
-            rows.length > 0,
+            "failed panel dispatch leaves a durable visible run row",
+            rows.some((row) => {
+              const fields = object(row["fields"], "run fields");
+              return (
+                fields["status"] === "failed" &&
+                fields["failureReason"] ===
+                  "induced registered bench dispatch failure"
+              );
+            }),
           ),
         ];
       },
@@ -380,6 +684,7 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
     {
       ...metadata(4),
       action: async ({ artifacts }) => {
+        cleanup();
         await ensureSbomPull(runtime);
         runtime.failSbom = true;
         const failed = await runtime.host.harness.behavior.runCli(
@@ -394,20 +699,22 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           ],
           cliContext(),
         );
-        runtime.failSbom = false;
-        const recovered = await runtime.host.harness.behavior.runCli(
-          [
-            "finite-state",
-            "pull",
-            "sbomComponent",
-            "--project",
-            runtime.projectId,
-            "--version",
-            runtime.bomVersion,
-            "--json",
-          ],
-          cliContext(),
+        const slot = renderSlot(
+          await registeredPanel("bom"),
+          { subPath: "software" },
+          panelRuntime(runtime),
         );
+        await waitFor(() =>
+          expect(
+            slot.container.querySelectorAll("[data-sbom-row]").length,
+          ).toBeGreaterThan(0),
+        );
+        fireEvent.click(slot.getByRole("button", { name: "Pull again" }));
+        const pullFailure = await slot.findByRole("alert");
+        expect(pullFailure.textContent).toMatch(/Pull generation|SBOM/u);
+        runtime.failSbom = false;
+        fireEvent.click(slot.getByRole("button", { name: "Pull again" }));
+        await waitFor(() => expect(slot.queryByRole("alert")).toBeNull());
         const page = await runtime.host.harness.behavior.callRpc(
           "bomSoftwareList",
           {
@@ -418,34 +725,35 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
             filters: {},
           },
         );
-        runtime.evidence.set("fs172-failed", failed);
-        runtime.evidence.set("fs172-recovered", recovered);
-        runtime.evidence.set("fs172-page", page);
         await artifacts.writeJson("sbom-recovery-transcript.json", {
           failed,
-          recovered,
           page,
         });
+        await artifacts.writeText(
+          "sbom-recovery.dom.html",
+          slot.container.innerHTML,
+        );
+        slot.unmount();
       },
-      assert: async () => [
-        assertion(
-          "failed refresh is reported",
-          object(runtime.evidence.get("fs172-failed"), "failed pull")[
-            "exitCode"
-          ] === 1,
-        ),
-        assertion(
-          "retry publishes successfully",
-          successfulCli(runtime.evidence.get("fs172-recovered")),
-        ),
-        assertion(
-          "durable components remain readable",
-          array(
-            object(runtime.evidence.get("fs172-page"), "SBOM page")["items"],
-            "components",
-          ).length > 0,
-        ),
-      ],
+      assert: async () => {
+        const page = object(
+          await runtime.host.harness.behavior.callRpc("bomSoftwareList", {
+            projectId: runtime.projectId,
+            projectVersionId: runtime.bomVersion,
+            pageSize: 100,
+            continuation: null,
+            filters: {},
+          }),
+          "SBOM page",
+        );
+        return [
+          assertion(
+            "registered panel retry publishes durable components",
+            array(page["items"], "components").length > 0 &&
+              object(page["cache"], "SBOM cache")["state"] === "fresh",
+          ),
+        ];
+      },
     },
     {
       ...metadata(5),
@@ -582,6 +890,7 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
       action: async ({ artifacts }) => {
         const page = await triageTargets(runtime, ["golden-finding-3"]);
         const target = array(page["items"], "single targets")[0];
+        const prior = object(target, "single target")["prior"];
         const written = object(
           await runtime.host.harness.behavior.callRpc("triageDecisionsWrite", {
             workspaceProjectId: WORKSPACE_PROJECT_ID,
@@ -609,8 +918,9 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           },
         );
         const reread = await triageTargets(runtime, ["golden-finding-3"]);
-        runtime.evidence.set("fs194", { written, undone, reread });
+        runtime.evidence.set("fs194", { prior, written, undone, reread });
         await artifacts.writeJson("single-write-undo.json", {
+          prior,
           written,
           undone,
           reread,
@@ -633,7 +943,8 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           assertion("single YAML write completes", result["success"] === true),
           assertion(
             "undo reverts the claimed decision",
-            reread["prior"] === null,
+            JSON.stringify(reread["prior"]) ===
+              JSON.stringify(evidence["prior"]),
           ),
         ];
       },
@@ -642,8 +953,8 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
       ...metadata(7),
       expectedFailure: {
         task: "FS-201",
-        reason:
-          "requirement pull does not make the bench product-version selector reachable",
+        reason: "the registered requirement Sync puller has not landed",
+        signature: "No puller is registered for requirement",
       },
       action: async ({ artifacts }) => {
         const pull = await runtime.host.harness.behavior.runCli(
@@ -659,42 +970,98 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           ],
           cliContext(),
         );
+        if (!successfulCli(pull)) {
+          const refusal = String(object(pull, "requirement pull")["stderr"]);
+          await artifacts.writeJson("fs201-pending.json", {
+            marker: "EXPECTED_FAILURE",
+            task: "FS-201",
+            signature: "No puller is registered for requirement",
+            refusal,
+          });
+          throw new Error(refusal);
+        }
+        await ensureFirmware(runtime, runtime.findingVersion);
         const versions = await runtime.host.harness.behavior.callRpc(
           "benchProjectVersions",
           {
             projectId: WORKSPACE_PROJECT_ID,
           },
         );
-        await artifacts.writeJson("fs201-pending.json", {
-          marker: "EXPECTED_FAILURE",
-          task: "FS-201",
-          pull,
-          versions,
-        });
         const selected = object(versions, "bench versions")[
           "selectedProjectVersionId"
         ];
         if (selected !== runtime.findingVersion)
           throw new Error(
-            "the requirement-pulled version is absent from the bench selector",
+            "FS-201 pull succeeded but its version is absent from the bench selector",
           );
-        const run = await runtime.host.harness.behavior.callRpc(
-          "benchRunStart",
-          {
+        const attempt = object(
+          await runtime.host.harness.behavior.callRpc("benchRunAttemptStart", {
             projectId: runtime.projectId,
             projectVersionId: selected,
             tier: "tier0",
             hostId: "golden-host",
+          }),
+          "bench run attempt",
+        );
+        if (attempt["success"] !== true) {
+          throw new Error(
+            `FS-201 pull reached bench but run failed: ${String(attempt["message"])}`,
+          );
+        }
+        const runs = await runtime.host.harness.behavior.callRpc(
+          "benchRunsList",
+          {
+            projectId: runtime.projectId,
+            projectVersionId: selected,
+            pageSize: 20,
+            continuation: null,
           },
         );
-        runtime.evidence.set("fs201-unexpected-pass", run);
+        const slot = renderSlot(
+          await registeredPanel("bench"),
+          { subPath: "" },
+          panelRuntime(runtime),
+        );
+        await slot.findByLabelText(/OTA verdict:/u);
+        await artifacts.writeJson("fs201-completed.json", {
+          pull,
+          versions,
+          attempt,
+          runs,
+        });
+        await artifacts.writeText(
+          "fs201-bench.dom.html",
+          slot.container.innerHTML,
+        );
+        slot.unmount();
       },
-      assert: async () => [
-        assertion(
-          "requirement-to-verdict loop completed",
-          runtime.evidence.has("fs201-unexpected-pass"),
-        ),
-      ],
+      assert: async () => {
+        const versions = object(
+          await runtime.host.harness.behavior.callRpc("benchProjectVersions", {
+            projectId: WORKSPACE_PROJECT_ID,
+          }),
+          "bench versions",
+        );
+        const runs = object(
+          await runtime.host.harness.behavior.callRpc("benchRunsList", {
+            projectId: runtime.projectId,
+            projectVersionId: runtime.findingVersion,
+            pageSize: 20,
+            continuation: null,
+          }),
+          "bench runs",
+        );
+        return [
+          assertion(
+            "requirement pull makes its exact version selectable",
+            versions["selectedProjectVersionId"] === runtime.findingVersion,
+          ),
+          assertion(
+            "requirement-to-bench journey creates durable run evidence",
+            number(runs["total"], "bench run total") > 0,
+          ),
+        ];
+      },
     },
     {
       ...metadata(8),
@@ -844,8 +1211,9 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
     },
     {
       ...metadata(11),
-      setup: async () => seedBench(runtime),
+      setup: async () => ensureBenchReady(runtime),
       action: async ({ artifacts }) => {
+        const digest = await mountedFirmwareDigest(runtime, BENCH_VERSION);
         const runs = await runtime.host.harness.behavior.callRpc(
           "benchRunsList",
           {
@@ -860,29 +1228,44 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           {
             projectId: runtime.projectId,
             pvId: BENCH_VERSION,
-            digest: DIGEST,
+            digest,
           },
         );
-        runtime.evidence.set("bench-evidence", { runs, verdict });
         await artifacts.writeJson("run-evidence.json", { runs, verdict });
       },
       assert: async () => {
-        const evidence = object(
-          runtime.evidence.get("bench-evidence"),
-          "bench evidence",
+        const runs = object(
+          await runtime.host.harness.behavior.callRpc("benchRunsList", {
+            projectId: runtime.projectId,
+            projectVersionId: BENCH_VERSION,
+            pageSize: 20,
+            continuation: null,
+          }),
+          "bench runs",
+        );
+        const verdict = object(
+          await runtime.host.harness.behavior.callRpc("benchOtaVerdictGet", {
+            projectId: runtime.projectId,
+            pvId: BENCH_VERSION,
+            digest: await mountedFirmwareDigest(runtime, BENCH_VERSION),
+          }),
+          "bench verdict",
         );
         return [
           assertion(
-            "run evidence remains queryable",
-            Array.isArray(object(evidence["runs"], "runs")["items"]),
+            "failed dispatch evidence remains durably queryable",
+            number(runs["total"], "run total") > 0 &&
+              array(runs["items"], "run rows")
+                .map((item) => object(item, "run row"))
+                .some(
+                  (row) =>
+                    object(row["fields"], "run fields")["status"] === "failed",
+                ),
           ),
           assertion(
             "verdict is explicit",
             ["INCONCLUSIVE", "SAFE_TO_OTA", "NOT_SAFE"].includes(
-              string(
-                object(evidence["verdict"], "verdict")["verdict"],
-                "verdict state",
-              ),
+              string(verdict["verdict"], "verdict state"),
             ),
           ),
         ];
@@ -890,38 +1273,37 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
     },
     {
       ...metadata(12),
+      setup: async () => ensureBenchReady(runtime),
       action: async ({ artifacts }) => {
-        seedBench(runtime);
-        const { VerdictCard } =
-          await import("../../../lanes/bench/app/verdict-card.js");
         const slot = renderSlot(
-          { component: VerdictCard },
-          { id: BENCH_VERSION, projectId: runtime.projectId, digest: DIGEST },
-          {
-            context: { projectId: runtime.projectId },
-            rpc: {
-              benchOtaVerdictGet: (input) =>
-                runtime.host.harness.behavior.callRpc(
-                  "benchOtaVerdictGet",
-                  input,
-                ),
-            },
-          },
+          await registeredPanel("bench"),
+          { subPath: "" },
+          panelRuntime(runtime),
         );
         await slot.findByLabelText(/OTA verdict:/u);
-        const dom = slot.container.innerHTML;
-        runtime.evidence.set("dom", dom);
-        await artifacts.writeText("demo-card.dom.html", dom);
+        await artifacts.writeText(
+          "demo-card.dom.html",
+          slot.container.innerHTML,
+        );
         slot.unmount();
       },
-      assert: async () => [
-        assertion(
-          "demo card renders observable verdict state",
-          string(runtime.evidence.get("dom"), "DOM snapshot").includes(
-            "OTA verdict",
+      assert: async () => {
+        const verdict = object(
+          await runtime.host.harness.behavior.callRpc("benchOtaVerdictGet", {
+            projectId: runtime.projectId,
+            pvId: BENCH_VERSION,
+            digest: await mountedFirmwareDigest(runtime, BENCH_VERSION),
+          }),
+          "bench verdict",
+        );
+        return [
+          assertion(
+            "registered Bench panel reads a current durable verdict",
+            verdict["currentMountedDigest"] === verdict["firmwareDigest"] &&
+              verdict["stale"] === false,
           ),
-        ),
-      ],
+        ];
+      },
     },
     {
       ...metadata(13),
@@ -1044,10 +1426,16 @@ async function createRun(
           }),
         },
         threads: {
-          get: async () => ({
-            id: "thread-golden-loop",
-            projectId: WORKSPACE_PROJECT_ID,
-            environmentId: "environment-golden-loop",
+          get: async ({ threadId }) => ({
+            id: threadId,
+            projectId:
+              threadId === "thread-firmware-golden"
+                ? (runtime?.projectId ?? WORKSPACE_PROJECT_ID)
+                : WORKSPACE_PROJECT_ID,
+            environmentId:
+              threadId === "thread-firmware-golden"
+                ? "environment-firmware-golden"
+                : "environment-golden-loop",
             title: "Golden Loop",
             status: "active" as const,
             agentStatus: null,
@@ -1071,12 +1459,21 @@ async function createRun(
             labels: [],
             attachments: [],
           }),
-          spawn: async () => ({ id: "thread-bench-golden" }),
+          spawn: async () => {
+            if (runtime?.failNextThreadSpawn) {
+              runtime.failNextThreadSpawn = false;
+              throw new Error("induced registered bench dispatch failure");
+            }
+            return { id: "thread-bench-golden" };
+          },
         },
         environments: {
-          get: async () => ({
-            id: "environment-golden-loop",
-            projectId: WORKSPACE_PROJECT_ID,
+          get: async ({ environmentId }) => ({
+            id: environmentId,
+            projectId:
+              environmentId === "environment-firmware-golden"
+                ? (runtime?.projectId ?? WORKSPACE_PROJECT_ID)
+                : WORKSPACE_PROJECT_ID,
             path: worktree,
             hostId: "golden-host",
           }),
@@ -1149,6 +1546,8 @@ async function createRun(
         findingsModule,
         bomModule,
         benchModule,
+        firmwareModule,
+        adapterModule,
         productModule,
         actionsModule,
       ] = await Promise.all([
@@ -1163,6 +1562,8 @@ async function createRun(
         import("../../../lanes/findings/register.js"),
         import("../../../lanes/bom/register.js"),
         import("../../../lanes/bench/register.js"),
+        import("../../../lanes/firmware/register.js"),
+        import("../../../lanes/sync/engine/adapter.js"),
         import("../../../lanes/product-security/register.js"),
         import("../../../lanes/agentic/tools/actions.js"),
       ]);
@@ -1174,9 +1575,14 @@ async function createRun(
       const projectId = string(templateProject["id"], "Platform project id");
       const bomVersion = string(templateVersion["id"], "Platform version id");
       const findingVersion = "golden-finding-version";
+      const fs167Version = "golden-fs167-version";
       state.versions.set(findingVersion, {
         ...templateVersion,
         id: findingVersion,
+      });
+      state.versions.set(fs167Version, {
+        ...templateVersion,
+        id: fs167Version,
       });
       state.findings.clear();
       for (let index = 1; index <= 3; index += 1) {
@@ -1196,6 +1602,29 @@ async function createRun(
               { label: "Call graph", value: "no path", source: "analysis" },
             ],
           },
+        });
+      }
+      for (let index = 1; index <= 201; index += 1) {
+        state.findings.set(`fs167-finding-${index}`, {
+          id: `fs167-finding-${index}`,
+          projectVersionId: fs167Version,
+          findingId: `CVE-2026-${String(167000 + index)}`,
+          component: {
+            id: `fs167-component-${index}`,
+            name: `fs167-component-${index}`,
+            version: "1.0.0",
+          },
+          severity: "medium",
+          reachability: {
+            verdict: "unreachable",
+            factors: [
+              { label: "Call graph", value: "no path", source: "analysis" },
+            ],
+          },
+          vexStatus: "IN_TRIAGE",
+          vexJustification: null,
+          vexResponse: null,
+          vexReason: null,
         });
       }
       const remote = mockModule.createMockRemote({
@@ -1223,7 +1652,7 @@ async function createRun(
           if (runtime?.failSbom && url.pathname.includes("/components")) {
             return Response.json(
               { message: "induced recoverable SBOM failure" },
-              { status: 503 },
+              { status: 422 },
             );
           }
           return remote.platform.fetch(input, init);
@@ -1241,9 +1670,25 @@ async function createRun(
         forgeCompute: null,
       }));
       benchModule.registerBench(bb, ctx);
-      ctx.service("bench.cli", () => ({
-        run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
-      }));
+      firmwareModule.registerFirmware(bb, ctx);
+      const wrapperPath = join(worktree, "golden-unpack-wrapper.mjs");
+      await writeFile(wrapperPath, FAKE_UNPACK_WRAPPER, "utf8");
+      firmwareModule.configureStandaloneUnpackRuntime(ctx, {
+        wrapper: {
+          executablePath: process.execPath,
+          argvPrefix: [wrapperPath],
+          factImage: "finite-state/golden-loop:test",
+          timeoutMs: 5_000,
+        },
+      });
+      host.harness.runService("firmware-materialization");
+      adapterModule.registerCachePuller(
+        "verificationRun",
+        async (_scope, _generationId, onProgress) => {
+          onProgress({ page: 1, of: 1 });
+          return { fetched: 0, baseRows: 0 };
+        },
+      );
       syncModule.registerSync(bb, ctx);
       findingsModule.registerFindings(bb, ctx);
       productModule.registerProductSecurity(bb, ctx);
@@ -1256,16 +1701,20 @@ async function createRun(
       });
       runtime = {
         host,
-        db: ctx.db(),
         worktree,
         projectId,
         findingVersion,
+        fs167Version,
         bomVersion,
         fs193Version: "golden-fs193-version",
         findings: state.findings,
         versions: state.versions,
         evidence: new Map(),
         failSbom: false,
+        failNextTriageWrite: false,
+        failNextThreadSpawn: false,
+        firmwareReady: new Set(),
+        benchReady: false,
         human: null,
       };
     },
@@ -1287,35 +1736,38 @@ describe.sequential("Golden Loop incremental acceptance", () => {
   it(
     "runs all fourteen ordered beats twice with the same semantic result",
     async () => {
-      const callerBefore = await stat(join(REPOSITORY_ROOT, ".git"));
       const first = await createRun("run-1");
-      const firstResults = await first.harness.runAll();
-      expect(firstResults).toHaveLength(14);
-      expect(firstResults.map(({ beat }) => beat)).toEqual(
-        GOLDEN_LOOP_BEATS.map(({ number }) => number),
-      );
-      expect(firstResults.find(({ beat }) => beat === 7)).toMatchObject({
-        status: "skipped",
-      });
-      expect(
-        firstResults
-          .filter(({ beat }) => beat !== 7)
-          .every(({ status }) => status === "passed"),
-      ).toBe(true);
-      first.harness.assertNoExternalNetwork();
-      const firstSemantic = semanticReport(first.harness.report!);
-      await first.harness.dispose();
+      try {
+        const firstResults = await first.harness.runAll();
+        expect(firstResults).toHaveLength(14);
+        expect(firstResults.map(({ beat }) => beat)).toEqual(
+          GOLDEN_LOOP_BEATS.map(({ number }) => number),
+        );
+        expect(firstResults.find(({ beat }) => beat === 7)).toMatchObject({
+          status: "skipped",
+        });
+        const unexpected = firstResults.filter(
+          ({ beat, status }) => beat !== 7 && status !== "passed",
+        );
+        expect(unexpected, JSON.stringify(unexpected, null, 2)).toEqual([]);
+        first.harness.assertNoExternalNetwork();
+        const firstSemantic = semanticReport(first.harness.report!);
 
-      const second = await createRun("run-2");
-      const secondResults = await second.harness.runAll();
-      expect(secondResults).toHaveLength(14);
-      second.harness.assertNoExternalNetwork();
-      expect(semanticReport(second.harness.report!)).toEqual(firstSemantic);
-      expect(second.harness.report?.durationMs).toBeLessThan(15 * 60 * 1_000);
-      await second.harness.dispose();
-      expect(await stat(join(REPOSITORY_ROOT, ".git"))).toMatchObject({
-        ino: callerBefore.ino,
-      });
+        const second = await createRun("run-2");
+        try {
+          const secondResults = await second.harness.runAll();
+          expect(secondResults).toHaveLength(14);
+          second.harness.assertNoExternalNetwork();
+          expect(semanticReport(second.harness.report!)).toEqual(firstSemantic);
+          expect(second.harness.report?.durationMs).toBeLessThan(
+            15 * 60 * 1_000,
+          );
+        } finally {
+          await second.harness.dispose();
+        }
+      } finally {
+        await first.harness.dispose();
+      }
     },
     15 * 60 * 1_000,
   );
