@@ -194,8 +194,10 @@ function duplicates(values) {
 
 // WP01-WP70 are the FS-93 audit universe (WP01-WP07 minus WP02 had already
 // started). WP71-WP98 are the SPEC 07/08 intake adopted 2026-08-12; all were
-// unstarted at adoption, so the whole range is remaining.
-const TOTAL_WORK_PACKAGES = 98;
+// unstarted at adoption, so the whole range is remaining. WP99-WP102 are the
+// AUTHORITY near-term set drafted 2026-08-14 under owner commissioning; they
+// stay in stoppedWorkPackages until the owner ratifies the drafts.
+const TOTAL_WORK_PACKAGES = 102;
 
 function expectedRemainingWorkPackages() {
   const expected = ["WP02"];
@@ -307,9 +309,7 @@ export function validateManifest(manifest) {
       `knownWorkPackages must contain ${TOTAL_WORK_PACKAGES} entries, found ${known.length}`,
     );
   if (manifest.effectiveWorkPackageCount !== TOTAL_WORK_PACKAGES)
-    errors.push(
-      `effectiveWorkPackageCount must remain ${TOTAL_WORK_PACKAGES}`,
-    );
+    errors.push(`effectiveWorkPackageCount must remain ${TOTAL_WORK_PACKAGES}`);
   validateProhibitedWorkPackages(manifest.dispatchPolicy, knownSet, errors);
   validateStoppedWorkPackages(manifest.dispatchPolicy, knownSet, errors);
   validatePromotionPolicy(

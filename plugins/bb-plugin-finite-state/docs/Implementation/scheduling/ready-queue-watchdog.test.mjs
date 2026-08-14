@@ -164,8 +164,9 @@ test("the shipped manifest prohibits WP02", async () => {
 });
 
 // WP71 was stopped here between intake and owner approval; AMD-0010…0015
-// were approved 2026-08-13 and WP71 is dispatchable again.
-test("the shipped manifest temporarily stops WP56 with a resume condition", async () => {
+// were approved 2026-08-13 and WP71 is dispatchable again. WP99-WP102 are the
+// AUTHORITY near-term drafts (2026-08-14), stopped until the owner ratifies.
+test("the shipped manifest temporarily stops WP56 and the AUTHORITY drafts with resume conditions", async () => {
   const { readFileSync } = await import("node:fs");
   const shipped = JSON.parse(
     readFileSync(
@@ -173,7 +174,13 @@ test("the shipped manifest temporarily stops WP56 with a resume condition", asyn
       "utf8",
     ),
   );
-  assert.deepEqual(shipped.dispatchPolicy.stoppedWorkPackages, ["WP56"]);
+  assert.deepEqual(shipped.dispatchPolicy.stoppedWorkPackages, [
+    "WP56",
+    "WP99",
+    "WP100",
+    "WP101",
+    "WP102",
+  ]);
   for (const wp of shipped.dispatchPolicy.stoppedWorkPackages) {
     const detail = shipped.dispatchPolicy.stoppedWorkPackageReasons[wp];
     assert.ok(detail.reason.length > 0, `${wp} needs a reason`);
@@ -222,12 +229,9 @@ test("a frozen board with in-flight tasks stalls after the threshold", () => {
 
 test("any board transition resets the stall clock", () => {
   const t0 = 1_000_000;
-  const before = detectStall(
-    statuses({ "FS-1": "in_progress" }),
-    {},
-    t0,
-    { stallMs: 90 * MIN },
-  );
+  const before = detectStall(statuses({ "FS-1": "in_progress" }), {}, t0, {
+    stallMs: 90 * MIN,
+  });
   const after = detectStall(
     statuses({ "FS-1": "in_review" }),
     { fingerprint: before.fingerprint, fingerprintSince: before.since },
