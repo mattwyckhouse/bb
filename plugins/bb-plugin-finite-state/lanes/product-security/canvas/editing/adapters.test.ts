@@ -323,13 +323,10 @@ describe("canvas real-wire adapter contract", () => {
     });
     expect(acceptedByName.get("Protected asset 1")).toMatchObject({
       name: "Protected asset 1",
+      asset_type: "function",
+      criticality: "high",
+      data_classification: "pii",
     });
-    expect(acceptedByName.get("Protected asset 1")).not.toHaveProperty(
-      "asset_type",
-    );
-    expect(acceptedByName.get("Protected asset 1")).not.toHaveProperty(
-      "criticality",
-    );
     expect(acceptedByName.get("Dataflow 1")).toMatchObject({
       from: componentSlug,
       to: nextComponentSlug,
@@ -513,6 +510,75 @@ describe("canvas real-wire adapter contract", () => {
 
     expect(assetKeys.size).toBe(1);
     expect(componentKeys.size).toBe(1);
+
+    for (const dataClassification of ["pii", "tenant_future_classification"]) {
+      const projected = projectRemoteEntity(
+        "asset",
+        {
+          id: "asset-live-classification",
+          projectId: PROJECT_ID,
+          kind: "asset",
+          reviewVersion: null,
+          reviewStatus: null,
+          humanEdited: null,
+          fields: {
+            name: "Classified asset",
+            data_classification: dataClassification,
+          },
+        },
+        scope,
+        derivedResolver,
+      );
+      expect(projected.payload["fields"]).toMatchObject({
+        data_classification: dataClassification,
+      });
+    }
+
+    const futureAssetCriticality = projectRemoteEntity(
+      "asset",
+      {
+        id: "asset-live-criticality",
+        projectId: PROJECT_ID,
+        kind: "asset",
+        reviewVersion: null,
+        reviewStatus: null,
+        humanEdited: null,
+        fields: {
+          name: "Future criticality asset",
+          criticality: "tenant_future_criticality",
+        },
+      },
+      scope,
+      derivedResolver,
+    );
+    expect(futureAssetCriticality.payload["fields"]).toMatchObject({
+      criticality: "tenant_future_criticality",
+    });
+
+    const futureSeverity = projectRemoteEntity(
+      "threat",
+      {
+        id: "threat-live-severity",
+        projectId: PROJECT_ID,
+        kind: "threat",
+        reviewVersion: null,
+        reviewStatus: null,
+        humanEdited: null,
+        fields: {
+          name: "Future severity threat",
+          category: "spoofing",
+          threat_source: "manual",
+          severity: "tenant_future_severity",
+          affected_assets: [],
+          mitigation_ids: [],
+        },
+      },
+      scope,
+      derivedResolver,
+    );
+    expect(futureSeverity.payload["fields"]).toMatchObject({
+      severity: "tenant_future_severity",
+    });
   });
 
   it("reports the actual value at a nested remote validation path", () => {

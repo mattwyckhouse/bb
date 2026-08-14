@@ -6,6 +6,7 @@ import {
   assetTypeSchema,
   componentTypeSchema,
   criticalitySchema,
+  dataClassificationSchema,
   parseArchitectureEntity,
   strideCategorySchema,
   threatSourceSchema,
@@ -510,14 +511,7 @@ export function EntityForm({
                   value={classification}
                 >
                   <option value="">Not classified</option>
-                  {(
-                    [
-                      "public",
-                      "internal",
-                      "confidential",
-                      "restricted",
-                    ] as const
-                  ).map((value) => (
+                  {dataClassificationSchema.options.map((value) => (
                     <option key={value} value={value}>
                       {value}
                     </option>

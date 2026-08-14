@@ -113,8 +113,14 @@ const remoteAssetEntitySchema = assetEntitySchema
   })
   .extend({
     asset_type: z.string().trim().min(1).max(200).optional(),
+    criticality: z.string().trim().min(1).max(200).optional(),
+    data_classification: z.string().trim().min(1).max(200).optional(),
   });
-const remoteThreatEntitySchema = threatEntitySchema.partial({ severity: true });
+const remoteThreatEntitySchema = threatEntitySchema
+  .partial({ severity: true })
+  .extend({
+    severity: z.string().trim().min(1).max(200).optional(),
+  });
 
 function optional<T extends Json>(
   field: string,

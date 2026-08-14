@@ -706,7 +706,14 @@ describe("deterministic-seed-corpus", () => {
       expect(dataflow.fields).not.toHaveProperty("is_bidirectional");
       expect(typeof dataflow.fields.crosses_trust_boundary).toBe("boolean");
     }
-    for (const asset of entities.filter((entity) => entity.kind === "asset")) {
+    const taraAssets = entities.filter((entity) => entity.kind === "asset");
+    expect(taraAssets[0]?.fields).toEqual({
+      asset_type: "function",
+      criticality: "high",
+      data_classification: "pii",
+      name: "Protected asset 1",
+    });
+    for (const asset of taraAssets.slice(1)) {
       expect(Object.keys(asset.fields)).toEqual(["name"]);
     }
     for (const entity of entities) {

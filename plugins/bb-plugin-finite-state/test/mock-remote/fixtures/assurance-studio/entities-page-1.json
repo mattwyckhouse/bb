@@ -256,6 +256,9 @@
       },
       {
         "fields": {
+          "asset_type": "function",
+          "criticality": "high",
+          "data_classification": "pii",
           "name": "Protected asset 1"
         },
         "humanEdited": false,

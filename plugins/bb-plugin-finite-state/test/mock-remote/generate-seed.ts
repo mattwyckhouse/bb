@@ -416,8 +416,11 @@ function buildCorpus(seed: string): {
    * - Threat `stride_categories`, `threat_source`, `preconditions`, `asset_ids`,
    *   and `linked_mitigations` come from `components.schemas.Threat`. The fixture
    *   deliberately omits unsupported severity/component/dataflow relation keys.
-   * - The vendored spec has no JSON Asset collection response contract, so its
-   *   fixture carries identity only; domain fields remain optional in the adapter.
+   * - The vendored spec has no JSON Asset collection response contract. Asset 1
+   *   mirrors the sanitized FS-206 targeted connected capture recorded in
+   *   FS-207 (`asset_type=function`, `criticality=high`,
+   *   `data_classification=pii`); the other rows retain the minimal identity
+   *   shape to keep optional-field coverage.
    */
   const taraComponents = Array.from(
     { length: COUNTS.taraNodes },
@@ -468,6 +471,13 @@ function buildCorpus(seed: string): {
     humanEdited: false,
     fields: {
       name: `Protected asset ${index + 1}`,
+      ...(index === 0
+        ? {
+            asset_type: "function",
+            criticality: "high",
+            data_classification: "pii",
+          }
+        : {}),
     },
   }));
   const dataflows = Array.from({ length: 11 }, (_, index) => ({

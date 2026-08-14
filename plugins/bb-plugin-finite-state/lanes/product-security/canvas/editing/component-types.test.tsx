@@ -9,8 +9,10 @@ import { EntityForm } from "./forms.js";
 import {
   ASSURANCE_STUDIO_ASSET_TYPES,
   ASSURANCE_STUDIO_COMPONENT_TYPES,
+  ASSURANCE_STUDIO_DATA_CLASSIFICATIONS,
   assetTypeSchema,
   componentTypeSchema,
+  dataClassificationSchema,
 } from "./schema.js";
 
 afterEach(cleanup);
@@ -103,5 +105,22 @@ describe("Assurance Studio component types", () => {
         expect.objectContaining({ asset_type: assetType }),
       );
     }
+
+    const classification = view.getByLabelText("Data classification");
+    if (!(classification instanceof HTMLSelectElement)) {
+      throw new Error("Data classification control is not a select");
+    }
+    expect(dataClassificationSchema.options).toEqual(
+      ASSURANCE_STUDIO_DATA_CLASSIFICATIONS,
+    );
+    expect([...classification.options].map((option) => option.value)).toEqual([
+      "",
+      ...ASSURANCE_STUDIO_DATA_CLASSIFICATIONS,
+    ]);
+    fireEvent.change(classification, { target: { value: "pii" } });
+    fireEvent.click(view.getByRole("button", { name: "Save local YAML" }));
+    expect(onSubmit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data_classification: "pii" }),
+    );
   });
 });

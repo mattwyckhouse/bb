@@ -13,11 +13,15 @@ import {
   CANVAS_ENTITY_KINDS,
   assetTypeSchema,
   componentTypeSchema,
+  criticalitySchema,
+  dataClassificationSchema,
   entityReferences,
   parseArchitectureEntity,
   retiredAuthoredComponentEntitySchema,
   retiredAuthoredComponentTypeSchema,
   strideCategorySchema,
+  threatSourceSchema,
+  zoneEntitySchema,
   type ArchitectureYamlEntity,
   type CanvasReadableEntity,
   type CanvasEntityKind,
@@ -110,6 +114,54 @@ export class UnsupportedAssetTypeValidationAdvisory extends CanvasEntityValidati
   }
 }
 
+export class UnsupportedRemoteVocabularyValidationAdvisory extends CanvasEntityValidationError {
+  constructor(
+    readonly value: string,
+    field: string,
+    allowedValues: readonly string[],
+  ) {
+    super(
+      "UNSUPPORTED_REMOTE_VOCABULARY",
+      `${field} “${value}” is not recognized by the current authored vocabulary. Choose one of: ${allowedValues.join(", ")}.`,
+      field,
+    );
+    this.name = "UnsupportedRemoteVocabularyValidationAdvisory";
+  }
+}
+
+export function isRemoteVocabularyValidationAdvisory(
+  error: unknown,
+): error is
+  | RetiredComponentTypeValidationAdvisory
+  | UnsupportedAssetTypeValidationAdvisory
+  | UnsupportedComponentTypeValidationAdvisory
+  | UnsupportedRemoteVocabularyValidationAdvisory {
+  return (
+    error instanceof RetiredComponentTypeValidationAdvisory ||
+    error instanceof UnsupportedAssetTypeValidationAdvisory ||
+    error instanceof UnsupportedComponentTypeValidationAdvisory ||
+    error instanceof UnsupportedRemoteVocabularyValidationAdvisory
+  );
+}
+
+function rejectUnsupportedVocabulary(
+  payload: Record<string, unknown>,
+  field: string,
+  schema: {
+    safeParse(value: unknown): { success: boolean };
+    options: string[];
+  },
+): void {
+  const value = payload[field];
+  if (typeof value === "string" && !schema.safeParse(value).success) {
+    throw new UnsupportedRemoteVocabularyValidationAdvisory(
+      value,
+      field,
+      schema.options,
+    );
+  }
+}
+
 function inspectAuthoredValue(value: unknown, path: string): void {
   if (typeof value === "string" && UUID.test(value)) {
     throw new CanvasEntityValidationError(
@@ -159,6 +211,7 @@ export function validateArchitecturePayload(
     ) {
       throw new UnsupportedComponentTypeValidationAdvisory(componentType);
     }
+    rejectUnsupportedVocabulary(payload, "criticality", criticalitySchema);
   }
   if (
     kind === "asset" &&
@@ -166,6 +219,21 @@ export function validateArchitecturePayload(
     !assetTypeSchema.safeParse(payload["asset_type"]).success
   ) {
     throw new UnsupportedAssetTypeValidationAdvisory(payload["asset_type"]);
+  }
+  if (kind === "asset") {
+    rejectUnsupportedVocabulary(payload, "criticality", criticalitySchema);
+    rejectUnsupportedVocabulary(
+      payload,
+      "data_classification",
+      dataClassificationSchema,
+    );
+  }
+  if (kind === "zone") {
+    rejectUnsupportedVocabulary(
+      payload,
+      "trust_level",
+      zoneEntitySchema.shape.trust_level,
+    );
   }
   if (
     kind === "threat" &&
@@ -177,6 +245,10 @@ export function validateArchitecturePayload(
       `threat.category “${payload["category"]}” is not in the accepted STRIDE methodology vocabulary.`,
       "category",
     );
+  }
+  if (kind === "threat") {
+    rejectUnsupportedVocabulary(payload, "threat_source", threatSourceSchema);
+    rejectUnsupportedVocabulary(payload, "severity", criticalitySchema);
   }
   try {
     return parseArchitectureEntity(kind, payload);

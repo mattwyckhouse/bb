@@ -13,7 +13,7 @@
 {"fields":{"name":"Untrusted","trust_level":"untrusted"},"humanEdited":false,"id":"zone-1","kind":"zone","projectId":"project-4a752600a07a","reviewStatus":"pending","reviewVersion":"300"}
 {"fields":{"name":"Control","trust_level":"semi_trusted"},"humanEdited":false,"id":"zone-2","kind":"zone","projectId":"project-4a752600a07a","reviewStatus":"pending","reviewVersion":"301"}
 {"fields":{"name":"Safety","trust_level":"highly_trusted"},"humanEdited":false,"id":"zone-3","kind":"zone","projectId":"project-4a752600a07a","reviewStatus":"pending","reviewVersion":"302"}
-{"fields":{"name":"Protected asset 1"},"humanEdited":false,"id":"asset-1","kind":"asset","projectId":"project-4a752600a07a","reviewStatus":"pending","reviewVersion":"400"}
+{"fields":{"asset_type":"function","criticality":"high","data_classification":"pii","name":"Protected asset 1"},"humanEdited":false,"id":"asset-1","kind":"asset","projectId":"project-4a752600a07a","reviewStatus":"pending","reviewVersion":"400"}
 {"fields":{"name":"Protected asset 2"},"humanEdited":false,"id":"asset-2","kind":"asset","projectId":"project-4a752600a07a","reviewStatus":"pending","reviewVersion":"401"}
 {"fields":{"name":"Protected asset 3"},"humanEdited":false,"id":"asset-3","kind":"asset","projectId":"project-4a752600a07a","reviewStatus":"pending","reviewVersion":"402"}
 {"fields":{"name":"Protected asset 4"},"humanEdited":false,"id":"asset-4","kind":"asset","projectId":"project-4a752600a07a","reviewStatus":"pending","reviewVersion":"403"}

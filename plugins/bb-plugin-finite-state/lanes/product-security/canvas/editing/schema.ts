@@ -46,7 +46,13 @@ const stringListSchema = z
   .max(500)
   .default([]);
 
-export const criticalitySchema = z.enum(["low", "medium", "high", "critical"]);
+export const ASSURANCE_STUDIO_CRITICALITIES = [
+  "low",
+  "medium",
+  "high",
+  "critical",
+] as const;
+export const criticalitySchema = z.enum(ASSURANCE_STUDIO_CRITICALITIES);
 // Known authored values: the vendored ComponentType enum plus the connected
 // FS-206 capture documented in assurance-studio-tara-vocabulary-live-2026-08-14.md.
 export const ASSURANCE_STUDIO_COMPONENT_TYPES = [
@@ -81,6 +87,19 @@ export const ASSURANCE_STUDIO_ASSET_TYPES = [
   "communication",
 ] as const;
 export const assetTypeSchema = z.enum(ASSURANCE_STUDIO_ASSET_TYPES);
+// Connected AS capture: docs/Implementation/api-reference/
+// assurance-studio-tara-vocabulary-live-2026-08-14.md. The observed set is
+// an authoring floor; remote projection remains bounded-open.
+export const ASSURANCE_STUDIO_DATA_CLASSIFICATIONS = [
+  "public",
+  "internal",
+  "confidential",
+  "restricted",
+  "pii",
+] as const;
+export const dataClassificationSchema = z.enum(
+  ASSURANCE_STUDIO_DATA_CLASSIFICATIONS,
+);
 export const RETIRED_AUTHORED_COMPONENT_TYPES = [
   "ecu",
   "hsm",
@@ -161,9 +180,7 @@ export const assetEntitySchema = z
     asset_type: assetTypeSchema,
     criticality: criticalitySchema,
     zone: stableSlugSchema.optional(),
-    data_classification: z
-      .enum(["public", "internal", "confidential", "restricted"])
-      .optional(),
+    data_classification: dataClassificationSchema.optional(),
   })
   .strict();
 
