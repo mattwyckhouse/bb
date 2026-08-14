@@ -494,7 +494,7 @@ specs: `docs/Product Specs/SPEC 07` and `SPEC 08`._
 
 ### AMD-0020 — Bind bb workspace projects to cached Platform projects
 
-- Status: approved
+- Status: proposed — pending owner ratification
 - Artifacts:
   - `plugins/bb-plugin-finite-state/lib/store/schema.ts`
 - Contract version: n/a
@@ -504,7 +504,7 @@ specs: `docs/Product Specs/SPEC 07` and `SPEC 08`._
 - Reason: FS-191 cannot scope cached-version catalogs by comparing their bb workspace-project input to `sync_state.project_id`, which stores a Finite State Platform project id. The round-1 implementation made every post-pull catalog empty and its tests hid the regression by equating the two identifier spaces.
 - Migration: append `workspace_platform_project_binding` with composite primary key `(workspace_project_id, platform_project_id)` and a reverse lookup index. Successful registered CLI pulls record the association after atomic cache publication. Findings, BOM, and Bench version catalogs filter in SQLite through the association. A pre-migration Platform project with no binding remains visible; when the store contains exactly one Platform project and no bindings, the first validated workspace catalog read backfills the unambiguous association.
 - Affected WPs and gates: FS-191; sync CLI, Findings/BOM/Bench cached-version registered surfaces, shared-store migration, frozen baseline, Node 22.19 typecheck/test/lint/build gates
-- Approval provenance: coordinator ruling in FS-191 round-1 repair direction, relayed to implementation thread `thr_85s3y82ime` on 2026-08-14; the ruling explicitly authorizes an internal-store migration while preserving distinct identifier spaces and legacy visibility.
+- Approval provenance: coordinator ruling authorized the design direction (FS-191 round-1); frozen-artifact ratification pending owner sign-off.
 - Affected-lane reviewer: pending independent exact-head repair audit
 - Broadcast and merge commits: pending
 - Evidence: FS-191 round-1 review at PR #134 head `9489c1be5`; production-shaped registered probe returned an empty catalog when a bb workspace id was bound directly to `sync_state.project_id`.
