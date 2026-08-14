@@ -114,10 +114,7 @@ function readPersistedProjectId(): string | null {
   }
 }
 
-function payloadScope(payload: unknown): {
-  projectId: string;
-  projectVersionId: string | null;
-} | null {
+function payloadProjectId(payload: unknown): string | null {
   if (
     typeof payload !== "object" ||
     payload === null ||
@@ -126,13 +123,7 @@ function payloadScope(payload: unknown): {
     return null;
   }
   const projectId = Reflect.get(payload, "projectId");
-  if (typeof projectId !== "string") return null;
-  const projectVersionId = Reflect.get(payload, "projectVersionId");
-  return {
-    projectId,
-    projectVersionId:
-      typeof projectVersionId === "string" ? projectVersionId : null,
-  };
+  return typeof projectId === "string" ? projectId : null;
 }
 
 function useThreatSnapshot(
@@ -156,17 +147,7 @@ function useThreatSnapshot(
     [],
   );
   appRuntime.useRealtime("tara:changed", (payload) => {
-    const publishedScope = payloadScope(payload);
-    const activeVersionId =
-      state.projectId === projectId ? state.data?.projectVersionId ?? null : null;
-    if (
-      projectId &&
-      publishedScope?.projectId === projectId &&
-      (publishedScope.projectVersionId === null ||
-        publishedScope.projectVersionId === activeVersionId)
-    ) {
-      retry();
-    }
+    if (projectId && payloadProjectId(payload) === projectId) retry();
   });
 
   useEffect(() => {

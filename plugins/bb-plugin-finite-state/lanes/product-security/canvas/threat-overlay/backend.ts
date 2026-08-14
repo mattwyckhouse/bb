@@ -73,7 +73,9 @@ const threatSummarySchema = z
     rawCategory: z.string().max(500),
     category: strideCategorySchema,
     severity: z.string().max(200).nullable(),
-    targetSlugs: z.array(z.string().min(1).max(512)).max(MAX_TARGETS_PER_THREAT),
+    targetSlugs: z
+      .array(z.string().min(1).max(512))
+      .max(MAX_TARGETS_PER_THREAT),
     attackPathCount: z.number().int().nonnegative(),
   })
   .strict();
@@ -283,7 +285,9 @@ function isOpenThreat(fields: Readonly<Record<string, JsonValue>>): boolean {
     "threat_status",
     "disposition",
   )?.toLocaleLowerCase();
-  return !status || !["closed", "resolved", "dismissed", "archived"].includes(status);
+  return (
+    !status || !["closed", "resolved", "dismissed", "archived"].includes(status)
+  );
 }
 
 function syncRow(
@@ -525,12 +529,10 @@ export function readThreatSnapshot(
     }
     if (!isOpenThreat(fields)) continue;
     const rawCategory =
-      firstString(fields, "category", "stride", "threat_category") ??
-      "unknown";
+      firstString(fields, "category", "stride", "threat_category") ?? "unknown";
     threats.push({
       slug: row.entity_key,
-      title:
-        firstString(fields, "title", "name", "label") ?? row.entity_key,
+      title: firstString(fields, "title", "name", "label") ?? row.entity_key,
       rawCategory,
       category: categoryFromVocabulary(rawCategory, methodology.vocabulary),
       severity: firstString(fields, "severity", "risk", "priority"),

@@ -150,50 +150,53 @@ function adapter(kind: "requirement" | "threat"): EntityAdapter {
   };
 }
 
-function requirementPage() {
+function requirementPage(projectVersionId: string | null) {
   return {
-    items: [
-      {
-        projectId: PROJECT_ID,
-        projectVersionId: ACTIVE_VERSION_ID,
-        kind: "requirement",
-        key: "REQ-1",
-        label: "REQ-1",
-        fields: {
-          requirement: {
-            schema: "fs-requirement/v1",
-            id: "REQ-1",
-            req_type: "security",
-            priority: "P1",
-            status: "draft",
-            ears: {
-              pattern: "ubiquitous",
-              text: "The gateway SHALL reject unsigned firmware",
-              parts: {
-                system: "gateway",
-                response: "reject unsigned firmware",
+    items:
+      projectVersionId === null
+        ? []
+        : [
+            {
+              projectId: PROJECT_ID,
+              projectVersionId,
+              kind: "requirement",
+              key: "REQ-1",
+              label: "REQ-1",
+              fields: {
+                requirement: {
+                  schema: "fs-requirement/v1",
+                  id: "REQ-1",
+                  req_type: "security",
+                  priority: "P1",
+                  status: "draft",
+                  ears: {
+                    pattern: "ubiquitous",
+                    text: "The gateway SHALL reject unsigned firmware",
+                    parts: {
+                      system: "gateway",
+                      response: "reject unsigned firmware",
+                    },
+                  },
+                  source_description: "Protect updates.",
+                  mitigations: [],
+                  controls: [],
+                  standards: [],
+                  verification: [],
+                },
+                evidenceState: "not_run",
+                stale: false,
+                local: false,
+                tiers: [
+                  { tier: "static", state: "not_run", count: 0 },
+                  { tier: "emulation", state: "not_run", count: 0 },
+                  { tier: "hil", state: "not_run", count: 0 },
+                  { tier: "manual", state: "not_run", count: 0 },
+                ],
+                sourceSha256: null,
               },
             },
-            source_description: "Protect updates.",
-            mitigations: [],
-            controls: [],
-            standards: [],
-            verification: [],
-          },
-          evidenceState: "not_run",
-          stale: false,
-          local: false,
-          tiers: [
-            { tier: "static", state: "not_run", count: 0 },
-            { tier: "emulation", state: "not_run", count: 0 },
-            { tier: "hil", state: "not_run", count: 0 },
-            { tier: "manual", state: "not_run", count: 0 },
           ],
-          sourceSha256: null,
-        },
-      },
-    ],
-    total: 1,
+    total: projectVersionId === null ? 0 : 1,
     next: null,
     cache,
   };
@@ -224,11 +227,10 @@ function taraPage(input: unknown) {
   };
 }
 
-function threatSnapshot() {
+function threatSnapshot(projectVersionId: string | null) {
   return {
-    projectVersionId: ACTIVE_VERSION_ID,
-    revision:
-      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    projectVersionId,
+    revision: `revision-${projectVersionId ?? "cold"}`,
     threats: [],
     aggregates: [],
     methodology: {
@@ -251,7 +253,7 @@ function threatSnapshot() {
 
 describe("registered product-security realtime boundary", () => {
   it(
-    "refetches requirement and threat subscribers only for their version through the real sync publisher",
+    "refetches cold and latest-wins requirement and threat subscribers through the real sync publisher",
     { timeout: 60_000 },
     async () => {
       const host = createFakePluginHost({
@@ -302,10 +304,11 @@ describe("registered product-security realtime boundary", () => {
           kind: "requirement" | "threat",
           projectVersionId: string,
           channel: "requirements:changed" | "tara:changed",
+          publishedProjectId = PROJECT_ID,
         ): Promise<FakeRealtimeSignal[]> => {
           const cursor = host.harness.inspection.realtimeSignals.length;
           await host.harness.behavior.callRpc("syncPull", {
-            projectId: PROJECT_ID,
+            projectId: publishedProjectId,
             projectVersionId,
             kinds: [kind],
           });
@@ -319,6 +322,7 @@ describe("registered product-security realtime boundary", () => {
         };
 
         let requirementReads = 0;
+        let requirementVersionId: string | null = null;
         const requirements = renderSlot(
           panel,
           { subPath: "requirements" },
@@ -328,18 +332,19 @@ describe("registered product-security realtime boundary", () => {
               connectionsStatus: connectedRemoteStatus,
               requirementsList: () => {
                 requirementReads += 1;
-                return requirementPage();
+                return requirementPage(requirementVersionId);
               },
             },
           },
         );
-        await requirements.findByText("REQ-1");
+        await requirements.findByText("No requirements yet");
         expect(requirementReads).toBe(1);
+        requirementVersionId = ACTIVE_VERSION_ID;
         expect(
           await publishAndDeliver(
             requirements,
             "requirement",
-            OTHER_VERSION_ID,
+            ACTIVE_VERSION_ID,
             "requirements:changed",
           ),
         ).toEqual([
@@ -347,21 +352,33 @@ describe("registered product-security realtime boundary", () => {
             channel: "requirements:changed",
             payload: {
               projectId: PROJECT_ID,
-              projectVersionId: OTHER_VERSION_ID,
+              projectVersionId: ACTIVE_VERSION_ID,
             },
           },
         ]);
-        expect(requirementReads).toBe(1);
+        await waitFor(() => expect(requirementReads).toBe(2));
+        await requirements.findByText("REQ-1");
+
+        requirementVersionId = OTHER_VERSION_ID;
         await publishAndDeliver(
           requirements,
           "requirement",
-          ACTIVE_VERSION_ID,
+          OTHER_VERSION_ID,
           "requirements:changed",
         );
-        await waitFor(() => expect(requirementReads).toBe(2));
+        await waitFor(() => expect(requirementReads).toBe(3));
+        await publishAndDeliver(
+          requirements,
+          "requirement",
+          "version-foreign",
+          "requirements:changed",
+          "project-foreign",
+        );
+        expect(requirementReads).toBe(3);
         requirements.lifecycle.unmount();
 
         let threatReads = 0;
+        let threatVersionId: string | null = null;
         const threats = renderSlot(
           panel,
           { subPath: "tara" },
@@ -372,18 +389,19 @@ describe("registered product-security realtime boundary", () => {
               taraList: taraPage,
               threatOverlaySnapshot: () => {
                 threatReads += 1;
-                return threatSnapshot();
+                return threatSnapshot(threatVersionId);
               },
             },
           },
         );
         await threats.findByLabelText("component Gateway");
         await waitFor(() => expect(threatReads).toBe(1));
+        threatVersionId = ACTIVE_VERSION_ID;
         expect(
           await publishAndDeliver(
             threats,
             "threat",
-            OTHER_VERSION_ID,
+            ACTIVE_VERSION_ID,
             "tara:changed",
           ),
         ).toEqual([
@@ -391,18 +409,28 @@ describe("registered product-security realtime boundary", () => {
             channel: "tara:changed",
             payload: {
               projectId: PROJECT_ID,
-              projectVersionId: OTHER_VERSION_ID,
+              projectVersionId: ACTIVE_VERSION_ID,
             },
           },
         ]);
-        expect(threatReads).toBe(1);
+        await waitFor(() => expect(threatReads).toBe(2));
+
+        threatVersionId = OTHER_VERSION_ID;
         await publishAndDeliver(
           threats,
           "threat",
-          ACTIVE_VERSION_ID,
+          OTHER_VERSION_ID,
           "tara:changed",
         );
-        await waitFor(() => expect(threatReads).toBe(2));
+        await waitFor(() => expect(threatReads).toBe(3));
+        await publishAndDeliver(
+          threats,
+          "threat",
+          "version-foreign",
+          "tara:changed",
+          "project-foreign",
+        );
+        expect(threatReads).toBe(3);
         threats.lifecycle.unmount();
       } finally {
         platform.close();

@@ -934,7 +934,8 @@ describe("WP-33 bounded cache and DOM", () => {
       pluginId: "finite-state-wp33-version-resolution",
     });
     const ctx = createPluginContext(bb);
-    ctx.db()
+    ctx
+      .db()
       .prepare(
         `INSERT INTO pull_generation
            (project_id, project_version_id, generation_id, status,
@@ -949,19 +950,15 @@ describe("WP-33 bounded cache and DOM", () => {
         PULLED_AT,
         PULLED_AT,
       );
-    ctx.db()
+    ctx
+      .db()
       .prepare(
         `INSERT INTO sync_state
            (project_id, project_version_id, entity_kind,
             accepted_generation_id, base_revision, last_pull, error)
          VALUES (?, ?, 'threat', ?, 1, ?, NULL)`,
       )
-      .run(
-        PROJECT_ID,
-        "version-accepted",
-        "generation-versioned",
-        PULLED_AT,
-      );
+      .run(PROJECT_ID, "version-accepted", "generation-versioned", PULLED_AT);
 
     const snapshot = readThreatSnapshot(ctx.db(), {
       projectId: PROJECT_ID,
