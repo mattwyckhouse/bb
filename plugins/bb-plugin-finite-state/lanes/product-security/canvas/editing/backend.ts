@@ -22,6 +22,7 @@ import {
   type AdapterSlugResolver,
 } from "./adapters.js";
 import {
+  ASSURANCE_STUDIO_COMPONENT_TYPES,
   architectureEntityPayload,
   canvasEditingLoadInputSchema,
   canvasEditingLoadOutputSchema,
@@ -40,6 +41,7 @@ import {
   canvasEntityFile,
   canvasUsedSlugMarkerKey,
   createSdkCanvasFileStore,
+  RetiredComponentTypeReadAdvisory,
   serializeCanvasEntity,
   type CanvasEditCommand,
   type CanvasFileStore,
@@ -174,10 +176,7 @@ function acceptedCanvasRow(
   slug: string,
 ): AcceptedCanvasRow | null {
   const rows = db
-    .prepare<
-      [string, string, string, string, string],
-      AcceptedCanvasRow
-    >(
+    .prepare<[string, string, string, string, string], AcceptedCanvasRow>(
       `SELECT snapshot.entity_key, snapshot.payload
          FROM sync_state AS state
          JOIN base_snapshot AS snapshot
@@ -295,13 +294,7 @@ async function mergedCanvasEntities(
   input: { projectId: string; projectVersionId: string | null },
   files: CanvasFileStore,
 ) {
-  const kinds = [
-    "component",
-    "zone",
-    "asset",
-    "dataflow",
-    "threat",
-  ] as const;
+  const kinds = ["component", "zone", "asset", "dataflow", "threat"] as const;
   const groups = await Promise.all(
     kinds.map(async (kind) => {
       const merged = new Map(
@@ -569,9 +562,7 @@ export function registerCanvasEditingBackend(
     async canvasEditingLoad(input) {
       const { files } = await dependencies(input, undefined, false);
       const file = canvasEntityFile(input.kind, input.slug);
-      if (
-        (await deletedCanvasSlugs(bb, input, input.kind)).has(input.slug)
-      ) {
+      if ((await deletedCanvasSlugs(bb, input, input.kind)).has(input.slug)) {
         return {
           projectId: input.projectId,
           projectVersionId: input.projectVersionId,
@@ -581,7 +572,30 @@ export function registerCanvasEditingBackend(
           file,
         };
       }
-      const stored = await files.read(file);
+      let stored;
+      try {
+        stored = await files.read(file);
+      } catch (error) {
+        if (!(error instanceof RetiredComponentTypeReadAdvisory)) throw error;
+        const { kind: _kind, ...fields } = error.entity;
+        return {
+          projectId: input.projectId,
+          projectVersionId: input.projectVersionId,
+          state: "migration_required" as const,
+          kind: "component" as const,
+          slug: error.entity.slug,
+          file: error.file,
+          sha256: error.sha256,
+          fields: jsonFields(fields),
+          advisory: {
+            code: error.code,
+            field: error.field,
+            value: error.entity.component_type,
+            allowedValues: [...ASSURANCE_STUDIO_COMPONENT_TYPES],
+            message: error.message,
+          },
+        };
+      }
       if (stored) {
         return {
           projectId: input.projectId,
@@ -594,12 +608,7 @@ export function registerCanvasEditingBackend(
           fields: jsonFields(architectureEntityPayload(stored.entity)),
         };
       }
-      const acceptedRow = acceptedCanvasRow(
-        db,
-        input,
-        input.kind,
-        input.slug,
-      );
+      const acceptedRow = acceptedCanvasRow(db, input, input.kind, input.slug);
       if (!acceptedRow) {
         return {
           projectId: input.projectId,
@@ -637,7 +646,8 @@ export function registerCanvasEditingBackend(
         const deletedSnapshot = restorableDeletes.get(identity);
         if (
           deletedSnapshot &&
-          serializeCanvasEntity(deletedSnapshot) === serializeCanvasEntity(entity)
+          serializeCanvasEntity(deletedSnapshot) ===
+            serializeCanvasEntity(entity)
         ) {
           restoration = { kind: entity.kind, slug: entity.slug };
         }
@@ -667,9 +677,7 @@ export function registerCanvasEditingBackend(
       const result = await applyCanvasCommand(
         deps,
         command,
-        input.operation === "create"
-          ? undefined
-          : input.expectedContentSha256,
+        input.operation === "create" ? undefined : input.expectedContentSha256,
       );
       if (result.operation !== "delete" && !result.afterSha256) {
         throw new Error(
@@ -677,7 +685,9 @@ export function registerCanvasEditingBackend(
         );
       }
       if (result.operation === "delete" && result.afterSha256 !== null) {
-        throw new Error("Canvas deletion completed with an invalid content hash.");
+        throw new Error(
+          "Canvas deletion completed with an invalid content hash.",
+        );
       }
       const resultIdentity = identity;
       usedSlugs.add(identity);

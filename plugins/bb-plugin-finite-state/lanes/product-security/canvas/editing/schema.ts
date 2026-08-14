@@ -70,6 +70,15 @@ export const assuranceStudioComponentTypeSchema = z.enum(
 );
 
 export const componentTypeSchema = assuranceStudioComponentTypeSchema;
+export const RETIRED_AUTHORED_COMPONENT_TYPES = [
+  "ecu",
+  "hsm",
+  "tee",
+  "medical_device",
+] as const;
+export const retiredAuthoredComponentTypeSchema = z.enum(
+  RETIRED_AUTHORED_COMPONENT_TYPES,
+);
 export const strideCategorySchema = z.enum([
   "spoofing",
   "tampering",
@@ -107,6 +116,12 @@ export const componentEntitySchema = z
     technologies: stringListSchema,
     is_entry_point: z.boolean().default(false),
     stores_data: z.boolean().default(false),
+  })
+  .strict();
+
+export const retiredAuthoredComponentEntitySchema = componentEntitySchema
+  .extend({
+    component_type: retiredAuthoredComponentTypeSchema,
   })
   .strict();
 
@@ -194,6 +209,9 @@ export const architectureYamlEntitySchema = z.discriminatedUnion("kind", [
 ]);
 
 export type ComponentYamlEntity = z.output<typeof componentEntitySchema>;
+export type RetiredAuthoredComponentYamlEntity = z.output<
+  typeof retiredAuthoredComponentEntitySchema
+>;
 export type ZoneYamlEntity = z.output<typeof zoneEntitySchema>;
 export type AssetYamlEntity = z.output<typeof assetEntitySchema>;
 export type DataflowYamlEntity = z.output<typeof dataflowEntitySchema>;
@@ -320,6 +338,28 @@ export const canvasEditingLoadOutputSchema = z.discriminatedUnion("state", [
       file: z.string().trim().min(1).max(1_024),
       sha256: sha256Schema,
       fields: z.record(z.string(), canvasJsonValueSchema),
+    })
+    .strict(),
+  z
+    .object({
+      ...editingScopeFields,
+      state: z.literal("migration_required"),
+      kind: z.literal("component"),
+      slug: stableSlugSchema,
+      file: z.string().trim().min(1).max(1_024),
+      sha256: sha256Schema,
+      fields: z.record(z.string(), canvasJsonValueSchema),
+      advisory: z
+        .object({
+          code: z.literal("RETIRED_COMPONENT_TYPE"),
+          field: z.literal("component_type"),
+          value: retiredAuthoredComponentTypeSchema,
+          allowedValues: z
+            .array(componentTypeSchema)
+            .length(ASSURANCE_STUDIO_COMPONENT_TYPES.length),
+          message: z.string().trim().min(1).max(2_000),
+        })
+        .strict(),
     })
     .strict(),
 ]);

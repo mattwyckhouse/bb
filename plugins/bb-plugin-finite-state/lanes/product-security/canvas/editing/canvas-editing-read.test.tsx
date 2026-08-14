@@ -121,6 +121,85 @@ function seedAccepted(
 }
 
 describe("WP-35 read-classified editing RPCs", () => {
+  it("returns a typed migration advisory for a retired authored component type", async () => {
+    const current = component("legacy-controller", "hardware");
+    const content = serializeCanvasEntity(current).replace(
+      "component_type: hardware",
+      "component_type: ecu",
+    );
+    const file =
+      "/workspace/product-security/architecture/components/legacy-controller.yaml";
+    const host = createFakePluginHost({
+      pluginId: "finite-state-editing-retired-component-type",
+      sdk: {
+        projects: {
+          get: ({ projectId }) => ({
+            id: projectId,
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
+        files: {
+          read: ({ path }) => {
+            if (path !== file) {
+              throw Object.assign(new Error(`ENOENT: ${path}`), {
+                code: "ENOENT",
+              });
+            }
+            return {
+              content,
+              contentEncoding: "utf8" as const,
+              sha256: hash(content),
+            };
+          },
+        },
+      },
+    });
+    hosts.push(host);
+    const context = createPluginContext(host.bb);
+    registerCanvasEditingBackend(host.bb, context);
+
+    const loaded = canvasEditingLoadOutputSchema.parse(
+      await host.harness.callRpc("canvasEditingLoad", {
+        projectId: PROJECT,
+        projectVersionId: null,
+        kind: "component",
+        slug: "legacy-controller",
+      }),
+    );
+
+    expect(loaded).toMatchObject({
+      state: "migration_required",
+      sha256: hash(content),
+      fields: { component_type: "ecu" },
+      advisory: {
+        code: "RETIRED_COMPONENT_TYPE",
+        field: "component_type",
+        value: "ecu",
+      },
+    });
+    if (loaded.state !== "migration_required") {
+      throw new Error("expected a component-type migration advisory");
+    }
+    expect(loaded.advisory.allowedValues).toEqual([
+      "firmware",
+      "software",
+      "hardware",
+      "network",
+      "cloud_service",
+      "mobile_app",
+      "web_app",
+      "database",
+      "api",
+      "sensor",
+      "actuator",
+      "communication",
+      "other",
+    ]);
+    expect(() => parseArchitectureEntity("component", loaded.fields)).toThrow();
+  });
+
   it("loads accepted entities and computes impact without materializing YAML", async () => {
     const writes = vi.fn(() => {
       throw new Error("read-classified RPC attempted a file write");
