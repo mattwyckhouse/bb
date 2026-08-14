@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
   fromStorageProjectVersionId,
@@ -145,6 +144,27 @@ function findAcceptedBenchGeneration(
     .get(projectId, projectVersionId, BENCH_EVIDENCE_ENTITY_KIND);
 }
 
+function findAcceptedRequirementGeneration(
+  db: Database.Database,
+  projectId: string,
+  projectVersionId: string,
+): AcceptedGenerationRow | undefined {
+  return db
+    .prepare<[string, string], AcceptedGenerationRow>(
+      `SELECT s.accepted_generation_id AS generation_id, s.base_revision
+       FROM sync_state s
+       JOIN pull_generation g
+         ON g.project_id = s.project_id
+        AND g.project_version_id = s.project_version_id
+        AND g.generation_id = s.accepted_generation_id
+       WHERE s.project_id = ? AND s.project_version_id = ?
+         AND s.entity_kind = 'requirement'
+         AND s.accepted_generation_id IS NOT NULL
+         AND g.status = 'accepted'`,
+    )
+    .get(projectId, projectVersionId);
+}
+
 /**
  * Opens the local bench evidence generation for a requirement-pulled version.
  * Remote requirement source remains in its own accepted generation; locally
@@ -155,6 +175,7 @@ export function ensureAcceptedBenchGeneration(
   db: Database.Database,
   projectId: string,
   projectVersionId: string,
+  createGenerationId: () => string,
   now = new Date().toISOString(),
 ): AcceptedGenerationRow {
   const existing = findAcceptedBenchGeneration(db, projectId, projectVersionId);
@@ -168,32 +189,25 @@ export function ensureAcceptedBenchGeneration(
     );
     if (concurrent) return concurrent;
 
-    const requirement = db
-      .prepare<[string, string], { accepted_generation_id: string }>(
-        `SELECT s.accepted_generation_id
-           FROM sync_state s
-           JOIN pull_generation g
-             ON g.project_id = s.project_id
-            AND g.project_version_id = s.project_version_id
-            AND g.generation_id = s.accepted_generation_id
-            AND g.status = 'accepted'
-          WHERE s.project_id = ? AND s.project_version_id = ?
-            AND s.entity_kind = 'requirement'
-            AND s.accepted_generation_id IS NOT NULL`,
-      )
-      .get(projectId, projectVersionId);
+    const requirement = findAcceptedRequirementGeneration(
+      db,
+      projectId,
+      projectVersionId,
+    );
     if (!requirement) {
       throw new Error(
         "Bench evidence requires an accepted verificationRun generation; pull requirement through Sync first",
       );
     }
 
-    const generationId = `bench-evidence-${randomUUID()}`;
+    const generationId = `bench-evidence-${createGenerationId()}`;
     db.prepare(
       `INSERT INTO pull_generation
        (project_id, project_version_id, generation_id, status,
         requested_kinds_json, started_at, completed_at, accepted_at)
-       VALUES (?, ?, ?, 'accepted', '["verificationRun"]', ?, ?, ?)`,
+       VALUES (?, ?, ?, 'accepted',
+               '{"source":"local_bench_evidence","kinds":["verificationRun"]}',
+               ?, ?, ?)`,
     ).run(projectId, projectVersionId, generationId, now, now, now);
     db.prepare(
       `INSERT INTO sync_state
@@ -404,7 +418,27 @@ export function getBenchCacheState(
   now = new Date().toISOString(),
 ): BenchCacheState {
   const projectVersionId = toStorageProjectVersionId(pvId);
-  const accepted = getAcceptedBenchGeneration(db, projectId, projectVersionId);
+  const accepted = findAcceptedBenchGeneration(db, projectId, projectVersionId);
+  if (!accepted) {
+    const requirement = findAcceptedRequirementGeneration(
+      db,
+      projectId,
+      projectVersionId,
+    );
+    if (requirement) {
+      return {
+        state: "empty",
+        asOf: null,
+        message:
+          "No bench runs exist yet. Start the first run for this cached requirement version.",
+        acceptedGenerationId: null,
+        baseRevision: requirement.base_revision,
+      };
+    }
+    throw new Error(
+      "Bench evidence requires an accepted verificationRun generation",
+    );
+  }
   const row = db
     .prepare<[string, string, string], CacheRow>(
       `SELECT MAX(r.synced_at) AS synced_at
@@ -447,11 +481,19 @@ export function listBenchRuns(
     throw new Error("Bench run pageSize must be between 1 and 200");
   }
   const projectVersionId = toStorageProjectVersionId(query.pvId);
-  const accepted = getAcceptedBenchGeneration(
+  const accepted = findAcceptedBenchGeneration(
     db,
     query.projectId,
     projectVersionId,
   );
+  if (!accepted) {
+    return {
+      items: [],
+      total: 0,
+      next: null,
+      cache: getBenchCacheState(db, query.projectId, query.pvId, query.now),
+    };
+  }
   const cursor =
     query.continuation === null ? null : decodeCursor(query.continuation);
   const rows = cursor

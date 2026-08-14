@@ -447,6 +447,7 @@ export function registerBench(bb: BbPluginApi, ctx: PluginContext): void {
         )
         .all(input.projectId, PROJECT_LEVEL_VERSION_ID);
       const versions = rows.map((row) => ({
+        workspaceProjectId: input.projectId,
         platformProjectId: row.project_id,
         projectVersionId: row.project_version_id,
         asOf: row.as_of,

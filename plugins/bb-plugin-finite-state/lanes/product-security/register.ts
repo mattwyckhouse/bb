@@ -11,7 +11,7 @@ import {
 import type { PluginContext } from "../../lib/context.js";
 import type { RemoteServices } from "../../lib/remote/types.js";
 import { toStorageProjectVersionId } from "../../lib/store/index.js";
-import { registerAdapter, registeredAdapters } from "../sync/engine/adapter.js";
+import { registerExplicitPullAdapter } from "../sync/engine/adapter.js";
 import { registerCanvasEditingBackend } from "./canvas/editing/backend.js";
 import { registerCanvasLinksBackend } from "./canvas/links/backend.js";
 import { registerCanvasNodesBackend } from "./canvas/nodes/backend.js";
@@ -555,12 +555,10 @@ export function registerProductSecurity(
     // Isolated read-surface harnesses intentionally omit L1. Production
     // registration always has L1, while local RPCs remain independently usable.
   }
-  if (
-    remote &&
-    !registeredAdapters().some((adapter) => adapter.kind === "requirement")
-  ) {
-    registerAdapter(createRequirementAdapter(remote.assuranceStudio));
-  }
+  if (remote)
+    registerExplicitPullAdapter(
+      createRequirementAdapter(remote.assuranceStudio),
+    );
 
   bb.rpc.register(productSecurityRpcContract, {
     taraList(input) {
