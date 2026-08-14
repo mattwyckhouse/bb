@@ -5,8 +5,14 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   installTestPluginRuntime,
   loadPluginApp,
-  renderSlot,
+  renderSlot as renderTestSlot,
 } from "@bb/plugin-sdk/testing/app";
+
+const renderSlot: typeof renderTestSlot = (registration, props, options) =>
+  renderTestSlot(registration, props, {
+    context: { projectId: "workspace-project", threadId: null },
+    ...options,
+  });
 
 const PROJECT = "platform-project";
 const VERSION = "version-7";
@@ -284,7 +290,7 @@ describe("Sync review panel", () => {
     "scope/platform-project/%40project/surface/triage",
     "scope/platform-project/%40project/surface/vexDecision",
   ])(
-    "renders truthful project-version guidance without RPCs for %s",
+    "renders truthful project-version guidance without status or plan RPCs for %s",
     async (subPath) => {
       const slot = renderSlot(await syncPanel(), { subPath }, { rpc: {} });
 
@@ -302,9 +308,80 @@ describe("Sync review panel", () => {
       expect(
         slot.queryByRole("button", { name: "Retry with fresh plan" }),
       ).toBeNull();
-      expect(slot.inspection.rpcCalls).toEqual([]);
+      expect(slot.inspection.rpcCalls).toEqual(
+        subPath === "scope/platform-project/%40project"
+          ? [
+              {
+                method: "syncAsProjectCandidates",
+                input: {
+                  workspaceProjectId: "workspace-project",
+                  projectId: "platform-project",
+                  projectVersionId: null,
+                },
+              },
+            ]
+          : [],
+      );
     },
   );
+
+  it("requires an explicit UI choice for an ambiguous AS project set", async () => {
+    const candidates = ["as-one", "as-two", "as-three", "as-four"].map(
+      (id) => ({
+        linkId: `link-${id}`,
+        assuranceStudioProjectId: id,
+        assuranceStudioProjectName: `Project ${id}`,
+        platformProjectId: PROJECT,
+        platformProjectName: "Platform Project",
+        platformProjectVersionId: VERSION,
+        platformProjectVersionName: "2.4",
+        isPrimary: true,
+        syncStatus: "synced",
+        lastSyncedAt: "2026-08-14T00:00:00.000Z",
+        versionStrategy: "latest",
+      }),
+    );
+    const slot = renderSlot(
+      await syncPanel(),
+      { subPath: `${SCOPE_PATH}/surface/requirement` },
+      {
+        rpc: {
+          syncAsProjectCandidates: () => ({
+            platformProjectId: PROJECT,
+            candidateState: "ambiguous" as const,
+            selectedAssuranceStudioProjectId: null,
+            items: candidates,
+          }),
+          syncAsProjectSelect: (input) => {
+            const selected = candidates.find(
+              (candidate) =>
+                candidate.assuranceStudioProjectId ===
+                inputField(input, "assuranceStudioProjectId"),
+            );
+            if (!selected) throw new Error("candidate missing");
+            return selected;
+          },
+        },
+      },
+    );
+
+    await slot.findByText("4 linked projects require an explicit choice.");
+    const selector = slot.getByLabelText("Assurance Studio project");
+    expect((selector as HTMLSelectElement).value).toBe("");
+    fireEvent.change(selector, { target: { value: "as-three" } });
+    fireEvent.click(slot.getByRole("button", { name: "Save selection" }));
+    await waitFor(() =>
+      expect(slot.inspection.rpcCalls).toContainEqual({
+        method: "syncAsProjectSelect",
+        input: {
+          workspaceProjectId: "workspace-project",
+          projectId: PROJECT,
+          projectVersionId: null,
+          assuranceStudioProjectId: "as-three",
+        },
+      }),
+    );
+  });
 
   it.each([
     ["product-security", "Product Security"],
@@ -312,7 +389,7 @@ describe("Sync review panel", () => {
     ["threat", "threat"],
     ["hbomPart", "hbomPart"],
   ])(
-    "renders adapter-pending guidance without RPCs for %s",
+    "renders adapter-pending guidance without status or plan RPCs for %s",
     async (surface, label) => {
       const slot = renderSlot(
         await syncPanel(),
@@ -331,7 +408,20 @@ describe("Sync review panel", () => {
       expect(
         slot.queryByRole("button", { name: "Retry with fresh plan" }),
       ).toBeNull();
-      expect(slot.inspection.rpcCalls).toEqual([]);
+      expect(slot.inspection.rpcCalls).toEqual(
+        surface === "hbomPart"
+          ? []
+          : [
+              {
+                method: "syncAsProjectCandidates",
+                input: {
+                  workspaceProjectId: "workspace-project",
+                  projectId: "platform-project",
+                  projectVersionId: null,
+                },
+              },
+            ],
+      );
 
       fireEvent.click(
         slot.getByRole("button", { name: "Review available VEX decisions" }),

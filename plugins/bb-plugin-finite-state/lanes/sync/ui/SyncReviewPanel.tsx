@@ -7,6 +7,8 @@ import { Input } from "@bb/shared-ui/input";
 import { Skeleton } from "@bb/shared-ui/skeleton";
 import {
   useBbNavigate,
+  useBbContext,
+  experimental_useSidebarThreads,
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
@@ -20,6 +22,7 @@ import type {
 } from "../../../shared/contract.js";
 import { REMOTE_CONNECTIONS_CHANGED_CHANNEL } from "../../remote/connection-state.js";
 import { BlastRadiusFooter } from "./BlastRadiusFooter.js";
+import { AssuranceStudioProjectSelector } from "./AssuranceStudioProjectSelector.js";
 import type { ConflictChoice } from "./ConflictResolution.js";
 import {
   isSyncRouteIdentifier,
@@ -69,6 +72,9 @@ const ASSURANCE_STUDIO_KINDS: ReadonlySet<string> = new Set(
 type SyncStatus = z.output<(typeof rpcContract)["syncStatus"]["output"]>;
 type Connections = z.output<
   (typeof rpcContract)["connectionsStatus"]["output"]
+>;
+type AssuranceStudioProjectCandidates = z.output<
+  (typeof rpcContract)["syncAsProjectCandidates"]["output"]
 >;
 
 export interface SyncScope {
@@ -259,6 +265,14 @@ function routeSurfaceLabel(surface: SyncSurfaceFilter): string {
   if (surface === "product-security") return "Product Security";
   if (surface === "triage") return "Findings and VEX";
   return surface;
+}
+
+function surfaceUsesAssuranceStudio(surface: SyncSurfaceFilter): boolean {
+  return (
+    surface === "all" ||
+    surface === "product-security" ||
+    ASSURANCE_STUDIO_KINDS.has(surface)
+  );
 }
 
 function buildReviewSubPath(
@@ -688,12 +702,19 @@ export function SyncReviewPanel({
 }: SyncReviewPanelProps): React.JSX.Element {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
+  const { projectId: routeWorkspaceProjectId } = useBbContext();
+  const sidebar = experimental_useSidebarThreads();
   const realtimeState = useRealtimeConnectionState();
   const parsedRoute = useMemo(() => parseSyncReviewSubPath(subPath), [subPath]);
   const route = parsedRoute.valid ? parsedRoute.route : null;
   const [selectedScope, setSelectedScope] = useState<SyncScope | null>(() =>
     readPersistedScope(),
   );
+  const [selectedWorkspaceProjectId, setSelectedWorkspaceProjectId] = useState<
+    string | null
+  >(null);
+  const workspaceProjectId =
+    routeWorkspaceProjectId ?? selectedWorkspaceProjectId;
   const activeScope = route?.scope ?? selectedScope;
   const surface = route?.surface ?? "all";
   const surfaceAvailable = isSyncReviewSurfaceAvailable(surface);
@@ -710,6 +731,11 @@ export function SyncReviewPanel({
     Readonly<Record<string, PlanRowResolutionState>>
   >({});
   const [progressAnnouncement, setProgressAnnouncement] = useState("");
+  const [asProjects, setAsProjects] =
+    useState<AssuranceStudioProjectCandidates | null>(null);
+  const [asProjectsLoading, setAsProjectsLoading] = useState(false);
+  const [asProjectsSaving, setAsProjectsSaving] = useState(false);
+  const [asProjectsError, setAsProjectsError] = useState<string | null>(null);
   const requestGeneration = useRef(0);
   const realtimeDebounce = useRef<number | null>(null);
   const connectedOnce = useRef(false);
@@ -720,11 +746,76 @@ export function SyncReviewPanel({
     persistScope(route.scope);
   }, [route?.scope]);
 
+  const loadAssuranceStudioProjects = useCallback(async () => {
+    if (
+      !activeScope ||
+      !workspaceProjectId ||
+      !surfaceUsesAssuranceStudio(surface)
+    ) {
+      setAsProjects(null);
+      return;
+    }
+    setAsProjectsLoading(true);
+    setAsProjectsError(null);
+    try {
+      setAsProjects(
+        await rpc.call("syncAsProjectCandidates", {
+          workspaceProjectId,
+          projectId: activeScope.projectId,
+          projectVersionId: null,
+        }),
+      );
+    } catch (error: unknown) {
+      setAsProjects(null);
+      setAsProjectsError(
+        error instanceof Error
+          ? error.message.slice(0, 400)
+          : "Assurance Studio project enumeration failed",
+      );
+    } finally {
+      setAsProjectsLoading(false);
+    }
+  }, [activeScope, rpc, surface, workspaceProjectId]);
+
+  useEffect(() => {
+    void loadAssuranceStudioProjects();
+  }, [loadAssuranceStudioProjects]);
+
+  const selectAssuranceStudioProject = useCallback(
+    async (assuranceStudioProjectId: string) => {
+      if (!activeScope || !workspaceProjectId) return;
+      setAsProjectsSaving(true);
+      setAsProjectsError(null);
+      try {
+        await rpc.call("syncAsProjectSelect", {
+          workspaceProjectId,
+          projectId: activeScope.projectId,
+          projectVersionId: null,
+          assuranceStudioProjectId,
+        });
+        await loadAssuranceStudioProjects();
+      } catch (error: unknown) {
+        setAsProjectsError(
+          error instanceof Error
+            ? error.message.slice(0, 400)
+            : "Assurance Studio project selection failed",
+        );
+      } finally {
+        setAsProjectsSaving(false);
+      }
+    },
+    [activeScope, loadAssuranceStudioProjects, rpc, workspaceProjectId],
+  );
+
   const loadPlan = useCallback(async (): Promise<SyncPlanPage> => {
     if (!activeScope) throw new Error("SYNC_SCOPE_REQUIRED");
+    if (!workspaceProjectId && surfaceUsesAssuranceStudio(surface)) {
+      throw new Error("WORKSPACE_PROJECT_REQUIRED");
+    }
     const baseInput = {
       projectId: activeScope.projectId,
       projectVersionId: activeScope.projectVersionId,
+      ...(workspaceProjectId ? { workspaceProjectId } : {}),
       pageSize: 200,
       ...(kinds ? { kinds } : {}),
     };
@@ -744,6 +835,7 @@ export function SyncReviewPanel({
       const next = await rpc.call("syncPlan", {
         projectId: activeScope.projectId,
         projectVersionId: activeScope.projectVersionId,
+        ...(workspaceProjectId ? { workspaceProjectId } : {}),
         pageSize: 200,
         continuation,
       });
@@ -759,12 +851,13 @@ export function SyncReviewPanel({
       next: null,
       total: first.total ?? items.length,
     };
-  }, [activeScope, kinds, rpc]);
+  }, [activeScope, kinds, rpc, surface, workspaceProjectId]);
 
   const refresh = useCallback(
     async (keepVisible = false) => {
       if (
         !activeScope ||
+        (!workspaceProjectId && surfaceUsesAssuranceStudio(surface)) ||
         activeScope.projectVersionId === null ||
         !surfaceAvailable ||
         !route
@@ -778,6 +871,7 @@ export function SyncReviewPanel({
       const statusInput = {
         projectId: activeScope.projectId,
         projectVersionId: activeScope.projectVersionId,
+        ...(workspaceProjectId ? { workspaceProjectId } : {}),
         ...(kinds ? { kinds } : {}),
       };
       const [connectionsResult, statusResult, planResult] =
@@ -836,20 +930,37 @@ export function SyncReviewPanel({
       });
       setConfirmationChecked(false);
     },
-    [activeScope, kinds, loadPlan, route, rpc, surfaceAvailable],
+    [
+      activeScope,
+      kinds,
+      loadPlan,
+      route,
+      rpc,
+      surface,
+      surfaceAvailable,
+      workspaceProjectId,
+    ],
   );
 
   useEffect(() => {
     if (
       !parsedRoute.valid ||
       !activeScope ||
+      (!workspaceProjectId && surfaceUsesAssuranceStudio(surface)) ||
       activeScope.projectVersionId === null ||
       !surfaceAvailable
     ) {
       return;
     }
     void refresh(false);
-  }, [activeScope, parsedRoute.valid, refresh, surfaceAvailable]);
+  }, [
+    activeScope,
+    parsedRoute.valid,
+    refresh,
+    surface,
+    surfaceAvailable,
+    workspaceProjectId,
+  ]);
 
   const scheduleAuthoritativeRefresh = useCallback(() => {
     if (realtimeDebounce.current !== null) {
@@ -1048,6 +1159,50 @@ export function SyncReviewPanel({
         scope={activeScope}
         surface={surface}
       />
+
+      {activeScope && surfaceUsesAssuranceStudio(surface) ? (
+        <>
+          <div className="flex items-center gap-2 border-b border-border bg-card px-4 py-2">
+            <label
+              className="text-xs font-medium text-muted-foreground"
+              htmlFor="sync-workspace-project"
+            >
+              bb project
+            </label>
+            <select
+              aria-label="bb project for Assurance Studio mapping"
+              className="h-9 max-w-72 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+              disabled={
+                Boolean(routeWorkspaceProjectId) || sidebar.status === "loading"
+              }
+              id="sync-workspace-project"
+              onChange={(event) =>
+                setSelectedWorkspaceProjectId(event.target.value || null)
+              }
+              value={workspaceProjectId ?? ""}
+            >
+              <option value="">Select a bb project</option>
+              {sidebar.projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          {workspaceProjectId ? (
+            <AssuranceStudioProjectSelector
+              candidates={asProjects?.items ?? []}
+              error={asProjectsError}
+              key={`${activeScope?.projectId ?? "no-scope"}:${asProjects?.selectedAssuranceStudioProjectId ?? "unselected"}`}
+              loading={asProjectsLoading}
+              onRetry={() => void loadAssuranceStudioProjects()}
+              onSelect={selectAssuranceStudioProject}
+              saving={asProjectsSaving}
+              selectedId={asProjects?.selectedAssuranceStudioProjectId ?? null}
+            />
+          ) : null}
+        </>
+      ) : null}
 
       {!activeScope ? (
         <div className="min-h-0 flex-1 overflow-auto">
