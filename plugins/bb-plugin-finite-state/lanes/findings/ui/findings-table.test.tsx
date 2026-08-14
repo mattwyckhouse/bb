@@ -96,7 +96,7 @@ async function renderFindings(
   list: (input: unknown) => unknown | Promise<unknown>,
   options: {
     subPath?: string;
-    versions?: unknown;
+    versions?: unknown | ((input: unknown) => unknown | Promise<unknown>);
     saved?: unknown;
     projectId?: string | null;
   } = {},
@@ -120,19 +120,21 @@ async function renderFindings(
       },
       rpc: {
         connectionsStatus: connectedRemoteStatus,
-        cachedProjectVersions: () =>
-          options.versions ?? {
-            versions: [
-              {
-                platformProjectId: "platform-project-1",
-                projectVersionId: "version-1",
-                asOf: "2026-08-13T00:00:00.000Z",
-                state: "fresh",
-              },
-            ],
-            selectedPlatformProjectId: "platform-project-1",
-            selectedProjectVersionId: "version-1",
-          },
+        cachedProjectVersions: (input) =>
+          typeof options.versions === "function"
+            ? options.versions(input)
+            : (options.versions ?? {
+                versions: [
+                  {
+                    platformProjectId: "platform-project-1",
+                    projectVersionId: "version-1",
+                    asOf: "2026-08-13T00:00:00.000Z",
+                    state: "fresh",
+                  },
+                ],
+                selectedPlatformProjectId: "platform-project-1",
+                selectedProjectVersionId: "version-1",
+              }),
         findingsSavedViewsGet: () =>
           options.saved ?? {
             views: [],
@@ -156,6 +158,150 @@ async function renderFindings(
 }
 
 describe("findings table panel", () => {
+  it("refreshes the version catalog without replacing a user-pinned scope", async () => {
+    let versionReads = 0;
+    const initialVersions = [
+      {
+        platformProjectId: "platform-project-1",
+        projectVersionId: "version-2",
+        asOf: "2026-08-13T02:00:00.000Z",
+        state: "fresh" as const,
+      },
+      {
+        platformProjectId: "platform-project-1",
+        projectVersionId: "version-1",
+        asOf: "2026-08-13T01:00:00.000Z",
+        state: "fresh" as const,
+      },
+    ];
+    const { slot } = await renderFindings(
+      () => ({
+        items: [finding(1)],
+        total: 1,
+        next: null,
+        cache: freshCache,
+      }),
+      {
+        versions: () => {
+          versionReads += 1;
+          const versions =
+            versionReads === 1
+              ? initialVersions
+              : [
+                  {
+                    platformProjectId: "platform-project-1",
+                    projectVersionId: "version-3",
+                    asOf: "2026-08-13T03:00:00.000Z",
+                    state: "fresh" as const,
+                  },
+                  ...initialVersions,
+                ];
+          return {
+            versions,
+            selectedPlatformProjectId: "platform-project-1",
+            selectedProjectVersionId:
+              versionReads === 1 ? "version-2" : "version-3",
+          };
+        },
+      },
+    );
+    const picker = await slot.findByLabelText("Findings project version");
+    await slot.findByText("CVE-2026-0001");
+    fireEvent.change(picker, {
+      target: { value: "platform-project-1/version-1" },
+    });
+    expect((picker as HTMLSelectElement).value).toBe(
+      "platform-project-1/version-1",
+    );
+
+    await slot.behavior.emitRealtime("findings:changed", {
+      projectId: "platform-project-1",
+      projectVersionId: "version-3",
+    });
+
+    await waitFor(() => expect(versionReads).toBe(2));
+    expect((picker as HTMLSelectElement).value).toBe(
+      "platform-project-1/version-1",
+    );
+    expect(
+      slot.getByRole("option", {
+        name: "platform-project-1 / version-3",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("clears row selection whenever the selected version changes", async () => {
+    let versionReads = 0;
+    let removeVersionTwo = false;
+    const { slot } = await renderFindings(
+      () => ({
+        items: [finding(1)],
+        total: 1,
+        next: null,
+        cache: freshCache,
+      }),
+      {
+        versions: () => {
+          versionReads += 1;
+          const versions = [
+            {
+              platformProjectId: "platform-project-1",
+              projectVersionId: "version-1",
+              asOf: "2026-08-13T01:00:00.000Z",
+              state: "fresh" as const,
+            },
+            ...(!removeVersionTwo
+              ? [
+                  {
+                    platformProjectId: "platform-project-1",
+                    projectVersionId: "version-2",
+                    asOf: "2026-08-13T00:00:00.000Z",
+                    state: "fresh" as const,
+                  },
+                ]
+              : []),
+          ];
+          return {
+            versions,
+            selectedPlatformProjectId: "platform-project-1",
+            selectedProjectVersionId: "version-1",
+          };
+        },
+      },
+    );
+    const picker = await slot.findByLabelText("Findings project version");
+    await slot.findByText("CVE-2026-0001");
+    fireEvent.click(slot.getByRole("button", { name: "Select page" }));
+    expect(slot.getByLabelText("1 findings selected")).toBeTruthy();
+
+    fireEvent.change(picker, {
+      target: { value: "platform-project-1/version-2" },
+    });
+    await waitFor(() =>
+      expect(slot.queryByLabelText("1 findings selected")).toBeNull(),
+    );
+    fireEvent.click(slot.getByRole("button", { name: "Select page" }));
+    expect(slot.getByLabelText("1 findings selected")).toBeTruthy();
+
+    removeVersionTwo = true;
+    await slot.behavior.emitRealtime("findings:changed", {
+      projectId: "platform-project-1",
+      projectVersionId: "version-1",
+    });
+    await waitFor(() => expect(versionReads).toBe(2));
+    await waitFor(() =>
+      expect((picker as HTMLSelectElement).value).toBe(
+        "platform-project-1/version-1",
+      ),
+    );
+    expect(slot.queryByLabelText("1 findings selected")).toBeNull();
+    expect(
+      slot
+        .getByRole("button", { name: "Clear selection" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
   it("virtualizer bounds mounted rows for a 39,000-row result", async () => {
     const { slot } = await renderFindings(() => ({
       items: Array.from({ length: 100 }, (_, index) => finding(index)),

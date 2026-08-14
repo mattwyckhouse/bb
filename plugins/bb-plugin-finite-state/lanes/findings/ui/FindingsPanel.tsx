@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   experimental_useSidebarThreads,
   type PluginNavPanelProps,
@@ -37,6 +37,11 @@ import { FindingsTriage, FindingsTriageStub } from "./triage/index.js";
 import { useFindings } from "./useFindings.js";
 import { useSavedViews } from "./useSavedViews.js";
 
+interface FindingScope {
+  platformProjectId: string;
+  projectVersionId: string;
+}
+
 export function FindingsPanel({
   subPath,
 }: PluginNavPanelProps): React.JSX.Element {
@@ -64,6 +69,7 @@ export function FindingsPanel({
     null,
   );
   const [projectVersionId, setProjectVersionId] = useState<string | null>(null);
+  const selectedVersionRef = useRef<FindingScope | null>(null);
   const [versionLoading, setVersionLoading] = useState(Boolean(projectId));
   const [versionRequest, setVersionRequest] = useState(0);
   const saved = useSavedViews(projectId);
@@ -98,32 +104,56 @@ export function FindingsPanel({
     selection: { mode: "explicit", keys: new Set() },
     cursorKey: null,
   });
+  const selectVersion = useCallback((next: FindingScope | null) => {
+    const current = selectedVersionRef.current;
+    if (
+      current?.platformProjectId === next?.platformProjectId &&
+      current?.projectVersionId === next?.projectVersionId
+    ) {
+      return;
+    }
+    selectedVersionRef.current = next;
+    setPlatformProjectId(next?.platformProjectId ?? null);
+    setProjectVersionId(next?.projectVersionId ?? null);
+    setUi((currentUi) => ({
+      ...currentUi,
+      selection: { mode: "explicit", keys: new Set() },
+      cursorKey: null,
+    }));
+  }, []);
 
   useEffect(() => {
     if (!projectId) return;
     let active = true;
     void Promise.resolve()
       .then(() => {
-        if (active) setVersionLoading(true);
+        if (active && selectedVersionRef.current === null)
+          setVersionLoading(true);
         return rpc.call("cachedProjectVersions", { projectId });
       })
       .then((result) => {
         if (!active) return;
         setVersions(result.versions);
-        const selected =
+        const current = selectedVersionRef.current;
+        const preserved = current
+          ? result.versions.find(
+              (version) =>
+                version.platformProjectId === current.platformProjectId &&
+                version.projectVersionId === current.projectVersionId,
+            )
+          : undefined;
+        const fallback =
           result.versions.find(
             (version) =>
               version.platformProjectId === result.selectedPlatformProjectId &&
               version.projectVersionId === result.selectedProjectVersionId,
           ) ?? result.versions[0];
-        setPlatformProjectId(selected?.platformProjectId ?? null);
-        setProjectVersionId(selected?.projectVersionId ?? null);
+        selectVersion(preserved ?? fallback ?? null);
       })
       .catch(() => {
         if (!active) return;
         setVersions([]);
-        setPlatformProjectId(null);
-        setProjectVersionId(null);
+        selectVersion(null);
       })
       .finally(() => {
         if (active) setVersionLoading(false);
@@ -131,12 +161,12 @@ export function FindingsPanel({
     return () => {
       active = false;
     };
-  }, [projectId, rpc, versionRequest]);
+  }, [projectId, rpc, selectVersion, versionRequest]);
 
   useRealtime("findings:changed", (payload) => {
-    // The picker is a versionless latest-wins surface. Any accepted finding
-    // publication can introduce a newer cached scope, so do not gate its
-    // catalog invalidation on the currently selected version.
+    // Every accepted finding publication can introduce a cached scope, so the
+    // catalog invalidation is ungated. The picker itself is pinned: the fetch
+    // effect preserves its current scope while that scope remains available.
     setVersionRequest((value) => value + 1);
     if (
       typeof payload === "object" &&
@@ -248,8 +278,7 @@ export function FindingsPanel({
         onProject={(id) => {
           setSelectedProjectId(id || null);
           setVersions([]);
-          setPlatformProjectId(null);
-          setProjectVersionId(null);
+          selectVersion(null);
           setVersionLoading(Boolean(id));
         }}
         onSelectPage={selectPage}
@@ -265,8 +294,14 @@ export function FindingsPanel({
           }))
         }
         onVersion={(platformId, versionId) => {
-          setPlatformProjectId(platformId || null);
-          setProjectVersionId(versionId || null);
+          selectVersion(
+            platformId && versionId
+              ? {
+                  platformProjectId: platformId,
+                  projectVersionId: versionId,
+                }
+              : null,
+          );
         }}
         platformProjectId={platformProjectId}
         projectId={projectId}

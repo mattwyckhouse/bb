@@ -68,7 +68,7 @@ afterEach(() => cleanup());
 
 describe("registered findings realtime boundary", () => {
   it(
-    "refreshes the versionless picker after the real sync publisher accepts the first finding generation",
+    "auto-selects and populates a cold panel after the real sync publisher accepts the first finding generation",
     { timeout: 60_000 },
     async () => {
       const host = createFakePluginHost({
@@ -195,6 +195,10 @@ describe("registered findings realtime boundary", () => {
         await waitFor(() => expect(slot.getByRole("grid")).toBeTruthy(), {
           timeout: 30_000,
         });
+        expect(
+          (slot.getByLabelText("Findings project version") as HTMLSelectElement)
+            .value,
+        ).toBe(`${platformProjectId}/${projectVersionId}`);
         expect(slot.queryByText("Choose a findings scope")).toBeNull();
       } finally {
         platform.close();
