@@ -472,12 +472,18 @@ decisions:
         projectVersionId: "b3df3633-ebd7-560e-a3b7-77953521b4e3",
         findingId: "0b529d2b-9da8-556e-81e4-f0f57a59956a",
         cve: "CVE-2016-4658",
+        componentGroup: "debian",
+        componentName: "libxml2",
+        componentVersion: "2.9.4+dfsg1-2.2+deb9u2",
       },
       {
         projectId: "5d78bed3-fa8e-59cf-b8a1-6046853ba785",
         projectVersionId: "89ad8a41-2185-5df0-968b-c250312c908b",
         findingId: "85c04807-db47-4853-b659-ece4214ef395",
         cve: "CVE-2026-34877",
+        componentGroup: null,
+        componentName: "Mbed TLS",
+        componentVersion: "3.0.0",
       },
     ]) {
       const result = await host.harness.behavior.runCli(
@@ -503,7 +509,10 @@ decisions:
       const persisted = context
         .db()
         .prepare(
-          `SELECT cve, stable_key AS stableKey
+          `SELECT cve, stable_key AS stableKey,
+                  component_group AS componentGroup,
+                  component_name AS componentName,
+                  component_version AS componentVersion
            FROM findings
           WHERE project_id = ? AND project_version_id = ? AND finding_id = ?`,
         )
@@ -511,8 +520,21 @@ decisions:
           captured.projectId,
           captured.projectVersionId,
           captured.findingId,
-        ) as { cve: string; stableKey: string } | undefined;
-      expect(persisted?.cve).toBe(captured.cve);
+        ) as
+        | {
+            cve: string;
+            stableKey: string;
+            componentGroup: string | null;
+            componentName: string;
+            componentVersion: string | null;
+          }
+        | undefined;
+      expect(persisted).toMatchObject({
+        cve: captured.cve,
+        componentGroup: captured.componentGroup,
+        componentName: captured.componentName,
+        componentVersion: captured.componentVersion,
+      });
       expect(parseFindingStableKey(persisted?.stableKey ?? "").cve).toBe(
         captured.cve,
       );

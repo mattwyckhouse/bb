@@ -71,17 +71,6 @@ function joinedComponent(
   return componentId === null ? undefined : identities.get(componentId);
 }
 
-/** Mirrors the pre-FS-174 cache read path exactly for declared-key migration. */
-export function legacyCacheFindingIdentity(
-  row: Readonly<Record<string, Json>>,
-  identities: ReadonlyMap<string, ComponentIdentity>,
-): FindingIdentityInput | null {
-  const componentIdentity = cacheComponentIdentity(row, identities);
-  const cve = wireString(row, ["cve", "findingIdentifier", "vulnerabilityId"]);
-  if (cve === null || componentIdentity === null) return null;
-  return { cve, ...componentIdentity };
-}
-
 function cacheComponentIdentity(
   row: Readonly<Record<string, Json>>,
   identities: ReadonlyMap<string, ComponentIdentity>,

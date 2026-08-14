@@ -10,7 +10,6 @@ import {
 import { basename, join, relative, resolve, sep } from "node:path";
 
 import type { Json, PlatformClient } from "../../../lib/remote/types.js";
-import { ENTITIES } from "../../../lib/sync/registry.js";
 import { stripVexProvenance } from "../../findings/bulk/readback.js";
 import {
   canonicalFindingStableKey,
@@ -20,12 +19,7 @@ import {
   type CanonicalFindingIdentity,
   type FindingIdentityInput,
 } from "../../findings/stable-key/canonical.js";
-import {
-  currentFindingIdentity,
-  legacyCacheFindingIdentity,
-  loadComponentIdentities,
-  type ComponentIdentity,
-} from "../../findings/stable-key/wire-identity.js";
+import { currentFindingIdentity } from "../../findings/stable-key/wire-identity.js";
 import { createSerializer } from "../serialize/serializer.js";
 import { SerializeError } from "../serialize/yaml.js";
 import type {
@@ -151,9 +145,8 @@ function legacyVexIdentity(
 
 function findingIdentity(
   row: Readonly<Record<string, Json>>,
-  identities: ReadonlyMap<string, ComponentIdentity>,
 ): CanonicalFindingIdentity {
-  const identity = currentFindingIdentity(row, identities);
+  const identity = currentFindingIdentity(row, new Map());
   if (identity !== null) return canonicalizeFindingIdentity(identity);
   const component = nestedComponent(row);
   const cve = selectFindingCve({
@@ -188,7 +181,7 @@ function findingIdentity(
 export function projectVexDecisionKey(
   row: Readonly<Record<string, Json>>,
 ): string {
-  return canonicalFindingStableKey(findingIdentity(row, new Map()));
+  return canonicalFindingStableKey(findingIdentity(row));
 }
 
 /** Projects one normalized Platform finding into the frozen VEX overlay shape. */
@@ -317,6 +310,22 @@ function componentIdentity(
   };
 }
 
+function authoredVexKey(
+  cve: string,
+  identity: ReturnType<typeof componentIdentity>,
+  file: string,
+): string {
+  try {
+    return canonicalFindingStableKey(
+      canonicalizeFindingIdentity({ cve, ...identity }),
+    );
+  } catch (error: unknown) {
+    throw new SerializeError(file, 1, "triage component identity is invalid", {
+      cause: error,
+    });
+  }
+}
+
 function decisionPayload(
   raw: Record<string, unknown>,
   file: string,
@@ -438,10 +447,7 @@ export async function readVexWorking(
       const fileRows: WorkingEntity[] = [];
       const fileKeys = new Set<string>();
       for (const decision of decisions) {
-        const key = ENTITIES.vexDecision.key({
-          cve: decision.cve,
-          ...decision.identity,
-        });
+        const key = authoredVexKey(decision.cve, decision.identity, file);
         const prior = keys.get(key);
         if (prior !== undefined || fileKeys.has(key)) {
           throw new SerializeError(
@@ -514,7 +520,9 @@ function writeCanonicalComponent(
   target["purl"] = identity.purl;
   target["name"] = identity.name;
   target["group"] = identity.group;
-  target["version"] = identity.version;
+  // Authored values must reproduce the server key on the next read. The
+  // decoded version is presentation-only; keyVersion retains wire identity.
+  target["version"] = identity.keyVersion;
 }
 
 /** Applies the FS-173 declared old-to-new map while retaining decision tuples and provenance. */
@@ -564,7 +572,7 @@ export async function migrateVexWorkingKeys(
           (targetComponent.purl !== migration.identity.purl ||
             targetComponent.name !== migration.identity.name ||
             targetComponent.group !== migration.identity.group ||
-            targetComponent.version !== migration.identity.version)
+            targetComponent.keyVersion !== migration.identity.keyVersion)
         ) {
           throw new SerializeError(
             file,
@@ -648,7 +656,7 @@ export async function fastForwardVexWorking(
       const identity = componentIdentity(document["component"], file);
       for (const [cve, decision] of Object.entries(document["decisions"])) {
         if (!isRecord(decision)) continue;
-        const key = ENTITIES.vexDecision.key({ cve, ...identity });
+        const key = authoredVexKey(cve, identity, file);
         const payload = base.get(key);
         if (payload === undefined) continue;
         decision["sync"] = {
@@ -659,10 +667,7 @@ export async function fastForwardVexWorking(
       }
     } else if (typeof document["cve"] === "string") {
       const identity = componentIdentity(document, file);
-      const key = ENTITIES.vexDecision.key({
-        cve: document["cve"],
-        ...identity,
-      });
+      const key = authoredVexKey(document["cve"], identity, file);
       const payload = base.get(key);
       if (payload !== undefined) {
         document["sync"] = {
@@ -678,7 +683,7 @@ export async function fastForwardVexWorking(
 
 /** Creates the VEX adapter while closing over only its owning Platform client. */
 export function createVexDecisionAdapter(
-  client: Pick<PlatformClient, "getFindings" | "listComponents">,
+  client: Pick<PlatformClient, "getFindings">,
 ): EntityAdapter {
   const migrationsByScope = new Map<string, Map<string, VexKeyMigration>>();
   return {
@@ -693,7 +698,6 @@ export function createVexDecisionAdapter(
       const scopeKey = `${scope.projectId}\0${scope.projectVersionId}`;
       const migrations = new Map<string, VexKeyMigration>();
       migrationsByScope.set(scopeKey, migrations);
-      const identities = await loadComponentIdentities(client, PAGE_SIZE);
       const pages = client.getFindings({
         projectVersionId: scope.projectVersionId,
         page: { pageSize: PAGE_SIZE },
@@ -710,25 +714,15 @@ export function createVexDecisionAdapter(
             // Migration is best-effort for undecided rows: they are not VEX
             // entities and therefore must never make this pull key-dependent.
             try {
-              const canonical = findingIdentity(row, new Map());
+              const canonical = findingIdentity(row);
               rememberMigration(migrations, legacyVexIdentity(row), canonical);
-              rememberMigration(
-                migrations,
-                legacyCacheFindingIdentity(row, identities),
-                canonical,
-              );
             } catch {
               // Deliberately ignored for a row that cannot produce an entity.
             }
             return [];
           }
-          const canonical = findingIdentity(row, new Map());
+          const canonical = findingIdentity(row);
           rememberMigration(migrations, legacyVexIdentity(row), canonical);
-          rememberMigration(
-            migrations,
-            legacyCacheFindingIdentity(row, identities),
-            canonical,
-          );
           return [projected];
         });
       }

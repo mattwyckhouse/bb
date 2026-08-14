@@ -932,14 +932,20 @@ export async function pull(
       if (!isRecord(staged) || typeof staged["staged_rows"] !== "number") {
         throw new Error(`Could not count staged ${cache.kind} rows`);
       }
-      if (cacheReport.baseRows !== staged["staged_rows"]) {
+      if (
+        cacheReport !== undefined &&
+        cacheReport.baseRows !== staged["staged_rows"]
+      ) {
         throw new Error(
           `Cache puller reported an invalid ${cache.kind} publication count`,
         );
       }
       // `fetched` is work performed now; `baseRows` is the complete generation
       // published now, including rows staged by a prior failed invocation.
-      reportKinds[cache.kind] = cacheReport;
+      reportKinds[cache.kind] = cacheReport ?? {
+        fetched: 0,
+        baseRows: 0,
+      };
       deps.publish?.("fs-sync-pull", {
         scope,
         generationId,

@@ -129,12 +129,15 @@ export type KeyResolver = (
 /**
  * Refreshes one CACHED surface into tables owned by the registering lane.
  * `generationId` binds those rows to the same atomic pull publication.
+ * Pullers that can distinguish current fetch work from reused staging return
+ * explicit counts. Legacy pullers may omit them, in which case the engine
+ * reports zero rather than inferring network work from staged-row counts.
  */
 export type CachePuller = (
   scope: SyncScope,
   generationId: string,
   onProgress: (progress: AdapterProgress) => void,
-) => Promise<Readonly<{ fetched: number; baseRows: number }>>;
+) => Promise<void | Readonly<{ fetched: number; baseRows: number }>>;
 
 /** Thrown when two lanes attempt to register an adapter for the same kind. */
 export class DuplicateAdapterError extends Error {

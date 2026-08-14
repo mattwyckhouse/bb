@@ -759,11 +759,13 @@ function buildCorpus(seed: string): {
       refs: ["platform/vex-bulk-partial.json"],
     },
     "real-distro-finding-identity": {
-      description: "Captured Platform response preserves a namespaced package name and percent-encoded Debian version.",
+      description:
+        "Captured Platform response preserves a namespaced package name and percent-encoded Debian version.",
       refs: ["platform/fs174-i491nax-distro-specimen.json"],
     },
     "real-cve-uuid-field-mapping": {
-      description: "Captured Platform response carries the CVE in findingId and an opaque UUID in vulnerabilityId.",
+      description:
+        "Captured Platform response carries the CVE in findingId and an opaque UUID in vulnerabilityId.",
       refs: ["platform/fs174-cve-uuid-mapping-specimen.json"],
     },
     "non-ascii-names": {

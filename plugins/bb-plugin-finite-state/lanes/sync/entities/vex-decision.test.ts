@@ -8,6 +8,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createPluginContext } from "../../../lib/context.js";
 import type { Json } from "../../../lib/remote/types.js";
 import { ENTITIES } from "../../../lib/sync/registry.js";
+import {
+  canonicalFindingStableKey,
+  canonicalizeFindingIdentity,
+} from "../../findings/stable-key/canonical.js";
 import { pull } from "../engine/pull.js";
 import { status } from "../engine/status.js";
 import { computePlan } from "../plan/index.js";
@@ -17,6 +21,7 @@ import { SerializeError } from "../serialize/yaml.js";
 import {
   createVexDecisionAdapter,
   fastForwardVexWorking,
+  migrateVexWorkingKeys,
   projectVexDecision,
   readVexWorking,
   VexWorkingReadError,
@@ -127,6 +132,39 @@ decisions:
         response: null,
         reason: null,
       },
+    ]);
+  });
+
+  it("canonicalizes an authored wire namespace instead of breaking the working read", async () => {
+    const root = await worktree();
+    await writeFile(
+      join(root, ".fs", "triage", "distro.yaml"),
+      `schema: fs-triage/v1
+component:
+  purl: null
+  name: debian/libxml2
+  group: null
+  version: "1.0.0"
+decisions:
+  CVE-2026-10002:
+    status: IN_TRIAGE
+    justification: null
+    response: null
+    reason: null
+`,
+      "utf8",
+    );
+
+    await expect(readVexWorking(root)).resolves.toEqual([
+      expect.objectContaining({
+        key: ENTITIES.vexDecision.key({
+          cve: "CVE-2026-10002",
+          purl: null,
+          name: "libxml2",
+          group: "debian",
+          version: "1.0.0",
+        }),
+      }),
     ]);
   });
 
@@ -360,7 +398,68 @@ decisions:
     });
   });
 
-  it("migrates a UUID-keyed triage row through pull and keeps the new key stable", async () => {
+  it("persists raw encoded key versions across migration and working read-back", async () => {
+    const root = await worktree();
+    const projectId = "project-encoded-version";
+    const directory = join(root, ".fs", "triage", projectId);
+    await mkdir(directory, { recursive: true });
+    const file = join(directory, "libxml2.yaml");
+    const rawVersion = "2.9.4%2Bdfsg1-2.2%2Bdeb9u2";
+    const legacyCve = "legacy-vulnerability-id";
+    await writeFile(
+      file,
+      `schema: fs-triage/v1
+project: ${projectId}
+component:
+  purl: null
+  name: libxml2
+  group: debian
+  version: ${rawVersion}
+decisions:
+  ${legacyCve}:
+    status: NOT_AFFECTED
+    justification: CODE_NOT_PRESENT
+    response: null
+    reason: reviewed evidence
+`,
+      "utf8",
+    );
+    const canonical = canonicalizeFindingIdentity({
+      cve: "CVE-2016-4658",
+      purl: null,
+      name: "libxml2",
+      group: "debian",
+      version: rawVersion,
+    });
+    const legacyKey = ENTITIES.vexDecision.key({
+      cve: legacyCve,
+      purl: null,
+      name: "libxml2",
+      group: "debian",
+      version: rawVersion,
+    });
+
+    await expect(
+      migrateVexWorkingKeys(
+        root,
+        { projectId, projectVersionId: "version-encoded" },
+        new Map([
+          [
+            legacyKey,
+            { key: canonicalFindingStableKey(canonical), identity: canonical },
+          ],
+        ]),
+      ),
+    ).resolves.toBe(1);
+    expect(await readFile(file, "utf8")).toContain(`version: ${rawVersion}`);
+    await expect(
+      readVexWorking(root, { projectId, projectVersionId: "version-encoded" }),
+    ).resolves.toEqual([
+      expect.objectContaining({ key: canonicalFindingStableKey(canonical) }),
+    ]);
+  });
+
+  it("migrates a VEX-space legacy key through pull and keeps the new key stable", async () => {
     const specimen = JSON.parse(
       await readFile(
         resolve(
@@ -388,7 +487,7 @@ component:
   purl: null
   name: Mbed TLS
   group: null
-  version: 3.0.0
+  version: null
 decisions:
   cbdc8dc1-66ad-5264-b81b-67b2eaf1257e:
     status: NOT_AFFECTED
@@ -403,36 +502,19 @@ decisions:
       findingId: "GHSA-peer",
       vulnerabilityId: "peer-uuid",
     };
-    const indexedSpecimen: Record<string, Json> = {
+    const migrationRow: Record<string, Json> = {
       ...specimen,
+      cve: "cbdc8dc1-66ad-5264-b81b-67b2eaf1257e",
       component: null,
       componentId: "df542a94-2571-5f0d-aaf9-3892e9d70ef5",
+      componentFallbackIdentity: "Mbed TLS",
     };
-    const indexedComponent = specimen["component"];
-    if (
-      indexedComponent === null ||
-      Array.isArray(indexedComponent) ||
-      typeof indexedComponent !== "object"
-    ) {
-      throw new Error("captured specimen has no component object");
-    }
     const client = {
-      listComponents() {
-        return {
-          async *[Symbol.asyncIterator]() {
-            yield {
-              items: [indexedComponent],
-              total: 1,
-              next: null,
-            };
-          },
-        };
-      },
       getFindings() {
         return {
           async *[Symbol.asyncIterator]() {
             yield {
-              items: [undecidedPeer, indexedSpecimen],
+              items: [undecidedPeer, migrationRow],
               total: 2,
               next: null,
             };
