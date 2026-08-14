@@ -10,6 +10,8 @@ import {
 import { planItemId } from "../../../sync/plan/order.js";
 import type { PlanItem, ValidationError } from "../../../sync/plan/index.js";
 import {
+  ASSURANCE_STUDIO_TRUST_LEVEL_NAMES,
+  ASSURANCE_STUDIO_TRUST_LEVEL_SCORES,
   CANVAS_ENTITY_KINDS,
   assetTypeSchema,
   componentTypeSchema,
@@ -21,7 +23,7 @@ import {
   retiredAuthoredComponentTypeSchema,
   strideCategorySchema,
   threatSourceSchema,
-  zoneEntitySchema,
+  trustLevelSchema,
   type ArchitectureYamlEntity,
   type CanvasReadableEntity,
   type CanvasEntityKind,
@@ -149,15 +151,18 @@ function rejectUnsupportedVocabulary(
   field: string,
   schema: {
     safeParse(value: unknown): { success: boolean };
-    options: string[];
   },
+  allowedValues: readonly (string | number)[],
 ): void {
   const value = payload[field];
-  if (typeof value === "string" && !schema.safeParse(value).success) {
+  if (
+    (typeof value === "string" || typeof value === "number") &&
+    !schema.safeParse(value).success
+  ) {
     throw new UnsupportedRemoteVocabularyValidationAdvisory(
-      value,
+      String(value),
       field,
-      schema.options,
+      allowedValues.map(String),
     );
   }
 }
@@ -211,7 +216,12 @@ export function validateArchitecturePayload(
     ) {
       throw new UnsupportedComponentTypeValidationAdvisory(componentType);
     }
-    rejectUnsupportedVocabulary(payload, "criticality", criticalitySchema);
+    rejectUnsupportedVocabulary(
+      payload,
+      "criticality",
+      criticalitySchema,
+      criticalitySchema.options,
+    );
   }
   if (
     kind === "asset" &&
@@ -221,19 +231,24 @@ export function validateArchitecturePayload(
     throw new UnsupportedAssetTypeValidationAdvisory(payload["asset_type"]);
   }
   if (kind === "asset") {
-    rejectUnsupportedVocabulary(payload, "criticality", criticalitySchema);
+    rejectUnsupportedVocabulary(
+      payload,
+      "criticality",
+      criticalitySchema,
+      criticalitySchema.options,
+    );
     rejectUnsupportedVocabulary(
       payload,
       "data_classification",
       dataClassificationSchema,
+      dataClassificationSchema.options,
     );
   }
   if (kind === "zone") {
-    rejectUnsupportedVocabulary(
-      payload,
-      "trust_level",
-      zoneEntitySchema.shape.trust_level,
-    );
+    rejectUnsupportedVocabulary(payload, "trust_level", trustLevelSchema, [
+      ...ASSURANCE_STUDIO_TRUST_LEVEL_NAMES,
+      ...ASSURANCE_STUDIO_TRUST_LEVEL_SCORES,
+    ]);
   }
   if (
     kind === "threat" &&
@@ -247,8 +262,18 @@ export function validateArchitecturePayload(
     );
   }
   if (kind === "threat") {
-    rejectUnsupportedVocabulary(payload, "threat_source", threatSourceSchema);
-    rejectUnsupportedVocabulary(payload, "severity", criticalitySchema);
+    rejectUnsupportedVocabulary(
+      payload,
+      "threat_source",
+      threatSourceSchema,
+      threatSourceSchema.options,
+    );
+    rejectUnsupportedVocabulary(
+      payload,
+      "severity",
+      criticalitySchema,
+      criticalitySchema.options,
+    );
   }
   try {
     return parseArchitectureEntity(kind, payload);

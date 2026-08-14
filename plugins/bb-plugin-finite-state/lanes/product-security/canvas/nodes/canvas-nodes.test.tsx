@@ -60,6 +60,7 @@ const componentIconNames = {
   actuator: "ElectricPlugs",
   communication: "Connect",
   external_service: "Cloud",
+  medical_device: "TestTube01",
   other: "Question",
 } as const satisfies Record<(typeof componentTypes)[number], string>;
 

@@ -10,6 +10,8 @@ import {
   ASSURANCE_STUDIO_ASSET_TYPES,
   ASSURANCE_STUDIO_COMPONENT_TYPES,
   ASSURANCE_STUDIO_DATA_CLASSIFICATIONS,
+  ASSURANCE_STUDIO_TRUST_LEVEL_NAMES,
+  ASSURANCE_STUDIO_TRUST_LEVEL_SCORES,
   assetTypeSchema,
   componentTypeSchema,
   dataClassificationSchema,
@@ -18,7 +20,7 @@ import {
 afterEach(cleanup);
 
 describe("Assurance Studio component types", () => {
-  it("extends the vendored ComponentType enum only with the connected tenant value", async () => {
+  it("extends the vendored ComponentType enum with connected tenant values", async () => {
     const reference = JSON.parse(
       await readFile(
         join(
@@ -33,6 +35,7 @@ describe("Assurance Studio component types", () => {
     expect(componentTypeSchema.options).toEqual([
       ...reference.components.schemas.ComponentType.enum,
       "external_service",
+      "medical_device",
     ]);
   });
 
@@ -117,10 +120,50 @@ describe("Assurance Studio component types", () => {
       "",
       ...ASSURANCE_STUDIO_DATA_CLASSIFICATIONS,
     ]);
-    fireEvent.change(classification, { target: { value: "pii" } });
-    fireEvent.click(view.getByRole("button", { name: "Save local YAML" }));
-    expect(onSubmit).toHaveBeenLastCalledWith(
-      expect.objectContaining({ data_classification: "pii" }),
+    for (const observed of ["phi", "pii"]) {
+      fireEvent.change(classification, { target: { value: observed } });
+      fireEvent.click(view.getByRole("button", { name: "Save local YAML" }));
+      expect(onSubmit).toHaveBeenLastCalledWith(
+        expect.objectContaining({ data_classification: observed }),
+      );
+    }
+  });
+
+  it("authors the live integer zone trust-level floor from the form", () => {
+    const onSubmit = vi.fn();
+    const view = renderSlot(
+      { component: EntityForm },
+      {
+        mode: "create" as const,
+        entityKind: "zone" as const,
+        initial: null,
+        references: { components: [], zones: [], assets: [], dataflows: [] },
+        saving: false,
+        error: null,
+        onCancel: vi.fn(),
+        onSubmit,
+      },
     );
+    fireEvent.change(view.getByLabelText(/Stable slug/u), {
+      target: { value: "live-trust-zone" },
+    });
+    fireEvent.change(view.getByLabelText("Name"), {
+      target: { value: "Live trust zone" },
+    });
+    const select = view.getByLabelText("Trust level");
+    if (!(select instanceof HTMLSelectElement)) {
+      throw new Error("Trust level control is not a select");
+    }
+    expect([...select.options].map((option) => option.value)).toEqual([
+      ...ASSURANCE_STUDIO_TRUST_LEVEL_NAMES,
+      ...ASSURANCE_STUDIO_TRUST_LEVEL_SCORES.map(String),
+    ]);
+    for (const trustLevel of ASSURANCE_STUDIO_TRUST_LEVEL_SCORES) {
+      fireEvent.change(select, { target: { value: String(trustLevel) } });
+      fireEvent.click(view.getByRole("button", { name: "Save local YAML" }));
+      expect(onSubmit).toHaveBeenLastCalledWith(
+        expect.objectContaining({ trust_level: trustLevel }),
+      );
+    }
   });
 });

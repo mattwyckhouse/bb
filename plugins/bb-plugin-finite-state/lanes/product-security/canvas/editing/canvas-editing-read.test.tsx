@@ -898,6 +898,7 @@ describe("WP-35 read-classified editing RPCs", () => {
       "communication",
       "other",
       "external_service",
+      "medical_device",
     ]);
     expect(() => parseArchitectureEntity("component", loaded.fields)).toThrow();
   });
