@@ -1880,6 +1880,15 @@ async function createRun(
     },
     configure: async ({ bb, host, worktree: configuredWorktree }) => {
       worktree = configuredWorktree;
+      const gitignorePath = join(worktree, ".gitignore");
+      const gitignore = await readFile(gitignorePath, "utf8").catch(() => "");
+      if (!gitignore.split("\n").includes(".fs-firmware/")) {
+        await writeFile(
+          gitignorePath,
+          `${gitignore}${gitignore.endsWith("\n") || gitignore.length === 0 ? "" : "\n"}.fs-firmware/\n`,
+          "utf8",
+        );
+      }
       const [
         contextModule,
         platformClientModule,
@@ -1934,6 +1943,7 @@ async function createRun(
       state.versions.set(fs167Version, {
         ...templateVersion,
         id: fs167Version,
+        priorVersionId: null,
       });
       state.findings.clear();
       for (let index = 1; index <= 3; index += 1) {
