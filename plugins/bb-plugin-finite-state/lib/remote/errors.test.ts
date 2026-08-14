@@ -52,6 +52,7 @@ describe("remote failure diagnostics", () => {
       request,
     );
 
+    expect(rejected.message).toBe("Remote service rejected the request");
     expect(diagnoseRemoteFailure(rejected)).toEqual({
       kind: "http",
       message:

@@ -19,6 +19,7 @@ async function runCli(
     platformFetch: Fetch;
     assuranceStudioFetch: Fetch;
     platformLimiter?: RemoteLimiter;
+    inspectStoredErrors?: (errors: readonly string[]) => void;
   },
 ) {
   const host = createFakePluginHost({
@@ -62,11 +63,21 @@ async function runCli(
     }),
   );
   try {
-    return await host.harness.behavior.runCli(argv, {
+    const result = await host.harness.behavior.runCli(argv, {
       cwd: "/untrusted",
       threadId: "thread-fs204",
       projectId: "bb-project-fs204",
     });
+    options.inspectStoredErrors?.(
+      context
+        .db()
+        .prepare<[], { error: string }>(
+          "SELECT error FROM sync_state WHERE error IS NOT NULL ORDER BY entity_kind",
+        )
+        .all()
+        .map((row) => row.error),
+    );
+    return result;
   } finally {
     platform.close();
     assuranceStudio.close();
@@ -82,6 +93,7 @@ describe("registered sync CLI remote diagnostics", () => {
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         Response.json({ error: "unauthorized" }, { status: 401 }),
     );
+    let storedErrors: readonly string[] = [];
     const result = await runCli(
       [
         "finite-state",
@@ -95,6 +107,9 @@ describe("registered sync CLI remote diagnostics", () => {
       {
         platformFetch,
         assuranceStudioFetch: unusedFetch,
+        inspectStoredErrors: (errors) => {
+          storedErrors = errors;
+        },
       },
     );
 
@@ -103,6 +118,7 @@ describe("registered sync CLI remote diagnostics", () => {
       /^bb finite-state failed: Pull generation .+ did not publish: finding: REMOTE_HTTP_401: Platform authentication failed for GET https:\/\/platform\.example\/api\/public\/v0\/versions\/platform-version\/findings\?offset=0&limit=200 with HTTP 401 using X-Authorization\. Refresh Platform token \(platformToken\)\.$/u,
     );
     expect(platformFetch).toHaveBeenCalledTimes(1);
+    expect(storedErrors).toEqual(["REMOTE_HTTP_401: remote request failed"]);
   });
 
   it("prints an immediate Platform 401 credential line", async () => {

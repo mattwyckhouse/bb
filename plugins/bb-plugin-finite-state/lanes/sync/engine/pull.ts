@@ -19,6 +19,7 @@ import {
   type SyncScope,
   type WorkingEntity,
 } from "./adapter.js";
+import { diagnoseRemoteFailure } from "../../../lib/remote/errors.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -200,8 +201,15 @@ function partialWorkingRead(error: unknown): {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof RemoteError) return `${error.code}: ${error.message}`;
+  if (error instanceof RemoteError)
+    return `${error.code}: ${diagnoseRemoteFailure(error).message}`;
   return error instanceof Error ? error.message : String(error);
+}
+
+function storedErrorMessage(error: unknown): string {
+  return error instanceof RemoteError
+    ? `${error.code}: remote request failed`
+    : errorMessage(error);
 }
 
 function sqliteConstraint(error: unknown): boolean {
@@ -1015,7 +1023,7 @@ export async function pull(
         storageVersionId,
         generationId,
         adapter.kind,
-        message,
+        storedErrorMessage(error),
         error instanceof TerminalPullError,
       );
     }
@@ -1099,7 +1107,7 @@ export async function pull(
         storageVersionId,
         generationId,
         cache.kind,
-        message,
+        storedErrorMessage(error),
         error instanceof TerminalPullError,
       );
     }

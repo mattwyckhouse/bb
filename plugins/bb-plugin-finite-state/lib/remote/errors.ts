@@ -247,7 +247,7 @@ export async function responseError(
   const authKind = response.status === 401 ? "authentication" : "authorization";
   const message = authentication
     ? `${presentation.name} ${authKind} failed for ${requestLine} with HTTP ${response.status} using ${presentation.credentialHeader}. Refresh ${presentation.credentialLabel} (${presentation.credentialSetting}).`
-    : `${presentation.name} rejected ${requestLine} with HTTP ${response.status}.`;
+    : "Remote service rejected the request";
   const diagnosticDetails = requestDetails(request);
   const combinedDetails =
     diagnosticDetails === null
@@ -299,6 +299,38 @@ export function transportError(
   );
 }
 
+function diagnosticRequest(
+  error: RemoteError,
+): RemoteRequestDescription | null {
+  const details = error.details;
+  if (details === null || typeof details !== "object" || Array.isArray(details))
+    return null;
+  const candidate = details["request"];
+  if (
+    candidate === null ||
+    typeof candidate !== "object" ||
+    Array.isArray(candidate)
+  )
+    return null;
+  const method = candidate["method"];
+  const url = candidate["url"];
+  const phase = candidate["phase"];
+  return typeof method === "string" &&
+    typeof url === "string" &&
+    typeof phase === "string"
+    ? { method, url, phase }
+    : null;
+}
+
+function rejectedRequestMessage(error: RemoteError): string {
+  const presentation = SERVICE_PRESENTATION[error.service];
+  const request = diagnosticRequest(error);
+  const requestLine = request
+    ? `${request.method} ${requestUrl(request.url)}`
+    : "the request";
+  return `${presentation.name} rejected ${requestLine} with HTTP ${error.status}.`;
+}
+
 export function diagnoseRemoteFailure(error: unknown): RemoteFailureDiagnostic {
   if (!(error instanceof RemoteError)) {
     return {
@@ -318,5 +350,9 @@ export function diagnoseRemoteFailure(error: unknown): RemoteFailureDiagnostic {
           : error.code === "REMOTE_TRANSPORT_ERROR"
             ? REMOTE_FAILURE_KINDS.networkUnreachable
             : REMOTE_FAILURE_KINDS.http;
-  return { kind, message: error.message, retryable: error.retryable };
+  const message =
+    kind === REMOTE_FAILURE_KINDS.http && error.status !== null
+      ? rejectedRequestMessage(error)
+      : error.message;
+  return { kind, message, retryable: error.retryable };
 }

@@ -25,6 +25,11 @@ routes omit `/api`, while Assurance Studio routes include `/api`. The HTTP
 diagnostic makes a duplicated `/api/api/` path visible without trying to enforce
 that settings policy in the transport layer.
 
+The transport keeps the internal non-auth `RemoteError.message` stable while
+storing request metadata in `details`; `diagnoseRemoteFailure` renders the
+actionable presentation. This prevents error prose from changing cache/recovery
+semantics while keeping every CLI, probe, and panel rejection diagnostic rich.
+
 The exported entry points are `REMOTE_FAILURE_KINDS`,
 `REMOTE_REQUEST_TIMEOUT_MS`, `RemoteFailureKind`, `RemoteFailureDiagnostic`,
 and `diagnoseRemoteFailure`.
