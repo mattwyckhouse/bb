@@ -27,6 +27,17 @@ export interface PollForgeJobOptions {
 
 const TERMINAL = new Set<ForgeJobTerminal>(["COMPLETED", "FAILED", "TIMEOUT"]);
 
+export class ForgeJobPollLimitError extends Error {
+  readonly code = "FORGE_JOB_POLL_LIMIT";
+
+  constructor(jobId: string, pollAttempts: number) {
+    super(
+      `FORGE_JOB_POLL_LIMIT: ${jobId} remained RUNNING after ${pollAttempts} polls`,
+    );
+    this.name = "ForgeJobPollLimitError";
+  }
+}
+
 function validateStatus(status: string): asserts status is ForgeJobStatus {
   if (status !== "RUNNING" && !TERMINAL.has(status as ForgeJobTerminal)) {
     throw new Error(`FORGE_JOB_UNKNOWN_STATE: ${status}`);
@@ -76,9 +87,7 @@ export async function pollForgeJob(
     });
     if (snapshot.status !== "RUNNING") return snapshot;
     if (pollAttempts >= maximumPollAttempts) {
-      throw new Error(
-        `FORGE_JOB_POLL_LIMIT: ${jobId} remained RUNNING after ${pollAttempts} polls`,
-      );
+      throw new ForgeJobPollLimitError(jobId, pollAttempts);
     }
     await options.scheduler.sleep(backoffMs, signal);
     backoffMs = Math.min(maximumBackoffMs, backoffMs * 2);

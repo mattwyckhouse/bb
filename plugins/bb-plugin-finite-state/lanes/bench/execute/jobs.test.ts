@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ForgeJobSnapshot } from "../../../lib/remote/types.js";
-import { pollForgeJob } from "./jobs.js";
+import { ForgeJobPollLimitError, pollForgeJob } from "./jobs.js";
 
 function snapshot(
   status: ForgeJobSnapshot["status"],
@@ -115,7 +115,7 @@ describe("Forge job polling", () => {
         scheduler: immediate,
         maximumPollAttempts: 3,
       }),
-    ).rejects.toThrow("FORGE_JOB_POLL_LIMIT");
+    ).rejects.toBeInstanceOf(ForgeJobPollLimitError);
     expect(getJobStatus).toHaveBeenCalledTimes(3);
   });
 });

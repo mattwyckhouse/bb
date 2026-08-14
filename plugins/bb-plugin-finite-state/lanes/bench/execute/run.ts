@@ -24,6 +24,7 @@ import {
 } from "../ambiguity.js";
 import { forgeEvidenceCheckpoint, type ForgeEvidenceDeps } from "./evidence.js";
 import {
+  ForgeJobPollLimitError,
   pollForgeJobs,
   type BenchJobQueue,
   type BenchJobScheduler,
@@ -625,9 +626,12 @@ function queueTier1AmbiguityReconciliation(
   dispatchedJobs: readonly DispatchedForgeJob[],
   requirementId: string,
 ): void {
+  const reconciliationPolicy =
+    "baseline_diff_scope_match_without_evidence_promotion";
   const finishReconciliationFailure = (
     error: unknown,
     failureReason: string,
+    candidateJobIds: readonly string[] = dispatchedJobs.map((job) => job.jobId),
   ): void => {
     const message =
       error instanceof Error
@@ -639,6 +643,7 @@ function queueTier1AmbiguityReconciliation(
         ...run,
         status: "failed",
         finishedAt,
+        jobId: candidateJobIds[0] ?? run.jobId,
         durationMs:
           run.startedAt === null
             ? null
@@ -648,6 +653,8 @@ function queueTier1AmbiguityReconciliation(
           dispatchAmbiguous: true,
           reconciliationState: "terminal",
           reconciliationError: message.slice(0, 20_000),
+          reconciliationCandidateJobIds: [...candidateJobIds],
+          reconciliationPolicy,
           failureCode: BENCH_DISPATCH_RECONCILIATION_FAILED_CODE,
           failureReason,
         },
@@ -671,6 +678,9 @@ function queueTier1AmbiguityReconciliation(
       );
       const matchedIntents = new Set<number>();
       for (const [index, intent] of intents.entries()) {
+        // dispatchTier1 currently issues at most one intent per tool. If it
+        // ever adds a second pen_test_run target, this pre-seed must key on
+        // full intent identity rather than treating tool identity as unique.
         if (dispatchedJobs.some((job) => job.tool === intent.tool)) {
           matchedIntents.add(index);
         }
@@ -744,8 +754,7 @@ function queueTier1AmbiguityReconciliation(
                 reconciliationState: "terminal",
                 reconciliationAttempts: retryAttempt + 1,
                 reconciledJobIds: jobIds,
-                reconciliationPolicy:
-                  "baseline_diff_scope_match_without_evidence_promotion",
+                reconciliationPolicy,
                 failureCode: BENCH_DISPATCH_RECONCILED_CODE,
                 failureReason:
                   jobIds.length > 0
@@ -767,6 +776,14 @@ function queueTier1AmbiguityReconciliation(
           return;
         } catch (error) {
           if (signal.aborted) return;
+          if (error instanceof ForgeJobPollLimitError) {
+            finishReconciliationFailure(
+              error,
+              "Automatic Forge reconciliation reached the job polling liveness ceiling. The dispatch outcome remains ambiguous; do not dispatch a duplicate.",
+              [...candidates.keys()],
+            );
+            return;
+          }
           if (retryAttempt === 2) {
             finishReconciliationFailure(
               error,
