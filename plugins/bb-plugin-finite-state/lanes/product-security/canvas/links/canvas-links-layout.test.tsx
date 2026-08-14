@@ -351,7 +351,6 @@ describe("WP-34 inspector links", () => {
     );
     expect(layoutCall?.input).toMatchObject({
       projectId: workspaceProjectId,
-      projectVersionId: "version-wp34",
     });
     const linkCall = slot.inspection.rpcCalls.find(
       (call) => call.method === "canvasSbomLinks",

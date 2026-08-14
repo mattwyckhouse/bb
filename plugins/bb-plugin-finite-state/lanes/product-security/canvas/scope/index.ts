@@ -80,8 +80,12 @@ export interface TaraScopeState {
   scope: ResolvedTaraScope | null;
   versions: readonly Version[];
   selectedKey: string;
+  legacy: ScopeResult["legacy"];
+  promotionMessage: string | null;
+  promoting: boolean;
   error: string | null;
   select(key: string): void;
+  promote(projectVersionId: string): Promise<void>;
   retry(): void;
 }
 
@@ -104,6 +108,8 @@ export function useResolvedTaraScope(
     explicit: StoredSelection | null;
   } | null>(null);
   const [revision, setRevision] = useState(0);
+  const [promoting, setPromoting] = useState(false);
+  const [promotionMessage, setPromotionMessage] = useState<string | null>(null);
   const [stored, setStored] = useState<StoredResult | null>(null);
   const [failed, setFailed] = useState<{
     requestKey: string;
@@ -194,6 +200,35 @@ export function useResolvedTaraScope(
     [versions, workspaceProjectId],
   );
   const retry = useCallback(() => setRevision((value) => value + 1), []);
+  const promote = useCallback(
+    async (projectVersionId: string) => {
+      if (!workspaceProjectId || !current?.legacy) return;
+      setPromoting(true);
+      setPromotionMessage(null);
+      try {
+        const result = await rpc.call("taraScopePromote", {
+          workspaceProjectId,
+          platformProjectId: current.legacy.platformProjectId,
+          projectVersionId,
+        });
+        const next = {
+          platformProjectId: result.selected.platformProjectId,
+          projectVersionId: result.selected.projectVersionId,
+        };
+        writeSelection(workspaceProjectId, next);
+        setSelectionOverride({ workspaceProjectId, explicit: next });
+        setPromotionMessage(
+          `Promoted the complete legacy snapshot: ${result.promotedKinds.join(", ")}.`,
+        );
+        setRevision((value) => value + 1);
+      } catch (promotionError) {
+        setFailed({ requestKey, message: safeError(promotionError) });
+      } finally {
+        setPromoting(false);
+      }
+    },
+    [current?.legacy, requestKey, rpc, workspaceProjectId],
+  );
   return {
     status: !workspaceProjectId
       ? "unconfigured"
@@ -201,12 +236,18 @@ export function useResolvedTaraScope(
         ? "ready"
         : error
           ? "error"
-          : "loading",
+          : current
+            ? "unconfigured"
+            : "loading",
     scope,
     versions,
     selectedKey: selected ? taraScopeVersionKey(selected) : "",
+    legacy: current?.legacy ?? null,
+    promotionMessage,
+    promoting,
     error,
     select,
+    promote,
     retry,
   };
 }

@@ -10,8 +10,8 @@ export function resolvedTaraScope(
   return {
     versions: [selected],
     selected,
-    source: "bound" as const,
-    promotedKinds: [],
+    source: "latest" as const,
+    legacy: null,
   };
 }
 

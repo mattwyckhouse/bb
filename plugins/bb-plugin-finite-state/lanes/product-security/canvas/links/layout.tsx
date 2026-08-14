@@ -26,7 +26,6 @@ interface LayoutPersistenceState {
 interface CanvasLayoutPersistenceProps {
   appRuntime: CanvasLayoutAppRuntime;
   projectId: string;
-  projectVersionId?: string | null;
 }
 
 const CANVAS_LAYOUT_DEBOUNCE_MS = 500;
@@ -178,7 +177,6 @@ function nodeDimensions(node: Node): { width: number; height: number } {
 export function CanvasLayoutPersistence({
   appRuntime,
   projectId,
-  projectVersionId = null,
 }: CanvasLayoutPersistenceProps): React.JSX.Element | null {
   const rpc = appRuntime.useRpc<typeof canvasLinksRpcContract>();
   const nodes = useNodes<Node>();
@@ -245,7 +243,6 @@ export function CanvasLayoutPersistence({
     void rpc
       .call("canvasLayoutLoad", {
         projectId,
-        projectVersionId,
         nodes: discovered.nodes.map((node) => ({
           slug: node.id,
           width: node.width,
@@ -281,7 +278,6 @@ export function CanvasLayoutPersistence({
             try {
               saved = await rpc.call("canvasLayoutSave", {
                 projectId,
-                projectVersionId,
                 layout,
                 expectedSha256: expectedSha256 ?? null,
               });
@@ -335,7 +331,7 @@ export function CanvasLayoutPersistence({
       saverRef.current?.dispose();
       saverRef.current = null;
     };
-  }, [discovered, projectId, projectVersionId, reloadRevision, rpc, setNodes]);
+  }, [discovered, projectId, reloadRevision, rpc, setNodes]);
 
   useEffect(() => {
     if (state.status !== "ready") return;

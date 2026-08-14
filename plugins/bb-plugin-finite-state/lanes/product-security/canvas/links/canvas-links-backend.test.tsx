@@ -340,7 +340,6 @@ describe("WP-34 production layout RPC boundary", () => {
     const first = canvasLinksRpcContract.canvasLayoutSave.output.parse(
       await host.harness.callRpc("canvasLayoutSave", {
         projectId: PROJECT_ID,
-        projectVersionId: null,
         layout: initial,
         expectedSha256: null,
       }),
@@ -356,7 +355,6 @@ describe("WP-34 production layout RPC boundary", () => {
     const loaded = canvasLinksRpcContract.canvasLayoutLoad.output.parse(
       await host.harness.callRpc("canvasLayoutLoad", {
         projectId: PROJECT_ID,
-        projectVersionId: null,
         nodes: [{ slug: "known", width: 216, height: 112 }],
         edges: [],
       }),
@@ -370,7 +368,6 @@ describe("WP-34 production layout RPC boundary", () => {
     const pruned = canvasLinksRpcContract.canvasLayoutSave.output.parse(
       await host.harness.callRpc("canvasLayoutSave", {
         projectId: PROJECT_ID,
-        projectVersionId: null,
         layout: layout({ known: { x: 40, y: 50, collapsed: true } }),
         expectedSha256: first.outcome === "saved" ? first.sha256 : SHA_A,
       }),
@@ -381,7 +378,6 @@ describe("WP-34 production layout RPC boundary", () => {
     const noOp = canvasLinksRpcContract.canvasLayoutSave.output.parse(
       await host.harness.callRpc("canvasLayoutSave", {
         projectId: PROJECT_ID,
-        projectVersionId: null,
         layout: layout({ known: { x: 40, y: 50, collapsed: true } }),
         expectedSha256: pruned.outcome === "saved" ? pruned.sha256 : SHA_A,
       }),
@@ -396,7 +392,6 @@ describe("WP-34 production layout RPC boundary", () => {
     const conflict = canvasLinksRpcContract.canvasLayoutSave.output.parse(
       await host.harness.callRpc("canvasLayoutSave", {
         projectId: PROJECT_ID,
-        projectVersionId: null,
         layout: layout({ known: { x: 30, y: 40 } }),
         expectedSha256: pruned.outcome === "saved" ? pruned.sha256 : SHA_A,
       }),

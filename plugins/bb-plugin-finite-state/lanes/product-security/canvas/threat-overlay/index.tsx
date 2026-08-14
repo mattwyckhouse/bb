@@ -133,6 +133,7 @@ function payloadProjectId(payload: unknown): string | null {
 function useThreatSnapshot(
   projectId: string | null,
   projectVersionId: string | null,
+  workspaceProjectId: string | null,
   appRuntime: ThreatOverlayAppRuntime,
 ): {
   state: SnapshotState;
@@ -174,6 +175,7 @@ function useThreatSnapshot(
       .call("threatOverlaySnapshot", {
         projectId,
         projectVersionId,
+        workspaceProjectId,
       })
       .then((data) => {
         if (!active) return;
@@ -198,7 +200,14 @@ function useThreatSnapshot(
     return () => {
       active = false;
     };
-  }, [projectId, projectVersionId, requestRevision, rpc, scopeKey]);
+  }, [
+    projectId,
+    projectVersionId,
+    requestRevision,
+    rpc,
+    scopeKey,
+    workspaceProjectId,
+  ]);
   const pending = Boolean(
     scopeKey &&
     (state.projectId !== scopeKey ||
@@ -421,6 +430,7 @@ export function ProductSecurityThreatOverlay({
         highlight={highlight}
         projectId={projectId}
         projectVersionId={projectVersionId}
+        workspaceProjectId={scope?.workspaceProjectId ?? null}
       />
     );
   }
@@ -430,6 +440,7 @@ export function ProductSecurityThreatOverlay({
       highlight={highlight}
       projectId={projectId}
       projectVersionId={projectVersionId}
+      workspaceProjectId={scope?.workspaceProjectId ?? null}
     />
   );
 }
@@ -437,11 +448,13 @@ export function ProductSecurityThreatOverlay({
 function RuntimeThreatOverlay({
   projectId,
   projectVersionId,
+  workspaceProjectId,
   focus,
   highlight,
 }: {
   projectId: string;
   projectVersionId: string | null;
+  workspaceProjectId: string | null;
   focus: string | null;
   highlight: string | null;
 }): React.JSX.Element {
@@ -484,6 +497,7 @@ function RuntimeThreatOverlay({
       highlight={highlight}
       projectId={projectId}
       projectVersionId={projectVersionId}
+      workspaceProjectId={workspaceProjectId}
     />
   );
 }
@@ -492,12 +506,14 @@ function ConfiguredThreatOverlay({
   appRuntime,
   projectId,
   projectVersionId,
+  workspaceProjectId,
   focus,
   highlight,
 }: {
   appRuntime: ThreatOverlayAppRuntime;
   projectId: string;
   projectVersionId: string | null;
+  workspaceProjectId: string | null;
   focus: string | null;
   highlight: string | null;
 }): React.JSX.Element {
@@ -510,7 +526,12 @@ function ConfiguredThreatOverlay({
   const setArchitectureSelectedIds = architecture.setSelectedIds;
   const { fitView } = useReactFlow();
   const rpc = appRuntime.useRpc<typeof threatOverlayRpcContract>();
-  const snapshot = useThreatSnapshot(projectId, projectVersionId, appRuntime);
+  const snapshot = useThreatSnapshot(
+    projectId,
+    projectVersionId,
+    workspaceProjectId,
+    appRuntime,
+  );
   const sharedVisibility = useThreatOverlayVisibility();
   const [localCollapsed, setLocalCollapsed] = useState(false);
   const collapsed = sharedVisibility?.collapsed ?? localCollapsed;

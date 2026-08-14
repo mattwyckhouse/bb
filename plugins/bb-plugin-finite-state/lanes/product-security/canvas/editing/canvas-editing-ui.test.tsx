@@ -32,7 +32,7 @@ describe("WP-35 empty-model editing entry", () => {
         rpc: {
           connectionsStatus: connectedRemoteStatus,
           taraScopeResolve: resolveTestTaraScope,
-          taraList: () => ({
+          taraCanvasList: () => ({
             items: [],
             total: 0,
             next: null,
@@ -70,7 +70,7 @@ describe("WP-35 empty-model editing entry", () => {
         rpc: {
           connectionsStatus: connectedRemoteStatus,
           taraScopeResolve: resolveTestTaraScope,
-          taraList: () =>
+          taraCanvasList: () =>
             Promise.reject(
               new Error(
                 "INVALID_WORKING_TARA: component YAML contains verification_status",

@@ -73,12 +73,90 @@ function snapshot(
 }
 
 describe("registered version-scoped TARA resolution", () => {
+  it("keeps legacy-only resolution read-only and promotes into a new version", async () => {
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "finite-state-legacy-only",
+      sdk: {
+        projects: {
+          get: async ({ projectId }) => {
+            if (projectId !== WORKSPACE) throw new Error("unknown workspace");
+            return { id: projectId, sources: [] };
+          },
+        },
+      },
+    });
+    const ctx = createPluginContext(bb);
+    const db = ctx.db();
+    acceptedGeneration(
+      db,
+      PROJECT_LEVEL_VERSION_ID,
+      LEGACY_GENERATION,
+      "2026-08-14T10:00:00.000Z",
+    );
+    acceptedState(
+      db,
+      PROJECT_LEVEL_VERSION_ID,
+      LEGACY_GENERATION,
+      "component",
+      "2026-08-14T10:00:00.000Z",
+    );
+    snapshot(
+      db,
+      PROJECT_LEVEL_VERSION_ID,
+      LEGACY_GENERATION,
+      "component",
+      "api",
+      {
+        slug: "api",
+        name: "API",
+      },
+    );
+    registerTaraScopeBackend(bb, ctx);
+
+    const before = db
+      .prepare("SELECT COUNT(*) AS count FROM pull_generation")
+      .get();
+    await expect(
+      harness.behavior.callRpc("taraScopeResolve", {
+        workspaceProjectId: WORKSPACE,
+        explicit: null,
+      }),
+    ).resolves.toMatchObject({
+      versions: [],
+      selected: null,
+      source: "none",
+      legacy: { platformProjectId: PLATFORM, kinds: ["component"] },
+    });
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM pull_generation").get(),
+    ).toEqual(before);
+
+    await expect(
+      harness.behavior.callRpc("taraScopePromote", {
+        workspaceProjectId: WORKSPACE,
+        platformProjectId: PLATFORM,
+        projectVersionId: "brand-new-version",
+      }),
+    ).resolves.toMatchObject({ promotedKinds: ["component"] });
+    expect(
+      db
+        .prepare(
+          `SELECT entity_key FROM base_snapshot
+            WHERE project_id = ? AND project_version_id = ?`,
+        )
+        .all(PLATFORM, "brand-new-version"),
+    ).toEqual([{ entity_key: "api" }]);
+  });
+
   it("promotes legacy keys deterministically and never leaks threats across a version switch", async () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "finite-state",
       sdk: {
         projects: {
-          get: async ({ projectId }) => ({ id: projectId, sources: [] }),
+          get: async ({ projectId }) => {
+            if (projectId !== WORKSPACE) throw new Error("unknown workspace");
+            return { id: projectId, sources: [] };
+          },
         },
       },
     });
@@ -187,7 +265,31 @@ describe("registered version-scoped TARA resolution", () => {
         platformProjectId: PLATFORM,
         projectVersionId: VERSION_2,
       },
-      source: "bound",
+      source: "latest",
+      legacy: {
+        platformProjectId: PLATFORM,
+        kinds: ["component", "threat"],
+      },
+    });
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM base_snapshot
+            WHERE project_id = ? AND project_version_id = ?`,
+        )
+        .get(PLATFORM, VERSION_2),
+    ).toEqual({ count: 0 });
+
+    const promotion = await harness.behavior.callRpc("taraScopePromote", {
+      workspaceProjectId: WORKSPACE,
+      platformProjectId: PLATFORM,
+      projectVersionId: VERSION_2,
+    });
+    expect(promotion).toMatchObject({
+      selected: {
+        platformProjectId: PLATFORM,
+        projectVersionId: VERSION_2,
+      },
       promotedKinds: ["component", "threat"],
     });
     expect(
@@ -219,6 +321,25 @@ describe("registered version-scoped TARA resolution", () => {
         content_hash: "hash-legacy-threat",
       },
     ]);
+    const promotedGeneration = db
+      .prepare(
+        `SELECT generation_id FROM pull_generation
+          WHERE project_id = ? AND project_version_id = ?
+            AND generation_id LIKE 'tara-scope-promotion-%'`,
+      )
+      .get(PLATFORM, VERSION_2);
+    expect(promotedGeneration).toEqual({
+      generation_id: expect.stringMatching(
+        /^tara-scope-promotion-[a-f0-9]{32}$/u,
+      ),
+    });
+    await expect(
+      harness.behavior.callRpc("taraScopePromote", {
+        workspaceProjectId: WORKSPACE,
+        platformProjectId: PLATFORM,
+        projectVersionId: VERSION_2,
+      }),
+    ).resolves.toMatchObject({ promotedKinds: ["component", "threat"] });
 
     const repeated = await harness.behavior.callRpc("taraScopeResolve", {
       workspaceProjectId: WORKSPACE,
@@ -227,7 +348,7 @@ describe("registered version-scoped TARA resolution", () => {
         projectVersionId: VERSION_2,
       },
     });
-    expect(repeated).toMatchObject({ source: "explicit", promotedKinds: [] });
+    expect(repeated).toMatchObject({ source: "explicit" });
     expect(
       db
         .prepare(
@@ -246,10 +367,23 @@ describe("registered version-scoped TARA resolution", () => {
         projectVersionId: VERSION_1,
       },
     });
-    expect(switched).toMatchObject({
-      source: "explicit",
-      promotedKinds: ["component"],
-    });
+    expect(switched).toMatchObject({ source: "explicit" });
+    await expect(
+      harness.behavior.callRpc("taraScopePromote", {
+        workspaceProjectId: WORKSPACE,
+        platformProjectId: PLATFORM,
+        projectVersionId: VERSION_1,
+      }),
+    ).rejects.toThrow(/requires an empty version/u);
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM base_snapshot
+            WHERE project_id = ? AND project_version_id = ?
+              AND entity_kind = 'component'`,
+        )
+        .get(PLATFORM, VERSION_1),
+    ).toEqual({ count: 0 });
     const versionOne = await harness.behavior.callRpc("threatOverlaySnapshot", {
       projectId: PLATFORM,
       projectVersionId: VERSION_1,

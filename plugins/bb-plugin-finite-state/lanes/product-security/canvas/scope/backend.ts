@@ -5,9 +5,10 @@ import { z } from "zod";
 import type { PluginContext } from "../../../../lib/context.js";
 import { PROJECT_LEVEL_VERSION_ID } from "../../../../lib/store/index.js";
 import {
-  backfillUnambiguousWorkspaceProjectBinding,
+  bindWorkspacePlatformProject,
   WORKSPACE_PLATFORM_PROJECT_PREDICATE,
 } from "../../../../lib/store/project-scope.js";
+import { rpcContract } from "../../../../shared/contract.js";
 
 const TARA_ENTITY_KINDS = [
   "asset",
@@ -28,6 +29,29 @@ const versionSchema = explicitScopeSchema.extend({
   asOf: z.string().nullable(),
 });
 
+const legacySchema = z
+  .object({
+    platformProjectId: z.string().trim().min(1).max(512),
+    kinds: z.array(z.enum(TARA_ENTITY_KINDS)).min(1),
+  })
+  .strict();
+
+export const taraCanvasRpcContract = defineRpcContract({
+  taraCanvasList: {
+    input: z
+      .object({
+        workspaceProjectId: z.string().trim().min(1).max(512),
+        platformProjectId: z.string().trim().min(1).max(512),
+        projectVersionId: z.string().trim().min(1).max(512),
+        kind: z.enum(TARA_ENTITY_KINDS),
+        pageSize: z.number().int().min(1).max(500).default(50),
+        continuation: z.string().min(1).max(4096).nullable().default(null),
+      })
+      .strict(),
+    output: rpcContract.taraList.output,
+  },
+});
+
 export const taraScopeRpcContract = defineRpcContract({
   taraScopeResolve: {
     input: z
@@ -40,8 +64,23 @@ export const taraScopeRpcContract = defineRpcContract({
       .object({
         versions: z.array(versionSchema).max(1_000),
         selected: versionSchema.nullable(),
-        source: z.enum(["explicit", "bound", "latest", "none"]),
-        promotedKinds: z.array(z.enum(TARA_ENTITY_KINDS)),
+        source: z.enum(["explicit", "latest", "none"]),
+        legacy: legacySchema.nullable(),
+      })
+      .strict(),
+  },
+  taraScopePromote: {
+    input: z
+      .object({
+        workspaceProjectId: z.string().trim().min(1).max(512),
+        platformProjectId: z.string().trim().min(1).max(512),
+        projectVersionId: z.string().trim().min(1).max(512),
+      })
+      .strict(),
+    output: z
+      .object({
+        selected: versionSchema,
+        promotedKinds: z.array(z.enum(TARA_ENTITY_KINDS)).min(1),
       })
       .strict(),
   },
@@ -74,10 +113,15 @@ interface TargetSyncRow {
   staging_generation_id: string | null;
 }
 
+interface LegacyCatalogRow {
+  project_id: string;
+  entity_kind: TaraEntityKind;
+}
+
 function versionRows(
   db: Database.Database,
   workspaceProjectId: string,
-): { versions: Version[]; bound: boolean } {
+): Version[] {
   const exactRows = db
     .prepare<[string, string], VersionRow>(
       `SELECT s.project_id, s.project_version_id, MAX(s.last_pull) AS as_of
@@ -105,13 +149,33 @@ function versionRows(
               ORDER BY as_of DESC, s.project_id ASC, s.project_version_id DESC`,
           )
           .all(workspaceProjectId, PROJECT_LEVEL_VERSION_ID);
+  return rows.map((row) => ({
+    platformProjectId: row.project_id,
+    projectVersionId: row.project_version_id,
+    asOf: row.as_of,
+  }));
+}
+
+function legacyTara(
+  db: Database.Database,
+  workspaceProjectId: string,
+): z.output<typeof legacySchema> | null {
+  const rows = db
+    .prepare<[string, string], LegacyCatalogRow>(
+      `SELECT s.project_id, s.entity_kind
+         FROM sync_state AS s
+        WHERE ${WORKSPACE_PLATFORM_PROJECT_PREDICATE}
+          AND s.project_version_id = ?
+          AND s.entity_kind IN ('asset','component','dataflow','threat','zone')
+          AND s.accepted_generation_id IS NOT NULL
+        ORDER BY s.project_id, s.entity_kind`,
+    )
+    .all(workspaceProjectId, PROJECT_LEVEL_VERSION_ID);
+  const projects = [...new Set(rows.map((row) => row.project_id))];
+  if (projects.length !== 1) return null;
   return {
-    versions: rows.map((row) => ({
-      platformProjectId: row.project_id,
-      projectVersionId: row.project_version_id,
-      asOf: row.as_of,
-    })),
-    bound: exactRows.length > 0,
+    platformProjectId: projects[0]!,
+    kinds: rows.map((row) => row.entity_kind),
   };
 }
 
@@ -125,11 +189,17 @@ function sameScope(left: ExplicitScope, right: ExplicitScope): boolean {
 function promotedGenerationId(
   platformProjectId: string,
   projectVersionId: string,
-  sourceGenerationId: string,
+  sources: readonly LegacySyncRow[],
 ): string {
   const digest = createHash("sha256")
     .update(
-      [platformProjectId, projectVersionId, sourceGenerationId].join("\0"),
+      [
+        platformProjectId,
+        projectVersionId,
+        ...sources.map(
+          (source) => `${source.entity_kind}:${source.accepted_generation_id}`,
+        ),
+      ].join("\0"),
     )
     .digest("hex")
     .slice(0, 32);
@@ -214,9 +284,9 @@ function copyGenerationRows(
 }
 
 /**
- * Promote accepted legacy @project cache into one version without deleting or
- * rewriting either scope. Existing accepted/staging destination state always
- * wins, so a real version pull can never be replaced by compatibility data.
+ * Promote the complete accepted legacy @project TARA snapshot into an empty
+ * version. Any real accepted or staging TARA state rejects the whole action;
+ * per-kind mixing is forbidden.
  */
 export function promoteLegacyProjectTara(
   db: Database.Database,
@@ -249,30 +319,35 @@ export function promoteLegacyProjectTara(
             AND entity_kind IN ('asset','component','dataflow','threat','zone')`,
       )
       .all(scope.platformProjectId, scope.projectVersionId);
-    const occupied = new Set(
-      target
-        .filter(
-          (row) =>
-            row.accepted_generation_id !== null ||
-            row.staging_generation_id !== null,
-        )
-        .map((row) => row.entity_kind),
-    );
-    const promotable = source.filter((row) => !occupied.has(row.entity_kind));
-    const grouped = new Map<string, LegacySyncRow[]>();
-    for (const row of promotable) {
-      const rows = grouped.get(row.accepted_generation_id) ?? [];
-      rows.push(row);
-      grouped.set(row.accepted_generation_id, rows);
+    if (source.length === 0) {
+      throw new Error("No accepted legacy project-scoped TARA is available.");
     }
-    for (const [sourceGenerationId, rows] of grouped) {
-      const kinds = rows.map((row) => row.entity_kind).sort();
-      const targetGenerationId = promotedGenerationId(
-        scope.platformProjectId,
-        scope.projectVersionId,
-        sourceGenerationId,
+    const kinds = source.map((row) => row.entity_kind).sort();
+    const targetGenerationId = promotedGenerationId(
+      scope.platformProjectId,
+      scope.projectVersionId,
+      source,
+    );
+    const occupied = target.filter(
+      (row) =>
+        row.accepted_generation_id !== null ||
+        row.staging_generation_id !== null,
+    );
+    const replay =
+      occupied.length === source.length &&
+      occupied.every(
+        (row) =>
+          kinds.includes(row.entity_kind as TaraEntityKind) &&
+          row.accepted_generation_id === targetGenerationId &&
+          row.staging_generation_id === null,
       );
-      const representative = rows[0]!;
+    if (occupied.length > 0 && !replay) {
+      throw new Error(
+        "The target version already has accepted or staging TARA. Promotion requires an empty version and did not write anything.",
+      );
+    }
+    if (!replay) {
+      const representative = source[0]!;
       db.prepare(
         `INSERT OR IGNORE INTO pull_generation
            (project_id, project_version_id, generation_id, status,
@@ -287,15 +362,15 @@ export function promoteLegacyProjectTara(
         representative.completed_at,
         representative.accepted_at,
       );
-      copyGenerationRows(
-        db,
-        scope.platformProjectId,
-        scope.projectVersionId,
-        sourceGenerationId,
-        targetGenerationId,
-        kinds,
-      );
-      for (const row of rows) {
+      for (const row of source) {
+        copyGenerationRows(
+          db,
+          scope.platformProjectId,
+          scope.projectVersionId,
+          row.accepted_generation_id,
+          targetGenerationId,
+          [row.entity_kind],
+        );
         db.prepare(
           `INSERT INTO sync_state
              (project_id, project_version_id, entity_kind,
@@ -320,7 +395,7 @@ export function promoteLegacyProjectTara(
         );
       }
     }
-    return promotable.map((row) => row.entity_kind).sort();
+    return kinds;
   })();
 }
 
@@ -332,31 +407,56 @@ export function registerTaraScopeBackend(
     async taraScopeResolve(input) {
       await bb.sdk.projects.get({ projectId: input.workspaceProjectId });
       const db = ctx.db();
-      backfillUnambiguousWorkspaceProjectBinding(db, input.workspaceProjectId);
-      const catalog = versionRows(db, input.workspaceProjectId);
+      const versions = versionRows(db, input.workspaceProjectId);
+      // Selection is deliberately two-tier: a valid explicit choice, then the
+      // latest accepted version in the workspace-visible catalog. The project
+      // binding constrains that catalog; it is not a third selection source.
       const selected =
         input.explicit &&
-        catalog.versions.some((version) => sameScope(version, input.explicit!))
-          ? catalog.versions.find((version) =>
-              sameScope(version, input.explicit!),
-            )!
-          : (catalog.versions[0] ?? null);
-      const promotedKinds = selected
-        ? promoteLegacyProjectTara(db, selected)
-        : [];
+        versions.some((version) => sameScope(version, input.explicit!))
+          ? versions.find((version) => sameScope(version, input.explicit!))!
+          : (versions[0] ?? null);
       return {
-        versions: catalog.versions,
+        versions,
         selected,
         source:
           input.explicit && selected && sameScope(input.explicit, selected)
             ? ("explicit" as const)
             : selected
-              ? catalog.bound
-                ? ("bound" as const)
-                : ("latest" as const)
+              ? ("latest" as const)
               : ("none" as const),
-        promotedKinds,
+        legacy: legacyTara(db, input.workspaceProjectId),
       };
+    },
+    async taraScopePromote(input) {
+      await bb.sdk.projects.get({ projectId: input.workspaceProjectId });
+      const db = ctx.db();
+      const legacy = legacyTara(db, input.workspaceProjectId);
+      if (!legacy || legacy.platformProjectId !== input.platformProjectId) {
+        throw new Error(
+          "The selected workspace has no unambiguous legacy TARA for that Platform project.",
+        );
+      }
+      const promotedKinds = db.transaction(() => {
+        const kinds = promoteLegacyProjectTara(db, input);
+        bindWorkspacePlatformProject(
+          db,
+          input.workspaceProjectId,
+          input.platformProjectId,
+        );
+        return kinds;
+      })();
+      const selected = {
+        platformProjectId: input.platformProjectId,
+        projectVersionId: input.projectVersionId,
+        asOf: new Date().toISOString(),
+      };
+      bb.realtime.publish("tara:changed", {
+        workspaceProjectId: input.workspaceProjectId,
+        projectId: input.platformProjectId,
+        projectVersionId: input.projectVersionId,
+      });
+      return { selected, promotedKinds };
     },
   });
 }

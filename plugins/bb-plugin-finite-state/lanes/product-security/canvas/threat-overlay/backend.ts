@@ -25,6 +25,8 @@ import {
   parseAttackPathSteps,
   parseExploitability,
 } from "./path.js";
+import { readCanvasWorkingOverlay } from "../editing/backend.js";
+import { architectureEntityPayload } from "../editing/schema.js";
 
 const MAX_THREATS = 2_000;
 const MAX_TARGETS_PER_THREAT = 100;
@@ -35,6 +37,13 @@ const projectScopeSchema = z
   .object({
     projectId: z.string().trim().min(1).max(512),
     projectVersionId: z.string().trim().min(1).max(512).nullable(),
+    workspaceProjectId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(512)
+      .nullable()
+      .default(null),
   })
   .strict();
 const pathPageInputSchema = projectScopeSchema
@@ -168,7 +177,11 @@ export const threatOverlayRpcContract = defineRpcContract({
 type ThreatSnapshot = z.output<
   (typeof threatOverlayRpcContract)["threatOverlaySnapshot"]["output"]
 >;
-type ProjectScope = z.output<typeof projectScopeSchema>;
+type ProjectScope = {
+  projectId: string;
+  projectVersionId: string | null;
+  workspaceProjectId?: string | null;
+};
 type PathPageInput = z.output<typeof pathPageInputSchema>;
 type PathInput = z.output<typeof pathInputSchema>;
 
@@ -199,6 +212,7 @@ function resolvedThreatScope(
     )
     .get(scope.projectId, PROJECT_LEVEL_VERSION_ID);
   return {
+    workspaceProjectId: scope.workspaceProjectId,
     projectId: scope.projectId,
     projectVersionId: row
       ? fromStorageProjectVersionId(row.project_version_id)
@@ -599,6 +613,67 @@ export function readThreatSnapshot(
   return memoizeSnapshot(snapshotCache, revision, snapshot);
 }
 
+async function readMergedThreatSnapshot(
+  bb: BbPluginApi,
+  db: Database.Database,
+  scope: ProjectScope,
+  snapshotCache: Map<string, ThreatSnapshot>,
+): Promise<ThreatSnapshot> {
+  const base = readThreatSnapshot(db, scope, snapshotCache);
+  if (!scope.workspaceProjectId || !scope.projectVersionId) return base;
+  const working = await readCanvasWorkingOverlay(bb, {
+    workspaceProjectId: scope.workspaceProjectId,
+    projectVersionId: scope.projectVersionId,
+    kind: "threat",
+  });
+  const methodology = readMethodology(db, scope);
+  const pathGeneration = acceptedPathGeneration(db, scope).generationId;
+  const pathCounts = readPathCounts(db, scope, pathGeneration);
+  const threatsBySlug = new Map(
+    base.threats.map((threat) => [threat.slug, threat] as const),
+  );
+  for (const slug of working.excludedSlugs) threatsBySlug.delete(slug);
+  for (const stored of working.entities) {
+    const entity = stored.entity;
+    threatsBySlug.delete(entity.slug);
+    const payload = jsonValueSchema.parse(architectureEntityPayload(entity));
+    if (!isJsonRecord(payload) || !isOpenThreat(payload)) continue;
+    const rawCategory =
+      firstString(payload, "category", "stride", "threat_category") ??
+      "unknown";
+    threatsBySlug.set(entity.slug, {
+      slug: entity.slug,
+      title: firstString(payload, "title", "name", "label") ?? entity.slug,
+      rawCategory,
+      category: categoryFromVocabulary(rawCategory, methodology.vocabulary),
+      severity: firstString(payload, "severity", "risk", "priority"),
+      targetSlugs: stringValues(
+        payload,
+        "affected_components",
+        "affectedComponents",
+        "affected_assets",
+        "affectedAssets",
+        "dataflows",
+      ),
+      attackPathCount: pathCounts.get(entity.slug) ?? 0,
+    });
+  }
+  const threats = [...threatsBySlug.values()].sort((left, right) =>
+    left.slug.localeCompare(right.slug),
+  );
+  const aggregates = aggregateThreats(threats).slice(0, MAX_AGGREGATES);
+  return {
+    ...base,
+    revision: `sha256:${createHash("sha256")
+      .update(`${base.revision}\0${JSON.stringify(threats)}`)
+      .digest("hex")}`,
+    threats,
+    aggregates,
+    total: threats.length,
+    truncated: threats.length > MAX_THREATS,
+  };
+}
+
 function encodeContinuation(routeSignature: string): string {
   return Buffer.from(routeSignature, "utf8").toString("base64url");
 }
@@ -735,7 +810,7 @@ export function registerThreatOverlayBackend(
   );
   bb.rpc.register(threatOverlayRpcContract, {
     threatOverlaySnapshot(input) {
-      return readThreatSnapshot(ctx.db(), input, snapshotCache);
+      return readMergedThreatSnapshot(bb, ctx.db(), input, snapshotCache);
     },
     threatOverlayPaths(input) {
       return readPathPage(ctx.db(), input);

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { z } from "zod";
 import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
 import type { JsonValue, RpcContract } from "../../../../shared/contract.js";
@@ -7,7 +8,10 @@ import type { DeletionImpact } from "./commands.js";
 import { DeleteImpactDialog } from "./delete-impact.js";
 import { EntityForm, type CanvasReferenceOptions } from "./forms.js";
 import { CanvasEditHistory, type CanvasHistoryExecutor } from "./history.js";
-import type { canvasEditingRpcContract } from "./backend.js";
+import type {
+  canvasEditingRpcContract,
+  versionedCanvasEditingRpcContract,
+} from "./backend.js";
 import {
   architectureEntityPayload,
   canvasJsonValueSchema,
@@ -184,20 +188,83 @@ function ConfiguredEditingLayer({
       </div>
     );
   }
-  return <ProjectEditingLayer appRuntime={appRuntime} projectId={projectId} />;
+  return (
+    <ProjectEditingLayer
+      appRuntime={appRuntime}
+      projectId={projectId}
+      platformProjectId={scope?.platformProjectId ?? null}
+      projectVersionId={scope?.projectVersionId ?? null}
+    />
+  );
 }
 
 function ProjectEditingLayer({
   appRuntime,
   projectId,
+  platformProjectId,
+  projectVersionId,
 }: {
   appRuntime: EditingAppRuntime;
   projectId: string;
+  platformProjectId: string | null;
+  projectVersionId: string | null;
 }): React.JSX.Element | null {
   const architecture = useOptionalArchitectureSelection();
   const navigate = appRuntime.useBbNavigate();
   const rpc = appRuntime.useRpc<RpcContract>();
   const editingRpc = appRuntime.useRpc<typeof canvasEditingRpcContract>();
+  const versionedEditingRpc =
+    appRuntime.useRpc<typeof versionedCanvasEditingRpcContract>();
+  type VersionedApply = z.input<
+    (typeof versionedCanvasEditingRpcContract)["canvasVersionedCommandApply"]["input"]
+  >;
+  type WithoutEditingIdentity<T> = T extends unknown
+    ? Omit<T, "workspaceProjectId" | "platformProjectId" | "projectVersionId">
+    : never;
+  type ApplyBody = WithoutEditingIdentity<VersionedApply>;
+  const applyCommand = (input: ApplyBody) =>
+    platformProjectId && projectVersionId
+      ? versionedEditingRpc.call("canvasVersionedCommandApply", {
+          ...input,
+          workspaceProjectId: projectId,
+          platformProjectId,
+          projectVersionId,
+        })
+      : rpc.call("taraCommandApply", {
+          ...input,
+          projectId,
+          projectVersionId,
+        });
+  const loadEntity = (kind: CanvasEntityKind, slug: string) =>
+    platformProjectId && projectVersionId
+      ? versionedEditingRpc.call("canvasVersionedEditingLoad", {
+          workspaceProjectId: projectId,
+          platformProjectId,
+          projectVersionId,
+          kind,
+          slug,
+        })
+      : editingRpc.call("canvasEditingLoad", {
+          projectId,
+          projectVersionId,
+          kind,
+          slug,
+        });
+  const loadDeleteImpact = (kind: CanvasEntityKind, stableKey: string) =>
+    platformProjectId && projectVersionId
+      ? versionedEditingRpc.call("canvasVersionedDeleteImpact", {
+          workspaceProjectId: projectId,
+          platformProjectId,
+          projectVersionId,
+          kind,
+          stableKey,
+        })
+      : rpc.call("taraDeleteImpact", {
+          projectId,
+          projectVersionId,
+          kind,
+          stableKey,
+        });
   const [newKind, setNewKind] = useState<CanvasEntityKind>("component");
   const [form, setForm] = useState<FormState | null>(null);
   const [loading, setLoading] = useState(false);
@@ -229,9 +296,7 @@ function ProjectEditingLayer({
       if (!transition.expectedSha256) {
         throw new Error("History entry has no current CAS hash.");
       }
-      const result = await rpc.call("taraCommandApply", {
-        projectId,
-        projectVersionId: null,
+      const result = await applyCommand({
         operation: "delete",
         kind: transition.kind,
         stableKey: transition.slug,
@@ -244,9 +309,7 @@ function ProjectEditingLayer({
       return { afterSha256: null };
     }
     if (transition.to !== null && transition.from === null) {
-      const result = await rpc.call("taraCommandApply", {
-        projectId,
-        projectVersionId: null,
+      const result = await applyCommand({
         operation: "create",
         kind: transition.kind,
         fields: jsonFields(transition.to),
@@ -260,9 +323,7 @@ function ProjectEditingLayer({
       if (!transition.expectedSha256) {
         throw new Error("History entry has no current CAS hash.");
       }
-      const result = await rpc.call("taraCommandApply", {
-        projectId,
-        projectVersionId: null,
+      const result = await applyCommand({
         operation: "update",
         kind: transition.kind,
         stableKey: transition.slug,
@@ -296,12 +357,7 @@ function ProjectEditingLayer({
     setLoading(true);
     setError(null);
     try {
-      const loaded = await editingRpc.call("canvasEditingLoad", {
-        projectId,
-        projectVersionId: null,
-        kind: selected.kind,
-        slug: selected.slug,
-      });
+      const loaded = await loadEntity(selected.kind, selected.slug);
       if (loaded.state === "missing") {
         setError(
           "This entity no longer exists in working YAML. Reload the canvas before editing.",
@@ -332,9 +388,7 @@ function ProjectEditingLayer({
     setError(null);
     try {
       if (form.mode === "create") {
-        const result = await rpc.call("taraCommandApply", {
-          projectId,
-          projectVersionId: null,
+        const result = await applyCommand({
           operation: "create",
           kind: entity.kind,
           fields: jsonFields(entity),
@@ -352,9 +406,7 @@ function ProjectEditingLayer({
         if (!form.initial || !form.expectedSha256) {
           throw new Error("Reload the entity before editing.");
         }
-        const result = await rpc.call("taraCommandApply", {
-          projectId,
-          projectVersionId: null,
+        const result = await applyCommand({
           operation: "update",
           kind: entity.kind,
           stableKey: entity.slug,
@@ -396,12 +448,7 @@ function ProjectEditingLayer({
     setDeleteImpact(null);
     setError(null);
     try {
-      const loaded = await editingRpc.call("canvasEditingLoad", {
-        projectId,
-        projectVersionId: null,
-        kind: selected.kind,
-        slug: selected.slug,
-      });
+      const loaded = await loadEntity(selected.kind, selected.slug);
       if (loaded.state === "missing") {
         throw new Error(
           "This entity no longer exists in working YAML. Reload the canvas before deleting.",
@@ -416,12 +463,7 @@ function ProjectEditingLayer({
         entity: parseArchitectureEntity(loaded.kind, loaded.fields),
         expectedSha256: loaded.sha256,
       });
-      const impact = await rpc.call("taraDeleteImpact", {
-        projectId,
-        projectVersionId: null,
-        kind: selected.kind,
-        stableKey: selected.slug,
-      });
+      const impact = await loadDeleteImpact(selected.kind, selected.slug);
       setDeleteImpact({
         slug: impact.stableKey,
         referrers: impact.referrers.map((referrer) => ({
@@ -449,9 +491,7 @@ function ProjectEditingLayer({
     setSaving(true);
     setError(null);
     try {
-      const result = await rpc.call("taraCommandApply", {
-        projectId,
-        projectVersionId: null,
+      const result = await applyCommand({
         operation: "delete",
         kind: deleteTarget.kind,
         stableKey: deleteTarget.slug,

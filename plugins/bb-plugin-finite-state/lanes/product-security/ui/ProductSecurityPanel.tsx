@@ -118,6 +118,7 @@ function TaraPanel({
   detail: readonly string[];
 }): React.JSX.Element {
   const navigate = useBbNavigate();
+  const [promotionVersionId, setPromotionVersionId] = useState("");
   const scope = scopeState.scope;
   const data = useArchitectureData(scope);
   const focusId = focusIdFromRoute(detail);
@@ -202,6 +203,47 @@ function TaraPanel({
     return <CanvasUnconfiguredState />;
   }
   if (scopeState.status === "loading") return <CanvasLoadingState />;
+  if (scopeState.status === "unconfigured") {
+    if (!scopeState.legacy) return <CanvasUnconfiguredState />;
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <div className="w-full max-w-lg rounded-lg border border-border bg-card p-5 shadow-sm">
+          <h2 className="text-base font-semibold text-foreground">
+            Promote legacy TARA to a version
+          </h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            A project-scoped snapshot exists for{" "}
+            {scopeState.legacy.platformProjectId}. Promotion copies every
+            accepted kind as one version baseline; it does not run during canvas
+            reads and refuses a non-empty target.
+          </p>
+          <label
+            className="mt-4 block text-sm font-medium"
+            htmlFor="tara-promotion-version"
+          >
+            Target version ID
+          </label>
+          <input
+            className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            id="tara-promotion-version"
+            onChange={(event) => setPromotionVersionId(event.target.value)}
+            placeholder="version-1"
+            value={promotionVersionId}
+          />
+          <button
+            className="mt-4 h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
+            disabled={
+              scopeState.promoting || promotionVersionId.trim().length === 0
+            }
+            onClick={() => void scopeState.promote(promotionVersionId.trim())}
+            type="button"
+          >
+            {scopeState.promoting ? "Promoting…" : "Promote complete snapshot"}
+          </button>
+        </div>
+      </div>
+    );
+  }
   if (scopeState.status === "error" || !scope) {
     return <CanvasErrorState onRetry={scopeState.retry} />;
   }
@@ -221,6 +263,14 @@ function TaraPanel({
     const cacheSignals = architectureCacheSignals(data.model.cache.message);
     return (
       <div className="relative h-full min-h-0">
+        {scopeState.promotionMessage ? (
+          <div
+            className="border-b border-border bg-muted px-4 py-2 text-sm text-muted-foreground"
+            role="status"
+          >
+            {scopeState.promotionMessage}
+          </div>
+        ) : null}
         {data.error ? (
           <CanvasErrorState onRetry={data.retry} />
         ) : cacheSignals.fileDiagnostics ? (
@@ -245,6 +295,14 @@ function TaraPanel({
   const graph = data.graph;
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {scopeState.promotionMessage ? (
+        <div
+          className="border-b border-border bg-muted px-4 py-2 text-sm text-muted-foreground"
+          role="status"
+        >
+          {scopeState.promotionMessage}
+        </div>
+      ) : null}
       <CanvasCacheBanner
         error={data.error}
         message={model.cache.message}

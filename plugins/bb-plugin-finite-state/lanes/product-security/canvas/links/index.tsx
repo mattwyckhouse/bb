@@ -313,7 +313,6 @@ function ArchitectureLinksLayer({
       <CanvasLayoutPersistence
         appRuntime={appRuntime}
         projectId={layoutProjectId}
-        projectVersionId={projectVersionId}
       />
     </>,
     portalTarget,

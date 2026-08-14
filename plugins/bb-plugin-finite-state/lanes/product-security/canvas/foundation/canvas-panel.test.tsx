@@ -357,11 +357,11 @@ describe("WP-31 bb panel qualification", () => {
             return {
               versions,
               selected,
-              source: explicit ? "explicit" : "bound",
-              promotedKinds: [],
+              source: explicit ? "explicit" : "latest",
+              legacy: null,
             };
           },
-          taraList: (input) => {
+          taraCanvasList: (input) => {
             const page = taraPage(input);
             const projectVersionId =
               typeof input === "object" && input !== null
@@ -401,7 +401,7 @@ describe("WP-31 bb panel qualification", () => {
     expect(await slot.findByText("overlay version-1")).toBeTruthy();
     const latestTaraCalls = slot.inspection.rpcCalls.filter(
       (call) =>
-        call.method === "taraList" &&
+        call.method === "taraCanvasList" &&
         typeof call.input === "object" &&
         call.input !== null &&
         Reflect.get(call.input, "projectVersionId") === "version-1",
@@ -446,7 +446,7 @@ describe("WP-31 bb panel qualification", () => {
         rpc: {
           connectionsStatus: connectedRemoteStatus,
           taraScopeResolve: resolveTestTaraScope,
-          taraList: (input) => taraPage(input),
+          taraCanvasList: (input) => taraPage(input),
         },
       },
     );
@@ -500,7 +500,7 @@ describe("WP-31 bb panel qualification", () => {
         rpc: {
           connectionsStatus: connectedRemoteStatus,
           taraScopeResolve: resolveTestTaraScope,
-          taraList: (input) => {
+          taraCanvasList: (input) => {
             if (offline) throw new Error("offline");
             return taraPage(input);
           },
@@ -535,7 +535,7 @@ describe("WP-31 bb panel qualification", () => {
         rpc: {
           connectionsStatus: connectedRemoteStatus,
           taraScopeResolve: resolveTestTaraScope,
-          taraList: () => {
+          taraCanvasList: () => {
             if (offline) throw new Error("offline");
             return { items: [], total: 0, next: null, cache };
           },
@@ -563,7 +563,7 @@ describe("WP-31 bb panel qualification", () => {
         rpc: {
           connectionsStatus: connectedRemoteStatus,
           taraScopeResolve: resolveTestTaraScope,
-          taraList: () => ({ items: [], total: 0, next: null, cache }),
+          taraCanvasList: () => ({ items: [], total: 0, next: null, cache }),
         },
       },
     );
@@ -578,7 +578,7 @@ describe("WP-31 bb panel qualification", () => {
         rpc: {
           connectionsStatus: connectedRemoteStatus,
           taraScopeResolve: resolveTestTaraScope,
-          taraList: () => Promise.reject(new Error("cache failure")),
+          taraCanvasList: () => Promise.reject(new Error("cache failure")),
         },
       },
     );
@@ -595,7 +595,7 @@ describe("WP-31 bb panel qualification", () => {
         rpc: {
           connectionsStatus: connectedRemoteStatus,
           taraScopeResolve: resolveTestTaraScope,
-          taraList: (input) => taraPage(input, true),
+          taraCanvasList: (input) => taraPage(input, true),
         },
       },
     );
@@ -612,7 +612,7 @@ describe("WP-31 bb panel qualification", () => {
         rpc: {
           connectionsStatus: connectedRemoteStatus,
           taraScopeResolve: resolveTestTaraScope,
-          taraList: (input) => ({
+          taraCanvasList: (input) => ({
             items: [],
             total: 0,
             next: null,
@@ -647,7 +647,7 @@ describe("WP-31 bb panel qualification", () => {
         rpc: {
           connectionsStatus: connectedRemoteStatus,
           taraScopeResolve: resolveTestTaraScope,
-          taraList: (input) => {
+          taraCanvasList: (input) => {
             const unsupportedComponent = inputKind(input) === "component";
             const page = taraPage(input, unsupportedComponent);
             return {
@@ -687,7 +687,7 @@ describe("WP-31 bb panel qualification", () => {
         rpc: {
           connectionsStatus: connectedRemoteStatus,
           taraScopeResolve: resolveTestTaraScope,
-          taraList: () => ({
+          taraCanvasList: () => ({
             items: [],
             total: 0,
             next: null,
@@ -718,7 +718,7 @@ describe("WP-31 bb panel qualification", () => {
         rpc: {
           connectionsStatus: connectedRemoteStatus,
           taraScopeResolve: resolveTestTaraScope,
-          taraList: (input) => ({
+          taraCanvasList: (input) => ({
             items: [],
             total: 0,
             next: null,
@@ -760,6 +760,83 @@ describe("WP-31 bb panel qualification", () => {
     );
     expect(await unconfigured.findByText("Choose a project")).toBeTruthy();
     unconfigured.lifecycle.unmount();
+
+    const freshProject = renderSlot(
+      panel,
+      { subPath: "tara" },
+      {
+        context: { projectId: "fresh-workspace", threadId: null },
+        rpc: {
+          connectionsStatus: connectedRemoteStatus,
+          taraScopeResolve: () => ({
+            versions: [],
+            selected: null,
+            source: "none",
+            legacy: null,
+          }),
+        },
+      },
+    );
+    expect(await freshProject.findByText("Choose a project")).toBeTruthy();
+    expect(freshProject.queryByText("Loading accepted model…")).toBeNull();
+    freshProject.lifecycle.unmount();
+  });
+
+  it("requires and discloses explicit all-kind legacy promotion", async () => {
+    const panel = await productSecurityPanel();
+    let promoted = false;
+    const selected = {
+      platformProjectId: "platform-legacy",
+      projectVersionId: "version-promoted",
+      asOf: "2026-08-14T12:00:00.000Z",
+    };
+    const slot = renderSlot(
+      panel,
+      { subPath: "tara" },
+      {
+        context: { projectId: "workspace-legacy", threadId: null },
+        rpc: {
+          connectionsStatus: connectedRemoteStatus,
+          taraScopeResolve: () =>
+            promoted
+              ? {
+                  versions: [selected],
+                  selected,
+                  source: "explicit",
+                  legacy: null,
+                }
+              : {
+                  versions: [],
+                  selected: null,
+                  source: "none",
+                  legacy: {
+                    platformProjectId: "platform-legacy",
+                    kinds: ["component", "threat"],
+                  },
+                },
+          taraScopePromote: () => {
+            promoted = true;
+            return { selected, promotedKinds: ["component", "threat"] };
+          },
+          taraCanvasList: () => ({ items: [], total: 0, next: null, cache }),
+        },
+      },
+    );
+    expect(
+      await slot.findByText("Promote legacy TARA to a version"),
+    ).toBeTruthy();
+    fireEvent.change(slot.getByLabelText("Target version ID"), {
+      target: { value: "version-promoted" },
+    });
+    fireEvent.click(
+      slot.getByRole("button", { name: "Promote complete snapshot" }),
+    );
+    expect(
+      await slot.findByText(
+        "Promoted the complete legacy snapshot: component, threat.",
+      ),
+    ).toBeTruthy();
+    slot.lifecycle.unmount();
   });
 
   it("paints Arrange state and persists successful positions", async () => {

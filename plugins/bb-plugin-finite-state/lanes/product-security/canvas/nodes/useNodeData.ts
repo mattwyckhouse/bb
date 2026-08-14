@@ -18,10 +18,13 @@ import {
   REFRESH_FAILURE_CACHE_MESSAGE,
 } from "./cacheMessage.js";
 import type { ResolvedTaraScope } from "../scope/index.js";
+import type { taraCanvasRpcContract } from "../scope/backend.js";
 
 type TaraListInput = z.input<(typeof rpcContract)["taraList"]["input"]>;
 type TaraListPage = z.output<(typeof rpcContract)["taraList"]["output"]>;
-type TaraListCall = (input: TaraListInput) => Promise<TaraListPage>;
+type TaraListCall = (
+  input: TaraListInput & { kind: TaraKind },
+) => Promise<TaraListPage>;
 
 const TARA_KINDS = ["component", "zone", "asset", "dataflow"] as const;
 const MAX_TARA_PAGES_PER_KIND = 1_000;
@@ -420,11 +423,21 @@ function payloadScope(payload: unknown): {
 export function useArchitectureData(
   scope: ResolvedTaraScope | null,
 ): ArchitectureDataState {
-  const rpc = useRpc<typeof rpcContract>();
+  const rpc = useRpc<typeof rpcContract & typeof taraCanvasRpcContract>();
   const source = useMemo(
     () =>
-      createRpcArchitectureDataSource((input) => rpc.call("taraList", input)),
-    [rpc],
+      createRpcArchitectureDataSource((input) => {
+        if (!scope) throw new Error("No TARA version is selected.");
+        return rpc.call("taraCanvasList", {
+          workspaceProjectId: scope.workspaceProjectId,
+          platformProjectId: input.projectId,
+          projectVersionId: input.projectVersionId ?? scope.projectVersionId,
+          kind: input.kind,
+          pageSize: input.pageSize,
+          continuation: input.continuation,
+        });
+      }),
+    [rpc, scope],
   );
   const [requestRevision, setRequestRevision] = useState(0);
   const [projectModel, setProjectModel] = useState<ProjectModel | null>(null);
@@ -434,7 +447,7 @@ export function useArchitectureData(
     [],
   );
   const scopeKey = scope
-    ? `${scope.platformProjectId}\0${scope.projectVersionId}`
+    ? `${scope.workspaceProjectId}\0${scope.platformProjectId}\0${scope.projectVersionId}`
     : null;
 
   useRealtime("tara:changed", (payload) => {

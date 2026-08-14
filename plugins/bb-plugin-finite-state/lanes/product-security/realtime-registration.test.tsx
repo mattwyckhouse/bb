@@ -432,11 +432,11 @@ describe("registered product-security realtime boundary", () => {
                 return {
                   versions: [selected],
                   selected,
-                  source: "bound",
-                  promotedKinds: [],
+                  source: "latest",
+                  legacy: null,
                 };
               },
-              taraList: taraPage,
+              taraCanvasList: taraPage,
               threatOverlaySnapshot: () => {
                 threatReads += 1;
                 return threatSnapshot(threatVersionId);

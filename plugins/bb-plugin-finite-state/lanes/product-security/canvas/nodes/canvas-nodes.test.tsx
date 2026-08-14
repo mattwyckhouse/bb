@@ -560,7 +560,7 @@ describe("WP-32 inspector and project scope", () => {
         },
         rpc: {
           taraScopeResolve: resolveTestTaraScope,
-          taraList: (input) => taraPage(input),
+          taraCanvasList: (input) => taraPage(input),
         },
       },
     );
@@ -606,7 +606,7 @@ describe("WP-32 inspector and project scope", () => {
       slot.getByText("Partial architecture:", { exact: false }),
     ).toBeTruthy();
     const taraCalls = slot.inspection.rpcCalls.filter(
-      (call) => call.method === "taraList",
+      (call) => call.method === "taraCanvasList",
     );
     expect(taraCalls).toHaveLength(4);
     expect(
@@ -614,7 +614,8 @@ describe("WP-32 inspector and project scope", () => {
         (call) =>
           typeof call.input === "object" &&
           call.input !== null &&
-          Reflect.get(call.input, "projectId") === "project-1" &&
+          Reflect.get(call.input, "workspaceProjectId") === "project-1" &&
+          Reflect.get(call.input, "platformProjectId") === "project-1" &&
           Reflect.get(call.input, "projectVersionId") === "version-1",
       ),
     ).toBe(true);
@@ -706,7 +707,7 @@ describe("WP-32 inspector and project scope", () => {
         },
         rpc: {
           taraScopeResolve: resolveTestTaraScope,
-          taraList: (input) => taraPage(input),
+          taraCanvasList: (input) => taraPage(input),
           threatOverlaySnapshot: () =>
             threatOverlayRpcContract.threatOverlaySnapshot.output.parse({
               projectVersionId: null,

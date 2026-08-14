@@ -13,7 +13,10 @@ import { toStorageProjectVersionId } from "../../lib/store/index.js";
 import { registerCanvasEditingBackend } from "./canvas/editing/backend.js";
 import { registerCanvasLinksBackend } from "./canvas/links/backend.js";
 import { registerCanvasNodesBackend } from "./canvas/nodes/backend.js";
-import { registerTaraScopeBackend } from "./canvas/scope/backend.js";
+import {
+  registerTaraScopeBackend,
+  taraCanvasRpcContract,
+} from "./canvas/scope/backend.js";
 import { registerThreatOverlayBackend } from "./canvas/threat-overlay/backend.js";
 import type { CanvasTaraKind } from "./canvas/foundation/types.js";
 import { architectureEntityPayload } from "./canvas/editing/schema.js";
@@ -343,6 +346,13 @@ export async function listTara(
     kind?: unknown;
     filters?: unknown;
   },
+  identities: {
+    workspaceProjectId: string;
+    platformProjectId: string;
+  } = {
+    workspaceProjectId: input.projectId,
+    platformProjectId: input.projectId,
+  },
 ) {
   const kind = readTaraKind(input);
   assertFoundationFilters(input);
@@ -353,7 +363,7 @@ export async function listTara(
          FROM sync_state
         WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?`,
     )
-    .get(input.projectId, projectVersionId, kind);
+    .get(identities.platformProjectId, projectVersionId, kind);
 
   const pageSize = input.pageSize ?? 50;
   const afterKey = decodeContinuation(input.continuation ?? null);
@@ -361,7 +371,7 @@ export async function listTara(
   let diagnostics: CanvasFileDiagnostic[] = [];
   let source: CanvasProjectSource | null = null;
   try {
-    source = await projectSource(bb, input.projectId);
+    source = await projectSource(bb, identities.workspaceProjectId);
   } catch {
     // An accepted base remains readable when this bb project has no bound
     // workspace source. With no base this is the explicit empty/unconfigured
@@ -383,7 +393,7 @@ export async function listTara(
     }
   }
   const deletedPrefix = canvasDeletedMarkerPrefix(
-    input.projectId,
+    identities.workspaceProjectId,
     input.projectVersionId,
     kind,
   );
@@ -432,7 +442,7 @@ export async function listTara(
             LIMIT ?`,
         )
         .all(
-          input.projectId,
+          identities.platformProjectId,
           projectVersionId,
           kind,
           sync.accepted_generation_id,
@@ -460,7 +470,7 @@ export async function listTara(
             )`,
         )
         .get(
-          input.projectId,
+          identities.platformProjectId,
           projectVersionId,
           kind,
           sync.accepted_generation_id,
@@ -545,6 +555,26 @@ export function registerProductSecurity(
   bb.rpc.register(productSecurityRpcContract, {
     taraList(input) {
       return listTara(bb, ctx.db(), input);
+    },
+  });
+  bb.rpc.register(taraCanvasRpcContract, {
+    taraCanvasList(input) {
+      return listTara(
+        bb,
+        ctx.db(),
+        {
+          projectId: input.platformProjectId,
+          projectVersionId: input.projectVersionId,
+          pageSize: input.pageSize,
+          continuation: input.continuation,
+          kind: input.kind,
+          filters: {},
+        },
+        {
+          workspaceProjectId: input.workspaceProjectId,
+          platformProjectId: input.platformProjectId,
+        },
+      );
     },
   });
 

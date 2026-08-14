@@ -3,6 +3,13 @@ import { describe, expect, it } from "vitest";
 import { createPluginContext } from "../../../../lib/context.js";
 import { rpcContract } from "../../../../shared/contract.js";
 import { registerProductSecurity } from "../../register.js";
+import { taraCanvasRpcContract } from "../scope/backend.js";
+import { versionedCanvasEditingRpcContract } from "../editing/backend.js";
+import { parseArchitectureEntity } from "../editing/schema.js";
+import {
+  canvasDeletedMarkerKey,
+  serializeCanvasEntity,
+} from "../editing/writer.js";
 
 function seedAcceptedTara(
   db: ReturnType<ReturnType<typeof createPluginContext>["db"]>,
@@ -90,6 +97,174 @@ function seedAcceptedTara(
 }
 
 describe("WP-31 product-security RPC composition", () => {
+  it("keeps workspace source lookup separate from Platform/version cache identity", async () => {
+    const authored = serializeCanvasEntity(
+      parseArchitectureEntity("component", {
+        slug: "authored-gateway",
+        name: "Authored gateway",
+        component_type: "software",
+        criticality: "high",
+        interfaces: [],
+        technologies: [],
+        is_entry_point: true,
+        stores_data: false,
+      }),
+    );
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "finite-state-strict-identities",
+      sdk: {
+        projects: {
+          get: ({ projectId }) => {
+            if (projectId !== "workspace-1")
+              throw new Error("unknown workspace");
+            return {
+              id: projectId,
+              sources: [
+                { hostId: "host-1", path: "/workspace", isDefault: true },
+              ],
+            };
+          },
+        },
+        files: {
+          list: () => ({
+            files: [
+              { name: "authored-gateway.yaml", path: "authored-gateway.yaml" },
+            ],
+            truncated: false,
+          }),
+          read: ({ path }) => {
+            if (!path.endsWith("authored-gateway.yaml")) {
+              throw new Error("ENOENT: file does not exist");
+            }
+            return {
+              content: authored,
+              contentEncoding: "utf8" as const,
+              sha256: "a".repeat(64),
+            };
+          },
+        },
+      },
+    });
+    const ctx = createPluginContext(bb);
+    registerProductSecurity(bb, ctx);
+    const db = ctx.db();
+    db.prepare(
+      `INSERT INTO workspace_platform_project_binding
+         (workspace_project_id, platform_project_id)
+       VALUES ('workspace-1', 'platform-1')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO pull_generation
+         (project_id, project_version_id, generation_id, status,
+          requested_kinds_json, started_at, completed_at, accepted_at)
+       VALUES ('platform-1', 'version-1', 'generation-1', 'accepted',
+               '["component"]', '2026-08-14T10:00:00.000Z',
+               '2026-08-14T10:00:00.000Z', '2026-08-14T10:00:00.000Z')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO sync_state
+         (project_id, project_version_id, entity_kind, accepted_generation_id,
+          base_revision, last_pull)
+       VALUES ('platform-1', 'version-1', 'component', 'generation-1', 1,
+               '2026-08-14T10:00:00.000Z')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO base_snapshot
+         (project_id, project_version_id, entity_kind, generation_id, entity_key,
+          payload, content_hash, pulled_at)
+       VALUES ('platform-1', 'version-1', 'component', 'generation-1',
+               'fs1.c2x1Zw.YWNjZXB0ZWQtYXBp',
+               '{"slug":"accepted-api","kind":"component","name":"Accepted API","component_type":"software","criticality":"high","interfaces":[],"technologies":[],"is_entry_point":false,"stores_data":false}', 'hash',
+               '2026-08-14T10:00:00.000Z')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO sync_state
+         (project_id, project_version_id, entity_kind, accepted_generation_id,
+          base_revision, last_pull)
+       VALUES ('platform-1', 'version-1', 'threat', 'generation-1', 1,
+               '2026-08-14T10:00:00.000Z'),
+              ('platform-1', 'version-1', 'asset', 'generation-1', 1,
+               '2026-08-14T10:00:00.000Z')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO base_snapshot
+         (project_id, project_version_id, entity_kind, generation_id, entity_key,
+          payload, content_hash, pulled_at)
+       VALUES ('platform-1', 'version-1', 'threat', 'generation-1',
+               'accepted-threat',
+               '{"title":"Accepted threat","category":"spoofing","status":"open"}',
+               'hash-threat', '2026-08-14T10:00:00.000Z'),
+              ('platform-1', 'version-1', 'asset', 'generation-1',
+               'accepted-remote-asset',
+               '{"name":"Remote asset","asset_type":"remote-only-value"}',
+               'hash-asset', '2026-08-14T10:00:00.000Z')`,
+    ).run();
+
+    const rawPage = await harness.behavior.callRpc("taraCanvasList", {
+      workspaceProjectId: "workspace-1",
+      platformProjectId: "platform-1",
+      projectVersionId: "version-1",
+      kind: "component",
+      pageSize: 50,
+      continuation: null,
+    });
+    const page = taraCanvasRpcContract.taraCanvasList.output.parse(rawPage);
+    expect(page.items.map((item) => item.key)).toEqual([
+      "accepted-api",
+      "authored-gateway",
+    ]);
+    expect(harness.inspection.sdk.callsTo("projects.get")).toHaveLength(1);
+    const acceptedEdit =
+      versionedCanvasEditingRpcContract.canvasVersionedEditingLoad.output.parse(
+        await harness.behavior.callRpc("canvasVersionedEditingLoad", {
+          workspaceProjectId: "workspace-1",
+          platformProjectId: "platform-1",
+          projectVersionId: "version-1",
+          kind: "component",
+          slug: "accepted-api",
+        }),
+      );
+    expect(acceptedEdit).toMatchObject({
+      state: "ready",
+      projectId: "workspace-1",
+      projectVersionId: "version-1",
+      slug: "accepted-api",
+    });
+    expect(harness.inspection.sdk.callsTo("projects.get")).toHaveLength(2);
+    await bb.storage.kv.set(
+      canvasDeletedMarkerKey(
+        "workspace-1",
+        "version-1",
+        "component",
+        "accepted-api",
+      ),
+      true,
+    );
+    const afterDeletion = await harness.behavior.callRpc("taraCanvasList", {
+      workspaceProjectId: "workspace-1",
+      platformProjectId: "platform-1",
+      projectVersionId: "version-1",
+      kind: "component",
+      pageSize: 50,
+      continuation: null,
+    });
+    expect(afterDeletion).toMatchObject({
+      items: [{ key: "authored-gateway" }],
+      total: 1,
+    });
+    const overlay = await harness.behavior.callRpc("threatOverlaySnapshot", {
+      workspaceProjectId: "workspace-1",
+      projectId: "platform-1",
+      projectVersionId: "version-1",
+    });
+    expect(overlay).toMatchObject({
+      projectVersionId: "version-1",
+      total: 1,
+      threats: [{ slug: "accepted-threat", rawCategory: "spoofing" }],
+    });
+    await harness.lifecycle.dispose();
+  });
+
   it("reads a typed stale warm cache through the frozen taraList method", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "finite-state" });
     const ctx = createPluginContext(bb);
