@@ -93,42 +93,47 @@ function taraPage(input: unknown, stale = false) {
 
 function requirementsPage() {
   return {
-    items: [{
-      projectId: "project-1",
-      projectVersionId: null,
-      kind: "requirement",
-      key: "REQ-secure-update",
-      label: "REQ-secure-update",
-      fields: {
-        requirement: {
-          schema: "fs-requirement/v1",
-          id: "REQ-secure-update",
-          req_type: "security",
-          priority: "P1",
-          status: "draft",
-          ears: {
-            pattern: "ubiquitous",
-            text: "The gateway SHALL reject unsigned firmware",
-            parts: { system: "gateway", response: "reject unsigned firmware" },
+    items: [
+      {
+        projectId: "project-1",
+        projectVersionId: null,
+        kind: "requirement",
+        key: "REQ-secure-update",
+        label: "REQ-secure-update",
+        fields: {
+          requirement: {
+            schema: "fs-requirement/v1",
+            id: "REQ-secure-update",
+            req_type: "security",
+            priority: "P1",
+            status: "draft",
+            ears: {
+              pattern: "ubiquitous",
+              text: "The gateway SHALL reject unsigned firmware",
+              parts: {
+                system: "gateway",
+                response: "reject unsigned firmware",
+              },
+            },
+            source_description: "Protect the update trust boundary.",
+            mitigations: [],
+            controls: [],
+            standards: [],
+            verification: [],
           },
-          source_description: "Protect the update trust boundary.",
-          mitigations: [],
-          controls: [],
-          standards: [],
-          verification: [],
+          evidenceState: "not_run",
+          stale: false,
+          local: true,
+          tiers: [
+            { tier: "static", state: "not_run", count: 0 },
+            { tier: "emulation", state: "not_run", count: 0 },
+            { tier: "hil", state: "not_run", count: 0 },
+            { tier: "manual", state: "not_run", count: 0 },
+          ],
+          sourceSha256: null,
         },
-        evidenceState: "not_run",
-        stale: false,
-        local: true,
-        tiers: [
-          { tier: "static", state: "not_run", count: 0 },
-          { tier: "emulation", state: "not_run", count: 0 },
-          { tier: "hil", state: "not_run", count: 0 },
-          { tier: "manual", state: "not_run", count: 0 },
-        ],
-        sourceSha256: null,
       },
-    }],
+    ],
     total: 1,
     next: null,
     cache,

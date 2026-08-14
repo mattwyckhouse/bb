@@ -295,11 +295,8 @@ export async function listTara(
         )
     : [];
   const acceptedTotal = sync?.accepted_generation_id
-    ? db
-        .prepare<
-          [string, string, string, string, string],
-          TaraTotalRow
-        >(
+    ? (db
+        .prepare<[string, string, string, string, string], TaraTotalRow>(
           `SELECT COUNT(*) AS total
              FROM (
                SELECT COALESCE(
@@ -321,7 +318,7 @@ export async function listTara(
           kind,
           sync.accepted_generation_id,
           excludedJson,
-        )?.total ?? 0
+        )?.total ?? 0)
     : 0;
   const mergedRows: Array<[string, Record<string, JsonValue>]> = [];
   for (const row of rows) {
