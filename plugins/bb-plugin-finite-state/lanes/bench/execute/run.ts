@@ -666,12 +666,29 @@ async function executeRunBench(
       );
     }
     let jobIds: string[];
+    const dispatchedJobIds: string[] = [];
     try {
       jobIds = await dispatchTier1(
         {
           forgeCompute: client,
           firmwareHandshake: preparedExecution.firmwareHandshake,
           forgeProcess: preparedExecution.forgeProcess,
+          onJobsDispatched(ids) {
+            dispatchedJobIds.splice(0, dispatchedJobIds.length, ...ids);
+            const dispatching: BenchRunRecord = {
+              ...linked,
+              status: "running",
+              jobId: ids[0] ?? null,
+              raw: { firmwareDigest, jobIds: [...ids], dispatching: true },
+            };
+            currentRun = dispatching;
+            failureContext = { firmwareDigest, jobIds: [...ids] };
+            checkpoint(deps, {
+              run: dispatching,
+              results: [],
+              artifacts: [],
+            });
+          },
         },
         {
           projectId: validated.projectId,
@@ -685,7 +702,11 @@ async function executeRunBench(
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Tier 1 dispatch failed";
-      failureContext = { firmwareDigest, jobIds: [], dispatchError: message };
+      failureContext = {
+        firmwareDigest,
+        jobIds: [...dispatchedJobIds],
+        dispatchError: message,
+      };
       throw new BenchRunError("FORGE_DISPATCH_FAILED", message);
     }
     const running: BenchRunRecord = {
@@ -707,18 +728,32 @@ async function executeRunBench(
     const message =
       error instanceof Error ? error.message : "Bench run preflight failed";
     const aborted = signal.aborted;
-    const code = aborted ? "BENCH_RUN_ABORTED" : failureCode(error);
+    const dispatchAmbiguous = (failureContext.jobIds?.length ?? 0) > 0;
+    const code = dispatchAmbiguous
+      ? "FORGE_DISPATCH_AMBIGUOUS"
+      : aborted
+        ? "BENCH_RUN_ABORTED"
+        : failureCode(error);
     if (!attemptRecorded) throw new BenchRunError(code, message);
     const finishedAt = deps.now().toISOString();
     checkpoint(deps, {
       run: {
         ...currentRun,
-        status: aborted ? "timeout" : "failed",
-        finishedAt,
-        durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+        status: dispatchAmbiguous ? "running" : aborted ? "timeout" : "failed",
+        ...(dispatchAmbiguous
+          ? { finishedAt: null, durationMs: null }
+          : {
+              finishedAt,
+              durationMs: Math.max(
+                0,
+                Date.parse(finishedAt) - Date.parse(startedAt),
+              ),
+            }),
+        jobId: failureContext.jobIds?.[0] ?? currentRun.jobId,
         raw: {
           ...failureContext,
           stage: currentRun.threadId ? "execution" : "preflight",
+          dispatchAmbiguous,
           failureCode: code,
           failureReason: message.slice(0, 20_000),
           jobIds: failureContext.jobIds ?? [],

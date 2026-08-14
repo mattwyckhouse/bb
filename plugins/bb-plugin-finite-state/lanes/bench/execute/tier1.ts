@@ -21,6 +21,7 @@ export interface Tier1DispatchDeps {
   forgeCompute: Pick<ForgeComputeClient, "verifyDynamic" | "penTestRun">;
   firmwareHandshake: FirmwareHandshakeDeps;
   forgeProcess: ForgeProcessAdapter;
+  onJobsDispatched(jobIds: readonly string[]): void;
 }
 
 function jobIdFromVerifyDynamic(value: Json): string {
@@ -67,7 +68,8 @@ export async function dispatchTier1(
   signal: AbortSignal,
 ): Promise<string[]> {
   signal.throwIfAborted();
-  if (input.targets.verdictIds.length === 0) throw new Error("TIER1_VERDICT_TARGET_REQUIRED");
+  if (input.targets.verdictIds.length === 0)
+    throw new Error("TIER1_VERDICT_TARGET_REQUIRED");
   const deploymentContext = validateDeploymentContext(input.deploymentContext);
 
   // This reads the sealed object's non-enumerable environment directly and
@@ -84,6 +86,7 @@ export async function dispatchTier1(
     { signal },
   );
   const dynamicJobId = jobIdFromVerifyDynamic(dynamic);
+  deps.onJobsDispatched([dynamicJobId]);
   const pentest = await deps.forgeCompute.penTestRun(
     {
       cveId: input.targets.cveId,
@@ -96,5 +99,6 @@ export async function dispatchTier1(
     { signal },
   );
   if (!pentest.jobId) throw new Error("FORGE_PENTEST_INVALID_JOB");
+  deps.onJobsDispatched([dynamicJobId, pentest.jobId]);
   return [dynamicJobId, pentest.jobId];
 }
