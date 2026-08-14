@@ -38,6 +38,7 @@ import {
   threatFocusSubPath,
   threatSlugFromPathname,
 } from "./selection.js";
+import { useThreatOverlayVisibility } from "./visibility.js";
 
 const PROJECT_SCOPE_STORAGE_KEY =
   "finite-state:product-security:project-scope:v1";
@@ -483,7 +484,11 @@ function ConfiguredThreatOverlay({
   const { fitView } = useReactFlow();
   const rpc = appRuntime.useRpc<typeof threatOverlayRpcContract>();
   const snapshot = useThreatSnapshot(projectId, appRuntime);
-  const [collapsed, setCollapsed] = useState(false);
+  const sharedVisibility = useThreatOverlayVisibility();
+  const [localCollapsed, setLocalCollapsed] = useState(false);
+  const collapsed = sharedVisibility?.collapsed ?? localCollapsed;
+  const onCollapsedChange =
+    sharedVisibility?.onCollapsedChange ?? setLocalCollapsed;
   const [selectionState, dispatchSelection] = useReducer(
     reduceThreatSelection,
     EMPTY_THREAT_SELECTION,
@@ -837,6 +842,12 @@ function ConfiguredThreatOverlay({
       ),
     [aggregatesMap, architectureEdgesBySlug, architectureNodesBySlug],
   );
+  const degradationMessage = snapshot.state.error
+    ? "Refresh failed; accepted threats remain usable."
+    : (snapshot.state.data?.partialError ??
+      (snapshot.state.data?.cache.state === "stale"
+        ? "Threat overlay is stale; accepted cache remains usable."
+        : null));
 
   if (!snapshot.state.data && snapshot.state.loading) return loadingPanel();
   if (!snapshot.state.data) {
@@ -880,7 +891,7 @@ function ConfiguredThreatOverlay({
         className={
           collapsed
             ? "absolute bottom-3 left-3 z-20 max-w-[calc(100%-1.5rem)]"
-            : "absolute bottom-3 left-3 z-20 flex h-[min(16rem,calc(100%-1.5rem))] w-[min(32rem,calc(100%-1.5rem))] min-h-0 overflow-hidden rounded-lg border border-border bg-card/95 text-card-foreground shadow-lg backdrop-blur-sm"
+            : "absolute bottom-3 left-3 z-20 flex h-[min(7.5rem,calc(100%-1.5rem))] w-[min(32rem,calc(100%-1.5rem))] min-h-0 overflow-hidden rounded-lg border border-border bg-card/95 text-card-foreground shadow-lg backdrop-blur-sm"
         }
         data-state={collapsed ? "collapsed" : "expanded"}
         data-threat-overlay-dock=""
@@ -888,9 +899,13 @@ function ConfiguredThreatOverlay({
         {collapsed ? (
           <button
             aria-expanded="false"
-            aria-label="Expand threat overlay"
+            aria-label={
+              degradationMessage
+                ? "Expand threat overlay; attention required"
+                : "Expand threat overlay"
+            }
             className="flex min-h-10 max-w-full items-center gap-2 rounded-lg border border-border bg-card/95 px-3 py-2 text-xs font-medium text-card-foreground shadow-lg backdrop-blur-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={() => setCollapsed(false)}
+            onClick={() => onCollapsedChange(false)}
             type="button"
           >
             <Icon aria-hidden="true" className="size-3.5" name="Target" />
@@ -898,6 +913,20 @@ function ConfiguredThreatOverlay({
             <span className="shrink-0 tabular-nums text-muted-foreground">
               {snapshot.state.data.threats.length}
             </span>
+            {degradationMessage ? (
+              <span
+                aria-label={`Threat overlay needs attention: ${degradationMessage}`}
+                className="inline-flex shrink-0 items-center gap-1 text-destructive"
+                role="status"
+              >
+                <Icon
+                  aria-hidden="true"
+                  className="size-3.5"
+                  name="AlertTriangle"
+                />
+                Needs attention
+              </span>
+            ) : null}
             <Icon aria-hidden="true" className="size-3.5" name="ChevronUp" />
           </button>
         ) : (
@@ -906,7 +935,7 @@ function ConfiguredThreatOverlay({
               aria-expanded="true"
               aria-label="Collapse threat overlay"
               className="absolute right-2 top-2 z-10 flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => setCollapsed(true)}
+              onClick={() => onCollapsedChange(true)}
               type="button"
             >
               <Icon
@@ -960,9 +989,7 @@ function ConfiguredThreatOverlay({
                       {snapshot.state.data.threats.length} open threats
                     </span>
                   </div>
-                  {snapshot.state.error ||
-                  snapshot.state.data.partialError ||
-                  snapshot.state.data.cache.state === "stale" ? (
+                  {degradationMessage ? (
                     <div
                       className="flex items-center gap-2 border-b border-border bg-muted px-3 py-1.5 text-xs text-foreground"
                       role="status"
@@ -972,12 +999,7 @@ function ConfiguredThreatOverlay({
                         className="size-3.5 text-destructive"
                         name="AlertTriangle"
                       />
-                      <span className="truncate">
-                        {snapshot.state.error
-                          ? "Refresh failed; accepted threats remain usable."
-                          : (snapshot.state.data.partialError ??
-                            "Threat overlay is stale; accepted cache remains usable.")}
-                      </span>
+                      <span className="truncate">{degradationMessage}</span>
                     </div>
                   ) : null}
                   {labels ? (

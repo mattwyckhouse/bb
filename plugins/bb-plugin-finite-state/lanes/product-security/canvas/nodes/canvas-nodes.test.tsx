@@ -29,6 +29,7 @@ import {
   toFoundationCanvasModel,
 } from "./index.js";
 import { ComponentNode } from "./ComponentNode.js";
+import { useThreatOverlayVisibility } from "../threat-overlay/visibility.js";
 
 const cache = {
   state: "fresh" as const,
@@ -511,25 +512,35 @@ describe("WP-32 inspector and project scope", () => {
     const { ProductSecurityPanel } =
       await import("../../ui/ProductSecurityPanel.js");
     const EmptyLayer = () => null;
+    const ThreatOverlay = () => {
+      const visibility = useThreatOverlayVisibility();
+      if (!visibility) throw new Error("Threat overlay visibility is missing");
+      return (
+        <button
+          onClick={() => visibility.onCollapsedChange(!visibility.collapsed)}
+          type="button"
+        >
+          {visibility.collapsed
+            ? "Expand threat overlay"
+            : "Collapse threat overlay"}
+        </button>
+      );
+    };
+    const features = {
+      loadNodeTypes: loadProductSecurityNodeTypes,
+      edgeTypes: {},
+      ThreatOverlay,
+      LinksLayer: EmptyLayer,
+      EditingLayer: EmptyLayer,
+      RequirementsCards: EmptyLayer,
+      RequirementsTraceabilityLayer: EmptyLayer,
+      RequirementsConversionLayer: EmptyLayer,
+      VerificationMatrix: EmptyLayer,
+      VerificationRunDetailLayer: EmptyLayer,
+    };
     const panel = {
       component(props: PluginNavPanelProps): React.JSX.Element {
-        return (
-          <ProductSecurityPanel
-            {...props}
-            features={{
-              loadNodeTypes: loadProductSecurityNodeTypes,
-              edgeTypes: {},
-              ThreatOverlay: EmptyLayer,
-              LinksLayer: EmptyLayer,
-              EditingLayer: EmptyLayer,
-              RequirementsCards: EmptyLayer,
-              RequirementsTraceabilityLayer: EmptyLayer,
-              RequirementsConversionLayer: EmptyLayer,
-              VerificationMatrix: EmptyLayer,
-              VerificationRunDetailLayer: EmptyLayer,
-            }}
-          />
-        );
+        return <ProductSecurityPanel {...props} features={features} />;
       },
     };
     const slot = renderSlot(
@@ -625,6 +636,12 @@ describe("WP-32 inspector and project scope", () => {
 
     const nodeWrapper = component.closest(".react-flow__node");
     if (!nodeWrapper) throw new Error("React Flow node wrapper did not render");
+    fireEvent.click(
+      await slot.findByRole("button", { name: "Collapse threat overlay" }),
+    );
+    expect(
+      slot.getByRole("button", { name: "Expand threat overlay" }),
+    ).toBeTruthy();
     fireEvent.click(nodeWrapper);
     await waitFor(() => {
       expect(slot.inspection.navigateCalls).toContainEqual({
@@ -633,6 +650,13 @@ describe("WP-32 inspector and project scope", () => {
         options: { subPath: "tara/nodes/component-software" },
       });
     });
+    const PanelComponent = panel.component;
+    slot.lifecycle.rerender(
+      <PanelComponent subPath="tara/nodes/component-software" />,
+    );
+    expect(
+      await slot.findByRole("button", { name: "Expand threat overlay" }),
+    ).toBeTruthy();
     const hardware = slot.getByLabelText("component hardware node");
     const hardwareWrapper = hardware.closest(".react-flow__node");
     if (!hardwareWrapper) {
