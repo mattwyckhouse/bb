@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -17,13 +18,19 @@ import type {
   RemotePage,
   RemoteServices,
 } from "../../lib/remote/types.js";
+import {
+  bindWorkspacePlatformProject,
+  selectAssuranceStudioProjectBinding,
+} from "../../lib/store/project-scope.js";
 import { ENTITIES, parseFindingStableKey } from "../../lib/sync/registry.js";
+import { rpcContract } from "../../shared/contract.js";
 import { registerFindings } from "../findings/register.js";
 import {
   createMockRemote,
   type MockRemoteHarness,
 } from "../../test/mock-remote/server.js";
 import { registerPlatformHandlers } from "../../test/mock-remote/platform/register.js";
+import { registerMockAssuranceStudio } from "../../test/mock-remote/assurance-studio/register.js";
 import {
   createMockPlatformState,
   type MockPlatformState,
@@ -76,12 +83,14 @@ let workingRequirements: WorkingEntity[] = [
   },
 ];
 let remoteRequirementError: Error | null = null;
+let remoteRequirementScopes: string[] = [];
 
 const foreignAdapter: EntityAdapter = {
   kind: "requirement",
   klass: "VERSIONED",
   serializer: createSerializer("requirement"),
-  async *fetchRemote(_scope, progress) {
+  async *fetchRemote(scope, progress) {
+    remoteRequirementScopes.push(scope.projectId);
     if (remoteRequirementError) throw remoteRequirementError;
     progress({ page: 1, of: 1 });
     yield remoteRequirements;
@@ -99,6 +108,7 @@ beforeAll(async () => {
     fixtureRoot: FIXTURE_ROOT,
     register(service, registry) {
       if (service === "platform") registerPlatformHandlers(registry, state);
+      else registerMockAssuranceStudio(registry, FIXTURE_ROOT);
     },
   });
   platform = new PlatformClient({
@@ -232,9 +242,10 @@ describe("sync registration", () => {
         deps,
         { projectId: "project-seam", projectVersionId: "version-seam" },
         ["requirement"],
+        { assuranceStudioProjectId: "as-project-seam" },
       ),
     ).resolves.toMatchObject({
-      kinds: { requirement: { fetched: 1, baseRows: 1 } },
+      kinds: { requirement: { fetched: 1, baseRows: 1, quarantined: 0 } },
     });
     workingRequirements = [
       {
@@ -247,6 +258,7 @@ describe("sync registration", () => {
         deps,
         { projectId: "project-seam", projectVersionId: "version-seam" },
         ["requirement"],
+        { assuranceStudioProjectId: "as-project-seam" },
       ),
     ).resolves.toMatchObject({
       local: [{ kind: "requirement", key: requirementKey, fields: ["title"] }],
@@ -262,6 +274,7 @@ describe("sync registration", () => {
   });
 
   it("serves frozen sync RPCs and fails push closed when human authorization is unavailable", async () => {
+    remoteRequirementScopes = [];
     const scope = platformScope();
     await expect(
       host.harness.behavior.callRpc("syncPull", {
@@ -282,6 +295,25 @@ describe("sync registration", () => {
         .get("junk-workspace-project"),
     ).toBe(0);
 
+    await expect(
+      host.harness.behavior.callRpc("syncPull", {
+        ...scope,
+        workspaceProjectId: "bb-project-sync",
+        kinds: ["requirement"],
+      }),
+    ).rejects.toThrow("AS_PROJECT_SELECTION_REQUIRED");
+    bindWorkspacePlatformProject(
+      context.db(),
+      "bb-project-sync",
+      scope.projectId,
+    );
+    selectAssuranceStudioProjectBinding(
+      context.db(),
+      "bb-project-sync",
+      scope.projectId,
+      "as-project-explicit",
+    );
+
     const pulled = await host.harness.behavior.callRpc("syncPull", {
       ...scope,
       workspaceProjectId: "bb-project-sync",
@@ -292,10 +324,11 @@ describe("sync registration", () => {
       generationId: expect.any(String),
       baseStateSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
       kinds: {
-        requirement: { fetched: 1, baseRows: 1 },
+        requirement: { fetched: 1, baseRows: 1, quarantined: 0 },
         vexDecision: {
           fetched: expect.any(Number),
           baseRows: expect.any(Number),
+          quarantined: expect.any(Number),
         },
       },
     });
@@ -320,6 +353,17 @@ describe("sync registration", () => {
         .all("bb-project-sync"),
     ).toEqual([scope.projectId]);
 
+    bindWorkspacePlatformProject(
+      context.db(),
+      "bb-project-failed-sync",
+      scope.projectId,
+    );
+    selectAssuranceStudioProjectBinding(
+      context.db(),
+      "bb-project-failed-sync",
+      scope.projectId,
+      "as-project-explicit",
+    );
     remoteRequirementError = new Error("registered RPC pull failed");
     try {
       await expect(
@@ -336,15 +380,20 @@ describe("sync registration", () => {
       context
         .db()
         .prepare(
-          `SELECT COUNT(*)
+          `SELECT platform_project_id, assurance_studio_project_id
              FROM workspace_platform_project_binding
             WHERE workspace_project_id = ?`,
         )
-        .pluck()
-        .get("bb-project-failed-sync"),
-    ).toBe(0);
+        .all("bb-project-failed-sync"),
+    ).toEqual([
+      {
+        platform_project_id: scope.projectId,
+        assurance_studio_project_id: "as-project-explicit",
+      },
+    ]);
     const statusReport = await host.harness.behavior.callRpc("syncStatus", {
       ...scope,
+      workspaceProjectId: "bb-project-sync",
     });
     // Frozen RPC inputs carry no thread or worktree capability, so working
     // local/orphan state is intentionally unavailable on this surface.
@@ -361,7 +410,10 @@ describe("sync registration", () => {
       cache: { acceptedGenerationId: pulledGenerationId },
     });
     await expect(
-      host.harness.behavior.callRpc("syncPlan", scope),
+      host.harness.behavior.callRpc("syncPlan", {
+        ...scope,
+        workspaceProjectId: "bb-project-sync",
+      }),
     ).resolves.toMatchObject({
       ...scope,
       planId: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{26}$/u),
@@ -382,6 +434,7 @@ describe("sync registration", () => {
     });
     const firstFilteredPage = await host.harness.behavior.callRpc("syncPlan", {
       ...scope,
+      workspaceProjectId: "bb-project-sync",
       kinds: ["vexDecision"],
       pageSize: 1,
       continuation: null,
@@ -402,6 +455,7 @@ describe("sync registration", () => {
       "syncPlan",
       {
         ...scope,
+        workspaceProjectId: "bb-project-sync",
         pageSize: 1,
         continuation: firstFilteredPage.next,
       },
@@ -414,6 +468,7 @@ describe("sync registration", () => {
     await expect(
       host.harness.behavior.callRpc("syncPlan", {
         ...scope,
+        workspaceProjectId: "bb-project-sync",
         kinds: ["vexDecision"],
         pageSize: 1,
         continuation: firstFilteredPage.next,
@@ -424,6 +479,10 @@ describe("sync registration", () => {
         "PLAN_CONTINUATION_INVALID: kinds are bound by the persisted plan token",
       ),
     });
+    expect(remoteRequirementScopes.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(remoteRequirementScopes)).toEqual(
+      new Set(["as-project-explicit"]),
+    );
     const pushInput = {
       ...scope,
       planId: "plan-wp17",
@@ -456,6 +515,124 @@ describe("sync registration", () => {
         "syncPushRetry",
       ]),
     );
+  });
+
+  it("enumerates every ambiguous AS link and persists only the explicit RPC selection", async () => {
+    const listed = rpcContract.syncAsProjectCandidates.output.parse(
+      await host.harness.behavior.callRpc("syncAsProjectCandidates", {
+        workspaceProjectId: "bb-project-sync",
+        projectId: "platform-project-a",
+        projectVersionId: null,
+      }),
+    );
+    expect(listed).toMatchObject({
+      platformProjectId: "platform-project-a",
+      candidateState: "ambiguous",
+      selectedAssuranceStudioProjectId: null,
+    });
+    expect(listed.items).toHaveLength(4);
+
+    await expect(
+      host.harness.behavior.callRpc("syncAsProjectCandidates", {
+        workspaceProjectId: "bb-project-sync",
+        projectId: "platform-project-c",
+        projectVersionId: null,
+      }),
+    ).resolves.toMatchObject({
+      platformProjectId: "platform-project-c",
+      candidateState: "unambiguous",
+      selectedAssuranceStudioProjectId: null,
+      items: [
+        expect.objectContaining({
+          assuranceStudioProjectId: "as-project-c1",
+        }),
+      ],
+    });
+    await expect(
+      host.harness.behavior.callRpc("syncAsProjectCandidates", {
+        workspaceProjectId: "bb-project-sync",
+        projectId: "platform-project-unlinked",
+        projectVersionId: null,
+      }),
+    ).resolves.toMatchObject({
+      platformProjectId: "platform-project-unlinked",
+      candidateState: "none",
+      selectedAssuranceStudioProjectId: null,
+      items: [],
+    });
+
+    await host.harness.behavior.callRpc("syncAsProjectSelect", {
+      workspaceProjectId: "bb-project-sync",
+      projectId: "platform-project-a",
+      projectVersionId: null,
+      assuranceStudioProjectId: "as-project-a3",
+    });
+    expect(
+      context
+        .db()
+        .prepare(
+          `SELECT assurance_studio_project_id
+             FROM workspace_platform_project_binding
+            WHERE workspace_project_id = ? AND platform_project_id = ?`,
+        )
+        .pluck()
+        .get("bb-project-sync", "platform-project-a"),
+    ).toBe("as-project-a3");
+    await expect(
+      host.harness.behavior.callRpc("syncAsProjectSelect", {
+        workspaceProjectId: "bb-project-sync",
+        projectId: "platform-project-a",
+        projectVersionId: null,
+        assuranceStudioProjectId: "as-project-b1",
+      }),
+    ).rejects.toThrow("AS_PROJECT_SELECTION_NOT_LINKED");
+  });
+
+  it("exposes explicit AS project enumeration and selection through the registered CLI", async () => {
+    const contextInput = {
+      cwd: "/untrusted-cwd",
+      threadId: "thread-sync-cli",
+      projectId: "bb-project-sync",
+    };
+    const listed = await host.harness.behavior.runCli(
+      [
+        "finite-state",
+        "as-projects",
+        "--project",
+        "platform-project-b",
+        "--json",
+      ],
+      contextInput,
+    );
+    expect(listed).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(listed.stdout)).toMatchObject({
+      platformProjectId: "platform-project-b",
+      candidateState: "ambiguous",
+      selectedAssuranceStudioProjectId: null,
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          assuranceStudioProjectId: "as-project-b2",
+        }),
+      ]),
+    });
+
+    const selected = await host.harness.behavior.runCli(
+      [
+        "finite-state",
+        "as-project-select",
+        "--project",
+        "platform-project-b",
+        "--as-project",
+        "as-project-b2",
+        "--json",
+      ],
+      contextInput,
+    );
+    expect(selected).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(selected.stdout)).toMatchObject({
+      platformProjectId: "platform-project-b",
+      selected: { assuranceStudioProjectId: "as-project-b2" },
+    });
   });
 
   it("partitions direct-Platform local, upstream, and both-side VEX edits exactly", async () => {
@@ -528,6 +705,9 @@ decisions:
   });
 
   it("runs the verb-first triage CLI with the documented leading command tolerance", async () => {
+    const priorThreadCalls = host.harness.sdk.callsTo("threads.get").length;
+    const priorEnvironmentCalls =
+      host.harness.sdk.callsTo("environments.get").length;
     await rm(join(root, ".fs"), { recursive: true, force: true });
     const result = await host.harness.behavior.runCli(
       ["finite-state", "pull", "triage"],
@@ -544,6 +724,7 @@ decisions:
         vexDecision: {
           fetched: expect.any(Number),
           baseRows: expect.any(Number),
+          quarantined: 0,
         },
       },
     });
@@ -566,8 +747,12 @@ decisions:
         (signal) => signal.channel === "fs-sync-pull",
       ),
     ).toBe(true);
-    expect(host.harness.sdk.callsTo("threads.get")).toHaveLength(2);
-    expect(host.harness.sdk.callsTo("environments.get")).toHaveLength(2);
+    expect(host.harness.sdk.callsTo("threads.get")).toHaveLength(
+      priorThreadCalls + 2,
+    );
+    expect(host.harness.sdk.callsTo("environments.get")).toHaveLength(
+      priorEnvironmentCalls + 2,
+    );
   });
 
   it("logs isolated VEX rows and reports their lane advisory count through the registered CLI", async () => {
@@ -636,7 +821,9 @@ decisions:
     });
     expect(first.exitCode).toBe(0);
     expect(JSON.parse(first.stdout)).toMatchObject({
-      kinds: { finding: { fetched: 4_001, baseRows: 4_000 } },
+      kinds: {
+        finding: { fetched: 4_001, baseRows: 4_000, quarantined: 0 },
+      },
     });
     const repeated = await host.harness.behavior.runCli(argv, {
       cwd: root,
@@ -645,7 +832,9 @@ decisions:
     });
     expect(repeated.exitCode).toBe(0);
     expect(JSON.parse(repeated.stdout)).toMatchObject({
-      kinds: { finding: { fetched: 4_001, baseRows: 4_000 } },
+      kinds: {
+        finding: { fetched: 4_001, baseRows: 4_000, quarantined: 0 },
+      },
     });
 
     for (const captured of [
@@ -657,6 +846,7 @@ decisions:
         componentGroup: "debian",
         componentName: "libxml2",
         componentVersion: "2.9.4+dfsg1-2.2+deb9u2",
+        expectedRows: 2,
       },
       {
         projectId: "5d78bed3-fa8e-59cf-b8a1-6046853ba785",
@@ -666,6 +856,7 @@ decisions:
         componentGroup: null,
         componentName: "Mbed TLS",
         componentVersion: "3.0.0",
+        expectedRows: 1,
       },
     ]) {
       const result = await host.harness.behavior.runCli(
@@ -686,7 +877,13 @@ decisions:
       );
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(result.stdout)).toMatchObject({
-        kinds: { finding: { fetched: 1, baseRows: 1 } },
+        kinds: {
+          finding: {
+            fetched: captured.expectedRows,
+            baseRows: captured.expectedRows,
+            quarantined: 0,
+          },
+        },
       });
       const persisted = context
         .db()
@@ -732,17 +929,27 @@ decisions:
       ...templateVersion,
       id: mixedVersion,
     });
+    const realShape = JSON.parse(
+      readFileSync(
+        resolve(FIXTURE_ROOT, "platform/fs193-binary-sast-specimen.json"),
+        "utf8",
+      ),
+    ) as Record<string, Json>;
+    const realShapeProjectVersion = realShape["projectVersion"];
+    if (
+      realShapeProjectVersion === null ||
+      Array.isArray(realShapeProjectVersion) ||
+      typeof realShapeProjectVersion !== "object"
+    ) {
+      throw new Error("real-shape specimen has no projectVersion object");
+    }
     const mixedRows = [
       {
-        id: "fs193-binary-sast",
-        projectVersionId: mixedVersion,
-        findingId: "FS-500-006",
-        component: {
-          id: "fs193-component",
-          name: "/update/firmware-root/etc/ssl/certs/ca-certificates.crt",
-          version: "",
+        ...realShape,
+        projectVersion: {
+          ...realShapeProjectVersion,
+          id: mixedVersion,
         },
-        type: "binary-sast",
       },
       {
         id: "fs193-exact",
@@ -755,14 +962,32 @@ decisions:
         },
       },
       {
-        id: "fs193-quarantined",
+        id: "fs199-advisory",
         projectVersionId: mixedVersion,
         findingId: "CVE-2026-19301",
-        title: "https://remote.invalid/?token=must-not-reach-diagnostics",
-        component: { id: "fs193-invalid-component", version: "" },
+        title: "https://remote.invalid/?api_key=must-not-reach-diagnostics",
+        component: {
+          id: "fs193-invalid-component",
+          name: "hostile-library",
+          version: "1.0.0",
+        },
+        epssScore: "authorization must-not-reach-diagnostics",
+        warningCount: null,
+        violations: "credential=must-not-reach-diagnostics",
+      },
+      {
+        id: "fs193-quarantined",
+        projectVersionId: mixedVersion,
+        findingId: "CVE-2026-19302",
+        component: { id: "fs193-invalid-component", version: "1.0.0" },
       },
     ];
-    for (const row of mixedRows) state.findings.set(row.id, row);
+    for (const row of mixedRows) {
+      const rowId = row["id"];
+      if (typeof rowId !== "string")
+        throw new Error("mixed finding row has no string id");
+      state.findings.set(rowId, row);
+    }
     try {
       const mixed = await host.harness.behavior.callRpc("syncPull", {
         workspaceProjectId: "bb-project-sync",
@@ -771,7 +996,7 @@ decisions:
         kinds: ["finding"],
       });
       expect(mixed).toMatchObject({
-        kinds: { finding: { fetched: 3, baseRows: 2 } },
+        kinds: { finding: { fetched: 4, baseRows: 3, quarantined: 1 } },
       });
       if (
         typeof mixed !== "object" ||
@@ -784,7 +1009,9 @@ decisions:
       const persisted = context
         .db()
         .prepare(
-          `SELECT finding_id AS findingId, stable_key AS stableKey
+          `SELECT finding_id AS findingId, stable_key AS stableKey,
+                  epss_score AS epssScore, warning_count AS warningCount,
+                  violation_count AS violationCount
              FROM findings
             WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
             ORDER BY finding_id`,
@@ -792,21 +1019,155 @@ decisions:
         .all(scope.projectId, mixedVersion, mixed.generationId) as Array<{
         findingId: string;
         stableKey: string;
+        epssScore: number | null;
+        warningCount: number;
+        violationCount: number;
       }>;
       expect(persisted.map((row) => row.findingId)).toEqual([
-        "fs193-binary-sast",
+        "00000000-0000-5000-8000-000000000193",
         "fs193-exact",
+        "fs199-advisory",
       ]);
+      expect(persisted[0]).toMatchObject({
+        epssScore: 0.00426,
+        warningCount: 2,
+        violationCount: 1,
+      });
       expect(parseFindingStableKey(persisted[0]?.stableKey ?? "").tier).toBe(
         "name-group-any-version",
       );
+      expect(persisted[2]).toMatchObject({
+        epssScore: null,
+        warningCount: 0,
+        violationCount: 0,
+      });
+      const registeredList = await host.harness.behavior.callRpc(
+        "findingsUiList",
+        {
+          projectId: scope.projectId,
+          projectVersionId: mixedVersion,
+          pageSize: 100,
+          continuation: null,
+          filters: {},
+        },
+      );
+      expect(registeredList).toMatchObject({
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            key: "00000000-0000-5000-8000-000000000193",
+            fields: expect.objectContaining({
+              epssScore: 0.00426,
+              warningCount: 2,
+              violationCount: 1,
+            }),
+          }),
+          expect.objectContaining({
+            key: "fs199-advisory",
+            fields: expect.objectContaining({
+              epssScore: null,
+              warningCount: null,
+              violationCount: null,
+            }),
+          }),
+        ]),
+      });
+      const diagnostics = await host.harness.behavior.callRpc(
+        "findingsPullAdvisories",
+        {
+          projectId: scope.projectId,
+          projectVersionId: mixedVersion,
+          generationId: mixed.generationId,
+        },
+      );
+      expect(diagnostics).toEqual({
+        generationId: mixed.generationId,
+        advisories: [
+          { code: "FINDING_COMPONENT_IDENTITY_MISSING", count: 1 },
+          { code: "FINDING_EPSS_SCORE_INVALID", count: 1 },
+          { code: "FINDING_VIOLATION_COUNT_INVALID", count: 1 },
+          { code: "FINDING_WARNING_COUNT_INVALID", count: 1 },
+        ],
+      });
+      const registeredDetail = await host.harness.behavior.callRpc(
+        "findingDetailGet",
+        {
+          projectId: scope.projectId,
+          projectVersionId: mixedVersion,
+          stableKey: persisted[0]?.stableKey ?? "",
+        },
+      );
+      expect(registeredDetail).toMatchObject({
+        state: "resolved",
+        rows: [
+          expect.objectContaining({
+            fields: expect.objectContaining({
+              epssScore: 0.00426,
+              warningCount: 2,
+              violationCount: 1,
+            }),
+          }),
+        ],
+      });
       expect(host.harness.inspection.logEntries).toContainEqual({
         level: "warn",
-        message: "Quarantined individually unkeyable Platform finding rows: 1",
+        message:
+          "Quarantined Platform finding rows with invalid identity: 1; reasons [FINDING_COMPONENT_IDENTITY_MISSING=1]",
       });
       expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
         "must-not-reach-diagnostics",
       );
+
+      const mixedCli = await host.harness.behavior.runCli(
+        [
+          "pull",
+          "finding",
+          "--project",
+          scope.projectId,
+          "--version",
+          mixedVersion,
+          "--json",
+        ],
+        {
+          cwd: root,
+          threadId: "thread-sync-cli",
+          projectId: "bb-project-sync",
+        },
+      );
+      expect(mixedCli).toMatchObject({ exitCode: 0, stderr: "" });
+      const mixedCliReport: unknown = JSON.parse(mixedCli.stdout);
+      expect(mixedCliReport).toMatchObject({
+        kinds: { finding: { fetched: 4, baseRows: 3, quarantined: 1 } },
+        advisories: [
+          {
+            kind: "finding",
+            code: "FINDING_COMPONENT_IDENTITY_MISSING",
+            count: 1,
+          },
+          {
+            kind: "finding",
+            code: "FINDING_EPSS_SCORE_INVALID",
+            count: 1,
+          },
+          {
+            kind: "finding",
+            code: "FINDING_VIOLATION_COUNT_INVALID",
+            count: 1,
+          },
+          {
+            kind: "finding",
+            code: "FINDING_WARNING_COUNT_INVALID",
+            count: 1,
+          },
+        ],
+      });
+      if (
+        typeof mixedCliReport !== "object" ||
+        mixedCliReport === null ||
+        !("generationId" in mixedCliReport) ||
+        typeof mixedCliReport.generationId !== "string"
+      ) {
+        throw new Error("finding CLI returned no mixed-corpus generation id");
+      }
 
       state.findings.clear();
       for (let index = 1; index <= 3; index += 1) {
@@ -853,7 +1214,9 @@ decisions:
         | { generationId: string; status: string }
         | undefined;
       expect(failedGeneration).toMatchObject({ status: "failed" });
-      expect(failedGeneration?.generationId).not.toBe(mixed.generationId);
+      expect(failedGeneration?.generationId).not.toBe(
+        mixedCliReport.generationId,
+      );
       const acceptedAfterFailure = context
         .db()
         .prepare(
@@ -870,8 +1233,8 @@ decisions:
         )
         .get(scope.projectId, mixedVersion);
       expect(acceptedAfterFailure).toEqual({
-        acceptedGenerationId: mixed.generationId,
-        visibleRows: 2,
+        acceptedGenerationId: mixedCliReport.generationId,
+        visibleRows: 3,
       });
       expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
         "remote-authored-secret",
@@ -890,7 +1253,7 @@ decisions:
       });
       const recovered = await allQuarantinedPull();
       expect(recovered).toMatchObject({
-        kinds: { finding: { fetched: 1, baseRows: 1 } },
+        kinds: { finding: { fetched: 1, baseRows: 1, quarantined: 0 } },
       });
       if (
         typeof recovered !== "object" ||
@@ -1020,7 +1383,7 @@ decisions:
       state.findings.clear();
       const empty = await allQuarantinedPull();
       expect(empty).toMatchObject({
-        kinds: { finding: { fetched: 0, baseRows: 0 } },
+        kinds: { finding: { fetched: 0, baseRows: 0, quarantined: 0 } },
       });
       if (
         typeof empty !== "object" ||

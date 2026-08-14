@@ -78,7 +78,15 @@ describe("findings cache pull", () => {
     );
 
     const binarySastWire = fixture("fs193-binary-sast-specimen.json");
+    expect(Object.keys(binarySastWire)).toHaveLength(29);
     const binarySast = normalizeFinding(binarySastWire);
+    const priorProjection = normalizeFinding({
+      id: binarySastWire["id"] ?? null,
+      title: binarySastWire["title"] ?? null,
+      findingId: binarySastWire["findingId"] ?? null,
+      component: binarySastWire["component"] ?? null,
+      type: binarySastWire["type"] ?? null,
+    });
     expect(binarySast).toMatchObject({
       findingId: "00000000-0000-5000-8000-000000000193",
       cve: "FS-500-006",
@@ -87,8 +95,13 @@ describe("findings cache pull", () => {
       componentName: "ca-certificates.crt",
       componentVersion: null,
       componentPurl: null,
+      epssScore: 0.00426,
+      epssPercentile: 0.34936,
+      warningCount: 2,
+      violationCount: 1,
     });
     expect(JSON.parse(binarySast.raw)).toEqual(binarySastWire);
+    expect(binarySast.stableKey).toBe(priorProjection.stableKey);
     expect(binarySast.stableKey).toBe(
       findingStableKey(
         {
@@ -111,6 +124,43 @@ describe("findings cache pull", () => {
       },
     });
   });
+
+  it.each([
+    ["epssScore", "api_key=hostile-epss", "FINDING_EPSS_SCORE_INVALID"],
+    [
+      "epssPercentile",
+      "authorization hostile",
+      "FINDING_EPSS_PERCENTILE_INVALID",
+    ],
+    ["warnings", null, "FINDING_WARNING_COUNT_INVALID"],
+    ["warnings", "credential=hostile-warning", "FINDING_WARNING_COUNT_INVALID"],
+    ["warningCount", null, "FINDING_WARNING_COUNT_INVALID"],
+    ["violations", -1, "FINDING_VIOLATION_COUNT_INVALID"],
+    ["violations", null, "FINDING_VIOLATION_COUNT_INVALID"],
+  ] as const)(
+    "nulls present but unmappable %s values with a value-free advisory",
+    (field, hostileValue, code) => {
+      const finding = normalizeFinding({
+        id: `hostile-${field}`,
+        findingId: "CVE-2026-19900",
+        component: { name: "library", version: "1.0.0" },
+        [field]: hostileValue,
+      });
+      expect(finding.advisories).toEqual([code]);
+      expect(
+        field === "epssScore" || field === "epssPercentile"
+          ? field === "epssScore"
+            ? finding.epssScore
+            : finding.epssPercentile
+          : field === "warnings" || field === "warningCount"
+            ? finding.warningCount
+            : finding.violationCount,
+      ).toBeNull();
+      expect(JSON.stringify(finding.advisories)).not.toContain(
+        String(hostileValue),
+      );
+    },
+  );
 
   it("preserves malformed escaping and keeps encoded and literal versions collision-free", () => {
     const malformed = normalizeFinding({
@@ -389,6 +439,8 @@ describe("findings cache pull", () => {
             ).then((result) => ({
               fetched: result.fetched,
               baseRows: result.published,
+              quarantined: result.quarantined,
+              advisories: result.advisories,
             })),
         },
       ],
@@ -403,7 +455,7 @@ describe("findings cache pull", () => {
 
     await expect(pull(deps, scope, ["finding"])).resolves.toMatchObject({
       generationId: "generation-1",
-      kinds: { finding: { fetched: 2, baseRows: 2 } },
+      kinds: { finding: { fetched: 2, baseRows: 2, quarantined: 0 } },
     });
     const result = queryFindings(db, { projectId: scope.projectId, pvId });
     expect(result.items).toHaveLength(2);
@@ -508,7 +560,12 @@ describe("findings cache pull", () => {
               failAfterStaging = false;
               throw new Error("peer kind failed after finding staging");
             }
-            return { fetched: result.fetched, baseRows: result.published };
+            return {
+              fetched: result.fetched,
+              baseRows: result.published,
+              quarantined: result.quarantined,
+              advisories: result.advisories,
+            };
           },
         },
       ],
@@ -519,7 +576,7 @@ describe("findings cache pull", () => {
     );
     await expect(pull(deps, scope, ["finding"])).resolves.toMatchObject({
       generationId: "generation-resume",
-      kinds: { finding: { fetched: 0, baseRows: 1 } },
+      kinds: { finding: { fetched: 0, baseRows: 1, quarantined: 0 } },
     });
     expect(remoteCalls).toBe(1);
     expect(
@@ -609,6 +666,8 @@ describe("findings cache pull", () => {
             ).then((result) => ({
               fetched: result.fetched,
               baseRows: result.published,
+              quarantined: result.quarantined,
+              advisories: result.advisories,
             })),
         },
       ],

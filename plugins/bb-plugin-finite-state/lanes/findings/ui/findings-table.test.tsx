@@ -99,6 +99,8 @@ async function renderFindings(
     versions?: unknown | ((input: unknown) => unknown | Promise<unknown>);
     saved?: unknown;
     projectId?: string | null;
+    pull?: (input: unknown) => unknown | Promise<unknown>;
+    pullAdvisories?: (input: unknown) => unknown | Promise<unknown>;
   } = {},
 ) {
   const app = await loadPluginApp(() => import("../../../app.js"));
@@ -150,6 +152,26 @@ async function renderFindings(
           recoveredFromCorrupt: false,
         }),
         findingsUiList: (input) => list(input),
+        findingsPullAdvisories:
+          options.pullAdvisories ??
+          ((input) => ({
+            generationId: inputField(input, "generationId"),
+            advisories: [],
+          })),
+        syncPull:
+          options.pull ??
+          (() => ({
+            projectId: "platform-project-1",
+            projectVersionId: "version-1",
+            generationId: "generation-2",
+            acceptedAt: "2026-08-14T13:00:00.000Z",
+            baseStateSha256: "a".repeat(64),
+            kinds: {
+              finding: { fetched: 1, baseRows: 1, quarantined: 0 },
+            },
+            workingFastForwarded: true,
+            divergence: [],
+          })),
       },
     },
   );
@@ -158,6 +180,66 @@ async function renderFindings(
 }
 
 describe("findings table panel", () => {
+  it("renders the truthful finding pull report including quarantined rows", async () => {
+    const { slot } = await renderFindings(
+      () => ({
+        items: [finding(0)],
+        total: 1,
+        next: null,
+        cache: freshCache,
+      }),
+      {
+        pull: () => ({
+          projectId: "platform-project-1",
+          projectVersionId: "version-1",
+          generationId: "generation-mixed",
+          acceptedAt: "2026-08-14T13:00:00.000Z",
+          baseStateSha256: "b".repeat(64),
+          kinds: {
+            finding: { fetched: 3, baseRows: 2, quarantined: 1 },
+          },
+          workingFastForwarded: true,
+          divergence: [],
+        }),
+        pullAdvisories: () => ({
+          generationId: "generation-mixed",
+          advisories: [
+            { code: "FINDING_COMPONENT_IDENTITY_MISSING", count: 1 },
+            { code: "FINDING_WARNING_COUNT_INVALID", count: 2 },
+          ],
+        }),
+      },
+    );
+    fireEvent.click(await slot.findByRole("button", { name: "Pull findings" }));
+    const advisory = await slot.findByText(
+      /Advisories: FINDING_COMPONENT_IDENTITY_MISSING=1, FINDING_WARNING_COUNT_INVALID=2/u,
+    );
+    expect(advisory.parentElement?.textContent).toBe(
+      "Pull complete · 3 fetched · 1 quarantined · 2 published · Advisories: FINDING_COMPONENT_IDENTITY_MISSING=1, FINDING_WARNING_COUNT_INVALID=2",
+    );
+    expect(slot.inspection.rpcCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "syncPull",
+          input: {
+            workspaceProjectId: "project-1",
+            projectId: "platform-project-1",
+            projectVersionId: "version-1",
+            kinds: ["finding"],
+          },
+        }),
+        expect.objectContaining({
+          method: "findingsPullAdvisories",
+          input: {
+            projectId: "platform-project-1",
+            projectVersionId: "version-1",
+            generationId: "generation-mixed",
+          },
+        }),
+      ]),
+    );
+  });
+
   it("refreshes the version catalog without replacing a user-pinned scope", async () => {
     let versionReads = 0;
     const initialVersions = [

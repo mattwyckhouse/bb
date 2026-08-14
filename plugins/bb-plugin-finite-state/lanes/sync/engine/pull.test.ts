@@ -41,7 +41,7 @@ import {
 import type { EntityAdapter, ServerEntity, WorkingEntity } from "./adapter.js";
 import {
   PullFailedError,
-  pull,
+  pull as pullEngine,
   type EngineDeps,
   type PullProgress,
 } from "./pull.js";
@@ -56,6 +56,16 @@ const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 const harnesses: MockRemoteHarness[] = [];
 const clients: PlatformClient[] = [];
 const roots: string[] = [];
+
+function pull(
+  deps: Parameters<typeof pullEngine>[0],
+  scope: Parameters<typeof pullEngine>[1],
+  kinds?: Parameters<typeof pullEngine>[2],
+) {
+  return pullEngine(deps, scope, kinds, {
+    assuranceStudioProjectId: `as-${scope.projectId}`,
+  });
+}
 
 afterEach(async () => {
   clients.splice(0).forEach((client) => client.close());
@@ -171,6 +181,63 @@ function expectedVexRows(
 }
 
 describe("sync pull", () => {
+  it("fails before remote contact without an explicit AS selection and stores mapped reads under Platform scope", async () => {
+    const remoteScopes: string[] = [];
+    const key = ENTITIES.requirement.key({ reqId: "REQ-MAPPED" });
+    const adapter: EntityAdapter = {
+      kind: "requirement",
+      klass: "VERSIONED",
+      serializer: createSerializer("requirement"),
+      async *fetchRemote(scope, progress) {
+        remoteScopes.push(scope.projectId);
+        progress({ page: 1, of: 1 });
+        yield [
+          {
+            key,
+            remoteId: "remote-mapped",
+            payload: {
+              id: "remote-mapped",
+              projectId: scope.projectId,
+              kind: "requirement",
+              fields: { reqId: "REQ-MAPPED", title: "Mapped" },
+              humanEdited: null,
+              reviewStatus: null,
+              reviewVersion: null,
+            },
+          },
+        ];
+      },
+      async readWorking() {
+        return [];
+      },
+    };
+    const deps = engine(adapter);
+    const scope = {
+      projectId: "platform-project-mapped",
+      projectVersionId: "platform-version-mapped",
+    };
+
+    await expect(pullEngine(deps, scope, ["requirement"])).rejects.toThrow(
+      "AS_PROJECT_SELECTION_REQUIRED",
+    );
+    expect(remoteScopes).toEqual([]);
+    expect(
+      deps.db.prepare("SELECT COUNT(*) FROM pull_generation").pluck().get(),
+    ).toBe(0);
+
+    await pullEngine(deps, scope, ["requirement"], {
+      assuranceStudioProjectId: "as-project-selected",
+    });
+    expect(remoteScopes).toEqual(["as-project-selected"]);
+    expect(
+      new BaseSnapshotStore(deps.db).listAccepted(
+        scope.projectId,
+        scope.projectVersionId,
+        "requirement",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("populates accepted base rows from the direct Platform fixtures and publishes tiny progress hints", async () => {
     const fixture = setupPlatform();
     const progress: PullProgress[] = [];
@@ -191,6 +258,7 @@ describe("sync pull", () => {
     expect(report.kinds.vexDecision).toEqual({
       fetched: expected.length,
       baseRows: expected.length,
+      quarantined: 0,
     });
     expect(accepted).toHaveLength(expected.length);
     expect(accepted.map((row) => row.entityKey)).toEqual(
@@ -376,6 +444,64 @@ describe("sync pull", () => {
         .pluck()
         .get(),
     ).toBe(2);
+  });
+
+  it("reports persisted VEX quarantine once across a resumed generation", async () => {
+    const fixture = setupPlatform();
+    const rows = expectedVexRows(
+      fixture.state,
+      fixture.scope.projectVersionId,
+    ).slice(0, 2);
+    if (rows.length !== 2)
+      throw new Error("fixture has fewer than two VEX rows");
+    let attempt = 0;
+    const adapter: EntityAdapter = {
+      kind: "vexDecision",
+      klass: "OVERLAY",
+      serializer: createSerializer("vexDecision"),
+      async *fetchRemote(_scope, onProgress, onAdvisory) {
+        attempt += 1;
+        onProgress({ page: 1, of: 2 });
+        onAdvisory?.({ code: "VEX_REMOTE_IDENTITY_MISSING" });
+        yield [rows[0]!];
+        if (attempt === 1) throw new Error("retry after quarantined page");
+        onProgress({ page: 2, of: 2 });
+        yield [rows[1]!];
+      },
+      async readWorking() {
+        return [];
+      },
+    };
+    const deps = engine(adapter, {
+      createGenerationId: () => "generation-vex-quarantine-resume",
+    });
+
+    await expect(
+      pull(deps, fixture.scope, ["vexDecision"]),
+    ).rejects.toBeInstanceOf(PullFailedError);
+    expect(
+      deps.db
+        .prepare(
+          `SELECT staged_quarantined FROM sync_state
+            WHERE entity_kind = 'vexDecision'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(1);
+
+    const report = await pull(deps, fixture.scope, ["vexDecision"]);
+    expect(report.kinds.vexDecision).toEqual({
+      fetched: 2,
+      baseRows: 2,
+      quarantined: 1,
+    });
+    expect(report.advisories).toEqual([
+      {
+        kind: "vexDecision",
+        code: "VEX_REMOTE_IDENTITY_MISSING",
+        count: 1,
+      },
+    ]);
   });
 
   it("leaves a dirty authored file alone and reports its stable key as divergent", async () => {
@@ -776,7 +902,11 @@ decisions:
         remote_id: "remote-shared",
       },
     ]);
-    await expect(status(deps, scopes[3]!, ["requirement"])).resolves.toEqual({
+    await expect(
+      status(deps, scopes[3]!, ["requirement"], {
+        assuranceStudioProjectId: `as-${scopes[3]!.projectId}`,
+      }),
+    ).resolves.toEqual({
       local: [],
       upstream: [],
       conflicts: [],

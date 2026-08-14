@@ -88,6 +88,8 @@ const EXPECTED_LOGICAL_METHODS = [
   "requirements.write",
   "review.transition",
   "sync.conflict.resolve",
+  "sync.asProject.candidates",
+  "sync.asProject.select",
   "sync.plan",
   "sync.pull",
   "sync.push",
@@ -178,15 +180,15 @@ function objectField(
 }
 
 describe("rpc-contract-freeze", () => {
-  it("exports version seven and all 86 bijective logical-to-wire names", () => {
-    expect(CONTRACT_VERSION).toBe(7);
+  it("exports version nine and all 88 bijective logical-to-wire names", () => {
+    expect(CONTRACT_VERSION).toBe(9);
     expect(Object.keys(RPC_WIRE_METHODS).sort()).toEqual(
       [...EXPECTED_LOGICAL_METHODS].sort(),
     );
-    expect(Object.keys(RPC_WIRE_METHODS)).toHaveLength(86);
+    expect(Object.keys(RPC_WIRE_METHODS)).toHaveLength(88);
 
     const wireNames = Object.values(RPC_WIRE_METHODS);
-    expect(new Set(wireNames).size).toBe(86);
+    expect(new Set(wireNames).size).toBe(88);
     expect(Object.keys(rpcContract).sort()).toEqual([...wireNames].sort());
     for (const [logicalName, wireName] of Object.entries(RPC_WIRE_METHODS)) {
       expect(wireName).toBe(lowerCamelWireName(logicalName));
@@ -552,7 +554,22 @@ describe("rpc-contract-freeze", () => {
     expect(rpcContract.syncPlan.output.shape).toHaveProperty("baseRevisions");
     expect(rpcContract.syncPull.output.shape).toHaveProperty("generationId");
     expect(rpcContract.syncPull.output.shape).toHaveProperty("acceptedAt");
+    const pullKinds = rpcContract.syncPull.output.shape.kinds;
+    expect(
+      pullKinds.safeParse({
+        finding: { fetched: 3, baseRows: 2, quarantined: 1 },
+      }).success,
+    ).toBe(true);
+    expect(
+      pullKinds.safeParse({ finding: { fetched: 3, baseRows: 2 } }).success,
+    ).toBe(false);
     expect(rpcContract.syncPull.input.shape).toHaveProperty(
+      "workspaceProjectId",
+    );
+    expect(rpcContract.syncStatus.input.shape).toHaveProperty(
+      "workspaceProjectId",
+    );
+    expect(rpcContract.syncPlan.input.shape).toHaveProperty(
       "workspaceProjectId",
     );
     expect(rpcContract.syncStatus.output.shape).toHaveProperty(

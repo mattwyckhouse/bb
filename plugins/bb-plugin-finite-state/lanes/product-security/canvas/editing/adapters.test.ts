@@ -21,6 +21,10 @@ import type {
   Json,
   RemoteServices,
 } from "../../../../lib/remote/types.js";
+import {
+  bindWorkspacePlatformProject,
+  selectAssuranceStudioProjectBinding,
+} from "../../../../lib/store/project-scope.js";
 import { registerMockAssuranceStudio } from "../../../../test/mock-remote/assurance-studio/register.js";
 import { registerPlatformHandlers } from "../../../../test/mock-remote/platform/register.js";
 import { createMockPlatformState } from "../../../../test/mock-remote/platform/state.js";
@@ -188,6 +192,13 @@ describe("canvas real-wire adapter contract", () => {
     }));
     registerSync(host.bb, context);
     registerProductSecurity(host.bb, context);
+    bindWorkspacePlatformProject(context.db(), "bb-project-fs166", PROJECT_ID);
+    selectAssuranceStudioProjectBinding(
+      context.db(),
+      "bb-project-fs166",
+      PROJECT_ID,
+      PROJECT_ID,
+    );
 
     worktreeRoot = await mkdtemp(join(tmpdir(), "fs166-registered-pull-"));
     host.harness.sdk.stub("threads.get", async () =>
@@ -228,13 +239,14 @@ describe("canvas real-wire adapter contract", () => {
       kinds: Record<string, { fetched: number; baseRows: number }>;
     };
     expect(firstReport.kinds).toMatchObject({
-      vexDecision: { fetched: 308, baseRows: 308 },
+      vexDecision: { fetched: 308, baseRows: 308, quarantined: 0 },
       ...Object.fromEntries(
         TARA_KINDS.map((kind) => [
           kind,
           {
             fetched: expectedCounts[kind],
             baseRows: expectedCounts[kind],
+            quarantined: 0,
           },
         ]),
       ),

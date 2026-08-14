@@ -42,9 +42,9 @@ Entry format — one section per defect:
 ### FS-193 — all-quarantined findings pull (sweep #6)
 
 - **Harnessed**: `golden-loop.e2e.test.ts` — beat 5, `FS-193 quarantined finding recovery`
-- **Journey**: `bb finite-state pull finding` against a corpus where every row is unkeyable → repair remote → same pull again
+- **Journey**: `bb finite-state pull finding --json` against a partially-degenerate corpus → inspect fetched/quarantined/published counts in CLI and Findings panel → pull an all-unkeyable corpus → repair remote → same pull again
 - **Broke because**: one degenerate row aborted the whole pull; then the failed staging generation resumed forever, never contacting the repaired remote
-- **Beat asserts**: all-quarantined fails loudly with truthful counts and preserves the accepted generation; the next same-kinds pull against a healthy remote succeeds and publishes
+- **Beat asserts**: partial quarantine publishes keyable rows and reports the same truthful per-generation quarantine count in CLI JSON and the Findings panel; all-quarantined fails loudly with truthful counts and preserves the accepted generation; the next same-kinds pull against a healthy remote succeeds and publishes
 
 ### FS-194 — triage single write YAML silent no-op (sweep #6)
 
@@ -52,6 +52,18 @@ Entry format — one section per defect:
 - **Journey**: triage panel → single finding → write YAML with unresolved scope ids
 - **Broke because**: `commitSingle` early-returned with the button enabled; undo announced success while the YAML never changed
 - **Beat asserts**: the write either completes (file on disk) or renders a visible truthful refusal; undo reverts what it claims to revert
+
+### FS-198 — explicit Platform-to-Assurance-Studio project selection (sweep #6)
+
+- **Journey**: fresh disposable workspace → Sync Review → Platform project/version scope → Product Security surface → choose bb workspace project → inspect all four equally-primary linked AS candidates → explicitly save one candidate → status and plan render from the selected AS project; repeat without a bb project and without an AS selection
+- **Broke because**: connected TARA reads sent the disjoint Platform project id to Assurance Studio, and the real product linkage is ambiguous (verified four-way and two-way groups), so every connected surface 404ed and no heuristic could choose safely
+- **Beat asserts**: the four candidates remain visible and unselected until the operator saves one; the saved AS id alone scopes remote adapter and resolver reads while Platform ids retain cache identity; the connected Product Security status/plan render after selection; missing workspace shows `WORKSPACE_PROJECT_REQUIRED` and missing AS choice shows `AS_PROJECT_SELECTION_REQUIRED`, with no status or plan request sent in either refusal state
+
+### FS-199 — full-shape finding enrichment fidelity (sweep #6)
+
+- **Journey**: disposable bb data dir with the mock Platform remote → Findings panel → pull the 29-key binary-SAST specimen through registered `syncPull` → open `FS-500-006`
+- **Broke because**: the five-key seed projection hid unmapped warning/violation counts, and string-valued EPSS was silently discarded
+- **Beat asserts**: `FS-500-006`, `ca-certificates.crt`, EPSS `0.4%`, two warnings, and one violation render after the real-shape pull; invalid/null enrichment publishes as null with value-free advisory reason counts while identity-invalid rows alone increment quarantine
 
 ### FS-201 — bench requirement puller dead-end loop (sweep #7, pending fix)
 

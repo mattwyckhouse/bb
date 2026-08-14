@@ -135,15 +135,22 @@ export type KeyResolver = (
 /**
  * Refreshes one CACHED surface into tables owned by the registering lane.
  * `generationId` binds those rows to the same atomic pull publication.
- * Pullers that can distinguish current fetch work from reused staging return
- * explicit counts. Legacy pullers may omit them, in which case the engine
- * reports zero rather than inferring network work from staged-row counts.
+ * Pullers return current fetch work plus generation-owned publication and
+ * quarantine totals. The persisted generation checkpoint is the authority
+ * for the latter two counts.
  */
 export type CachePuller = (
   scope: SyncScope,
   generationId: string,
   onProgress: (progress: AdapterProgress) => void,
-) => Promise<void | Readonly<{ fetched: number; baseRows: number }>>;
+) => Promise<
+  Readonly<{
+    fetched: number;
+    baseRows: number;
+    quarantined: number;
+    advisories: ReadonlyArray<{ code: string; count: number }>;
+  }>
+>;
 
 /** Thrown when two lanes attempt to register an adapter for the same kind. */
 export class DuplicateAdapterError extends Error {
@@ -198,6 +205,11 @@ export function registerResolver(
   kind: EntityKind,
   resolver: KeyResolver,
 ): void {
+  if (ENTITIES[kind].class !== "OVERLAY") {
+    throw new InvalidAdapterError(
+      `${kind} cannot have a key resolver because it is not an OVERLAY entity`,
+    );
+  }
   resolvers.set(kind, resolver);
 }
 
