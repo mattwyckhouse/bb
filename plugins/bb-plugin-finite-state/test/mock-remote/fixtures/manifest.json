@@ -40,15 +40,11 @@
     },
     "real-cve-uuid-field-mapping": {
       "description": "Captured Platform response carries the CVE in findingId and an opaque UUID in vulnerabilityId.",
-      "refs": [
-        "platform/fs174-cve-uuid-mapping-specimen.json"
-      ]
+      "refs": ["platform/fs174-cve-uuid-mapping-specimen.json"]
     },
     "real-distro-finding-identity": {
       "description": "Captured Platform response preserves a namespaced package name and percent-encoded Debian version.",
-      "refs": [
-        "platform/fs174-i491nax-distro-specimen.json"
-      ]
+      "refs": ["platform/fs174-i491nax-distro-specimen.json"]
     },
     "requirement-without-verification": {
       "description": "One requirement intentionally has no verification check.",
@@ -90,7 +86,7 @@
   "counts": {
     "components": 180,
     "documents": 6,
-    "findings": 4000,
+    "findings": 4002,
     "firmwarePaths": 6000,
     "requirements": 40,
     "sbomComponents": 900,
@@ -141,9 +137,9 @@
       "sha256": "f39fa98949f3fc92ae2411e7836507dfd531d8f8df48137f9d165fd43c6763dd"
     },
     {
-      "bytes": 3621,
+      "bytes": 3465,
       "path": "cases.json",
-      "sha256": "61cfeece434dce20bebd37cfc9068ca6406faf554aee4dea748f3b9061baaaa8"
+      "sha256": "d813d246921b9d3f2cbafe0f5084b80f9738da1394be24d949f7a5f62b9e5948"
     },
     {
       "bytes": 3847,
@@ -267,10 +263,10 @@
       "sha256": "f43a3c8092912632eb82234bbaa792b050f2bdcf158ebcdc57629a33286c4a55"
     },
     {
-      "bytes": 1348186,
+      "bytes": 1350427,
       "path": "platform/findings.jsonl",
-      "rows": 4001,
-      "sha256": "d3881d1faf4b58412fd3d7245a55c88010bf64c0f6a6c4900abfeb1ce81d9dda"
+      "rows": 4003,
+      "sha256": "4f2fc47651bb75026366d810a7dd8edf717322f26bfabb3061b7ec2c6b2590bc"
     },
     {
       "bytes": 1296,

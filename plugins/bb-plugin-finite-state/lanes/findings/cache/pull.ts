@@ -11,16 +11,13 @@ import {
   canonicalizeFindingIdentity,
   selectFindingCve,
 } from "../stable-key/canonical.js";
+import {
+  loadComponentIdentities,
+  type ComponentIdentity,
+} from "../stable-key/wire-identity.js";
 
 const ENTITY_KIND = "finding";
 const DEFAULT_PAGE_SIZE = 200;
-
-interface ComponentIdentity {
-  name: string;
-  group: string | null;
-  version: string | null;
-  purl: string | null;
-}
 
 interface NormalizedFinding {
   findingId: string;
@@ -62,10 +59,15 @@ interface NormalizedFinding {
 }
 
 function record(value: Json): Record<string, Json> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value
+    : null;
 }
 
-function stringValue(row: Record<string, Json>, keys: readonly string[]): string | null {
+function stringValue(
+  row: Record<string, Json>,
+  keys: readonly string[],
+): string | null {
   for (const key of keys) {
     const value = row[key];
     if (typeof value === "string") {
@@ -76,13 +78,24 @@ function stringValue(row: Record<string, Json>, keys: readonly string[]): string
   return null;
 }
 
-function requiredString(row: Record<string, Json>, keys: readonly string[], label: string): string {
+function requiredString(
+  row: Record<string, Json>,
+  keys: readonly string[],
+  label: string,
+): string {
   const value = stringValue(row, keys);
-  if (value === null) throw new FindingsCacheError("FINDING_INVALID_ROW", `Finding ${label} is missing`);
+  if (value === null)
+    throw new FindingsCacheError(
+      "FINDING_INVALID_ROW",
+      `Finding ${label} is missing`,
+    );
   return value;
 }
 
-function numberValue(row: Record<string, Json>, keys: readonly string[]): number | null {
+function numberValue(
+  row: Record<string, Json>,
+  keys: readonly string[],
+): number | null {
   for (const key of keys) {
     const value = row[key];
     if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -90,7 +103,10 @@ function numberValue(row: Record<string, Json>, keys: readonly string[]): number
   return null;
 }
 
-function booleanValue(row: Record<string, Json>, keys: readonly string[]): number {
+function booleanValue(
+  row: Record<string, Json>,
+  keys: readonly string[],
+): number {
   for (const key of keys) {
     const value = row[key];
     if (typeof value === "boolean") return value ? 1 : 0;
@@ -100,7 +116,10 @@ function booleanValue(row: Record<string, Json>, keys: readonly string[]): numbe
   return 0;
 }
 
-function nullableBoolean(row: Record<string, Json>, keys: readonly string[]): number | null {
+function nullableBoolean(
+  row: Record<string, Json>,
+  keys: readonly string[],
+): number | null {
   for (const key of keys) {
     const value = row[key];
     if (typeof value === "boolean") return value ? 1 : 0;
@@ -111,7 +130,8 @@ function nullableBoolean(row: Record<string, Json>, keys: readonly string[]): nu
 }
 
 function jsonArray(row: Record<string, Json>, keys: readonly string[]): Json[] {
-  for (const key of keys) if (Array.isArray(row[key])) return row[key] as Json[];
+  for (const key of keys)
+    if (Array.isArray(row[key])) return row[key] as Json[];
   return [];
 }
 
@@ -119,7 +139,8 @@ function cwes(row: Record<string, Json>): string[] {
   const values = jsonArray(row, ["cwes", "cwe"]);
   const result = new Set<string>();
   for (const value of values) {
-    if (typeof value === "string" && value.trim()) result.add(value.normalize("NFC").trim());
+    if (typeof value === "string" && value.trim())
+      result.add(value.normalize("NFC").trim());
     const item = record(value);
     const id = item ? stringValue(item, ["id", "cwe", "name"]) : null;
     if (id) result.add(id);
@@ -127,40 +148,25 @@ function cwes(row: Record<string, Json>): string[] {
   return [...result].sort((left, right) => left.localeCompare(right));
 }
 
-function jsonField(row: Record<string, Json>, keys: readonly string[], fallback: Json): string {
-  for (const key of keys) if (row[key] !== undefined) return JSON.stringify(row[key]);
+function jsonField(
+  row: Record<string, Json>,
+  keys: readonly string[],
+  fallback: Json,
+): string {
+  for (const key of keys)
+    if (row[key] !== undefined) return JSON.stringify(row[key]);
   return JSON.stringify(fallback);
 }
 
-function payloadKeyDetail(row: Record<string, Json>, component: Record<string, Json> | null): string {
+function payloadKeyDetail(
+  row: Record<string, Json>,
+  component: Record<string, Json> | null,
+): string {
   const topLevelKeys = Object.keys(row).sort().join(", ") || "none";
-  const componentKeys = component ? Object.keys(component).sort().join(", ") || "none" : "none";
+  const componentKeys = component
+    ? Object.keys(component).sort().join(", ") || "none"
+    : "none";
   return `payload keys [${topLevelKeys}]; component keys [${componentKeys}]`;
-}
-
-function componentFromRow(row: Record<string, Json>): ComponentIdentity | null {
-  const id = stringValue(row, ["id", "componentId", "uuid"]);
-  const name = stringValue(row, ["name", "componentName"]);
-  if (!id || !name) return null;
-  return {
-    name,
-    group: stringValue(row, ["group", "namespace", "componentGroup"]),
-    version: stringValue(row, ["version", "componentVersion"]),
-    purl: stringValue(row, ["purl", "packageUrl", "componentPurl"]),
-  };
-}
-
-async function componentIdentities(deps: FindingsDeps): Promise<Map<string, ComponentIdentity>> {
-  const result = new Map<string, ComponentIdentity>();
-  for await (const page of deps.platform.listComponents({ page: { pageSize: deps.pageSize ?? DEFAULT_PAGE_SIZE } })) {
-    for (const value of page.items) {
-      const identity = componentFromRow(value);
-      const row = record(value);
-      const id = row ? stringValue(row, ["id", "componentId", "uuid"]) : null;
-      if (id && identity) result.set(id, identity);
-    }
-  }
-  return result;
 }
 
 export function normalizeFinding(
@@ -168,7 +174,11 @@ export function normalizeFinding(
   identities: ReadonlyMap<string, ComponentIdentity>,
 ): NormalizedFinding {
   const row = record(value);
-  if (!row) throw new FindingsCacheError("FINDING_INVALID_ROW", "Finding row must be an object");
+  if (!row)
+    throw new FindingsCacheError(
+      "FINDING_INVALID_ROW",
+      "Finding row must be an object",
+    );
   const findingId = requiredString(row, ["id", "findingId", "uuid"], "id");
   const cve = selectFindingCve({
     cve: stringValue(row, ["cve"]),
@@ -176,25 +186,34 @@ export function normalizeFinding(
     findingId: stringValue(row, ["findingId"]),
     vulnerabilityId: stringValue(row, ["vulnerabilityId"]),
   });
-  if (cve === null) throw new FindingsCacheError("FINDING_INVALID_ROW", `Finding ${findingId} CVE is missing`);
+  if (cve === null)
+    throw new FindingsCacheError(
+      "FINDING_INVALID_ROW",
+      `Finding ${findingId} CVE is missing`,
+    );
   const component = record(row["component"] ?? null);
-  const componentId = stringValue(row, ["componentId", "componentUuid"])
-    ?? (component ? stringValue(component, ["id"]) : null);
+  const componentId =
+    stringValue(row, ["componentId", "componentUuid"]) ??
+    (component ? stringValue(component, ["id"]) : null);
   const joined = componentId ? identities.get(componentId) : undefined;
-  const componentPurl = stringValue(row, ["componentPurl", "purl", "packageUrl"])
-    ?? joined?.purl
-    ?? null;
-  const componentName = stringValue(row, ["componentName", "name"])
-    ?? (component ? stringValue(component, ["name"]) : null)
-    ?? joined?.name
-    ?? null;
-  const componentGroup = stringValue(row, ["componentGroup", "group", "namespace"])
-    ?? joined?.group
-    ?? null;
-  const componentVersion = stringValue(row, ["componentVersion", "version"])
-    ?? (component ? stringValue(component, ["version"]) : null)
-    ?? joined?.version
-    ?? null;
+  const componentPurl =
+    stringValue(row, ["componentPurl", "purl", "packageUrl"]) ??
+    joined?.purl ??
+    null;
+  const componentName =
+    stringValue(row, ["componentName", "name"]) ??
+    (component ? stringValue(component, ["name"]) : null) ??
+    joined?.name ??
+    null;
+  const componentGroup =
+    stringValue(row, ["componentGroup", "group", "namespace"]) ??
+    joined?.group ??
+    null;
+  const componentVersion =
+    stringValue(row, ["componentVersion", "version"]) ??
+    (component ? stringValue(component, ["version"]) : null) ??
+    joined?.version ??
+    null;
   if (!componentName) {
     throw new FindingsCacheError(
       "FINDING_COMPONENT_IDENTITY_MISSING",
@@ -219,7 +238,10 @@ export function normalizeFinding(
     });
     stableKey = canonicalFindingStableKey(canonicalIdentity);
   } catch {
-    throw new FindingsCacheError("FINDING_STABLE_KEY_INVALID", `Finding ${findingId} has invalid canonical identity`);
+    throw new FindingsCacheError(
+      "FINDING_STABLE_KEY_INVALID",
+      `Finding ${findingId} has invalid canonical identity`,
+    );
   }
   const memberships = cwes(row);
   return {
@@ -244,8 +266,15 @@ export function normalizeFinding(
     hasExploit: booleanValue(row, ["hasExploit"]),
     exploitMaturity: stringValue(row, ["exploitMaturity"]),
     reachabilityScore: numberValue(row, ["reachabilityScore"]),
-    reachabilityVerdict: stringValue(row, ["reachabilityVerdict", "reachability"]),
-    reachabilityFactors: jsonField(row, ["reachabilityFactors", "reachabilityEvidence"], []),
+    reachabilityVerdict: stringValue(row, [
+      "reachabilityVerdict",
+      "reachability",
+    ]),
+    reachabilityFactors: jsonField(
+      row,
+      ["reachabilityFactors", "reachabilityEvidence"],
+      [],
+    ),
     vulnInDataset: nullableBoolean(row, ["vulnInDataset"]),
     cwes: memberships,
     warningCount: numberValue(row, ["warningCount"]) ?? 0,
@@ -262,14 +291,19 @@ export function normalizeFinding(
   };
 }
 
-function checkpoint(deps: FindingsDeps, scope: SyncScope, generationId: string): {
+function checkpoint(
+  deps: FindingsDeps,
+  scope: SyncScope,
+  generationId: string,
+): {
   pages: number;
   rows: number;
   continuation: string | null;
   pulledAt: string;
 } {
-  const row = deps.db.prepare(
-    `SELECT state.staged_pages AS pages, state.staged_rows AS rows,
+  const row = deps.db
+    .prepare(
+      `SELECT state.staged_pages AS pages, state.staged_rows AS rows,
             state.staging_continuation AS continuation, generation.started_at AS pulledAt
        FROM sync_state AS state
        JOIN pull_generation AS generation
@@ -278,10 +312,20 @@ function checkpoint(deps: FindingsDeps, scope: SyncScope, generationId: string):
         AND generation.generation_id = state.staging_generation_id
       WHERE state.project_id = ? AND state.project_version_id = ? AND state.entity_kind = ?
         AND state.staging_generation_id = ?`,
-  ).get(scope.projectId, scope.projectVersionId, ENTITY_KIND, generationId) as
-    | { pages: number; rows: number; continuation: string | null; pulledAt: string }
+    )
+    .get(scope.projectId, scope.projectVersionId, ENTITY_KIND, generationId) as
+    | {
+        pages: number;
+        rows: number;
+        continuation: string | null;
+        pulledAt: string;
+      }
     | undefined;
-  if (!row) throw new FindingsCacheError("FINDING_STAGING_FENCE_MOVED", "Finding staging generation is unavailable");
+  if (!row)
+    throw new FindingsCacheError(
+      "FINDING_STAGING_FENCE_MOVED",
+      "Finding staging generation is unavailable",
+    );
   return row;
 }
 
@@ -294,7 +338,9 @@ function writePage(
   identities: ReadonlyMap<string, ComponentIdentity>,
   pulledAt: string,
 ): { inserted: number; deduplicated: number } {
-  const normalized = page.items.map((item) => normalizeFinding(item, identities));
+  const normalized = page.items.map((item) =>
+    normalizeFinding(item, identities),
+  );
   const unique = new Map<string, NormalizedFinding>();
   let deduplicated = 0;
   for (const item of normalized) {
@@ -322,15 +368,46 @@ function writePage(
   deps.db.transaction(() => {
     for (const item of unique.values()) {
       const result = insert.run(
-        scope.projectId, scope.projectVersionId, generationId, item.findingId, item.stableKey,
-        item.findingType, item.cve, item.title, item.componentName, item.componentGroup,
-        item.componentVersion, item.componentPurl, item.severity, item.riskScore, item.band,
-        item.cvssScore, item.cvssVector, item.epssScore, item.epssPercentile, item.inKev,
-        item.inVcKev, item.hasExploit, item.exploitMaturity, item.reachabilityScore,
-        item.reachabilityVerdict, item.reachabilityFactors, item.vulnInDataset,
-        JSON.stringify(item.cwes), item.warningCount, item.violationCount, item.location,
-        item.vexStatus, item.vexResponse, item.vexJustification, item.vexReason,
-        item.comments, item.firstSeen, item.softDeleted, item.raw, pulledAt,
+        scope.projectId,
+        scope.projectVersionId,
+        generationId,
+        item.findingId,
+        item.stableKey,
+        item.findingType,
+        item.cve,
+        item.title,
+        item.componentName,
+        item.componentGroup,
+        item.componentVersion,
+        item.componentPurl,
+        item.severity,
+        item.riskScore,
+        item.band,
+        item.cvssScore,
+        item.cvssVector,
+        item.epssScore,
+        item.epssPercentile,
+        item.inKev,
+        item.inVcKev,
+        item.hasExploit,
+        item.exploitMaturity,
+        item.reachabilityScore,
+        item.reachabilityVerdict,
+        item.reachabilityFactors,
+        item.vulnInDataset,
+        JSON.stringify(item.cwes),
+        item.warningCount,
+        item.violationCount,
+        item.location,
+        item.vexStatus,
+        item.vexResponse,
+        item.vexJustification,
+        item.vexReason,
+        item.comments,
+        item.firstSeen,
+        item.softDeleted,
+        item.raw,
+        pulledAt,
       );
       if (result.changes === 0) {
         deduplicated += 1;
@@ -338,19 +415,38 @@ function writePage(
       }
       inserted += 1;
       for (const cwe of item.cwes) {
-        insertCwe.run(scope.projectId, scope.projectVersionId, generationId, item.findingId, cwe, pulledAt);
+        insertCwe.run(
+          scope.projectId,
+          scope.projectVersionId,
+          generationId,
+          item.findingId,
+          cwe,
+          pulledAt,
+        );
       }
     }
-    const updated = deps.db.prepare(
-      `UPDATE sync_state
+    const updated = deps.db
+      .prepare(
+        `UPDATE sync_state
           SET staging_continuation = ?, staged_pages = ?, staged_rows = staged_rows + ?, error = NULL
         WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?
           AND staging_generation_id = ? AND staged_pages = ?`,
-    ).run(
-      page.next, pageNumber, inserted, scope.projectId, scope.projectVersionId,
-      ENTITY_KIND, generationId, pageNumber - 1,
-    );
-    if (updated.changes !== 1) throw new FindingsCacheError("FINDING_STAGING_FENCE_MOVED", "Finding staging checkpoint moved");
+      )
+      .run(
+        page.next,
+        pageNumber,
+        inserted,
+        scope.projectId,
+        scope.projectVersionId,
+        ENTITY_KIND,
+        generationId,
+        pageNumber - 1,
+      );
+    if (updated.changes !== 1)
+      throw new FindingsCacheError(
+        "FINDING_STAGING_FENCE_MOVED",
+        "Finding staging checkpoint moved",
+      );
   })();
   return { inserted, deduplicated };
 }
@@ -362,17 +458,33 @@ export async function pullFindings(
   onProgress: (progress: PullProgress) => void,
 ): Promise<PullFindingsResult> {
   if (scope.projectVersionId === null) {
-    throw new FindingsCacheError("FINDING_VERSION_REQUIRED", "Findings are product-version scoped");
+    throw new FindingsCacheError(
+      "FINDING_VERSION_REQUIRED",
+      "Findings are product-version scoped",
+    );
   }
   const state = checkpoint(deps, scope, generationId);
   // A resumed generation must retain one pulled_at value across every page.
   const pulledAt = state.pulledAt;
   let pages = state.pages;
-  let fetched = state.rows;
+  let fetched = 0;
   let deduplicated = 0;
   let latestOf: number | null = null;
   try {
-    const identities = await componentIdentities(deps);
+    if (state.pages > 0 && state.continuation === null) {
+      onProgress({ page: pages, of: pages, phase: "done" });
+      return {
+        fetched: 0,
+        published: state.rows,
+        pages,
+        pulledAt,
+        deduplicated,
+      };
+    }
+    const identities = await loadComponentIdentities(
+      deps.platform,
+      deps.pageSize ?? DEFAULT_PAGE_SIZE,
+    );
     const iterable = deps.platform.getFindings({
       projectVersionId: scope.projectVersionId,
       page: {
@@ -382,9 +494,20 @@ export async function pullFindings(
     });
     for await (const page of iterable) {
       pages += 1;
-      latestOf = page.total === null ? null : Math.ceil(page.total / (deps.pageSize ?? DEFAULT_PAGE_SIZE));
+      latestOf =
+        page.total === null
+          ? null
+          : Math.ceil(page.total / (deps.pageSize ?? DEFAULT_PAGE_SIZE));
       onProgress({ page: pages, of: latestOf, phase: "fetch" });
-      const written = writePage(deps, scope, generationId, pages, page, identities, pulledAt);
+      const written = writePage(
+        deps,
+        scope,
+        generationId,
+        pages,
+        page,
+        identities,
+        pulledAt,
+      );
       fetched += written.inserted;
       deduplicated += written.deduplicated;
       onProgress({ page: pages, of: latestOf, phase: "write" });
@@ -396,7 +519,13 @@ export async function pullFindings(
       });
     }
     onProgress({ page: pages, of: latestOf, phase: "done" });
-    return { fetched, pages, pulledAt, deduplicated };
+    return {
+      fetched,
+      published: state.rows + fetched,
+      pages,
+      pulledAt,
+      deduplicated,
+    };
   } catch (error: unknown) {
     onProgress({ page: pages, of: latestOf, phase: "error" });
     throw error;

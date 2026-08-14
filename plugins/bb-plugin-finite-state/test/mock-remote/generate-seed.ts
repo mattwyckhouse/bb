@@ -176,7 +176,18 @@ interface FindingRecord extends Record<string, JsonValue> {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const PRETTIER_JSON_DRAFTS = new Set(["assurance-studio/entities-page-1.json"]);
+const PRETTIER_JSON_DRAFTS = new Set([
+  "assurance-studio/entities-page-1.json",
+  "cases.json",
+]);
+
+function capturedFinding(source: string): Record<string, JsonValue> {
+  const value: unknown = JSON.parse(source);
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    throw new TypeError("Captured finding fixture must be an object");
+  }
+  return value as Record<string, JsonValue>;
+}
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -322,7 +333,12 @@ function buildCorpus(seed: string): {
     },
   );
   const duplicateFinding = { ...findings[27] };
-  const findingRows = [...findings, duplicateFinding];
+  const findingRows = [
+    ...findings,
+    duplicateFinding,
+    capturedFinding(FS174_DISTRO_FINDING),
+    capturedFinding(FS174_CVE_UUID_FINDING),
+  ];
 
   const severityCounts = Object.fromEntries(
     severities.map((severity) => [
