@@ -199,6 +199,7 @@ describe("registered BOM realtime boundary", () => {
         ): Promise<FakeRealtimeSignal[]> => {
           const signalCursor = host.harness.inspection.realtimeSignals.length;
           await host.harness.behavior.callRpc("syncPull", {
+            workspaceProjectId: "bb-project-fs176",
             projectId,
             projectVersionId,
             kinds: ["sbomComponent"],

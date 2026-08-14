@@ -36,6 +36,7 @@ const FIXTURE_ROOT = resolve(
   "../../test/mock-remote/fixtures",
 );
 const PROJECT_ID = "project-realtime";
+const WORKSPACE_PROJECT_ID = "workspace-project-realtime";
 const ACTIVE_VERSION_ID = "version-active";
 const OTHER_VERSION_ID = "version-other";
 const pendingAnimationFrames = new Set<number>();
@@ -324,6 +325,7 @@ describe("registered product-security realtime boundary", () => {
         ): Promise<FakeRealtimeSignal[]> => {
           const cursor = host.harness.inspection.realtimeSignals.length;
           await host.harness.behavior.callRpc("syncPull", {
+            workspaceProjectId: WORKSPACE_PROJECT_ID,
             projectId: publishedProjectId,
             projectVersionId,
             kinds: [kind],

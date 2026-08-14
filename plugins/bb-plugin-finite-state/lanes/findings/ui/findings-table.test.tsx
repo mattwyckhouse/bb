@@ -492,6 +492,7 @@ describe("findings table panel", () => {
       cache: { ...freshCache, state: "empty" },
     }));
     expect(await empty.slot.findByText("No findings cached")).toBeTruthy();
+    expect(empty.slot.getByText(/bb finite-state pull findings/u)).toBeTruthy();
     empty.slot.lifecycle.unmount();
 
     const failed = await renderFindings(() =>

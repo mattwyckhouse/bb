@@ -71,12 +71,14 @@ let workingRequirements: WorkingEntity[] = [
     file: "product-security/requirements/REQ-SEAM.yaml",
   },
 ];
+let remoteRequirementError: Error | null = null;
 
 const foreignAdapter: EntityAdapter = {
   kind: "requirement",
   klass: "VERSIONED",
   serializer: createSerializer("requirement"),
   async *fetchRemote(_scope, progress) {
+    if (remoteRequirementError) throw remoteRequirementError;
     progress({ page: 1, of: 1 });
     yield remoteRequirements;
   },
@@ -250,6 +252,7 @@ describe("sync registration", () => {
     const scope = platformScope();
     const pulled = await host.harness.behavior.callRpc("syncPull", {
       ...scope,
+      workspaceProjectId: "bb-project-sync",
       kinds: ["requirement", "vexDecision"],
     });
     expect(pulled).toMatchObject({
@@ -273,6 +276,41 @@ describe("sync registration", () => {
       throw new Error("syncPull returned no generation id");
     }
     const pulledGenerationId = pulled.generationId;
+    expect(
+      context
+        .db()
+        .prepare(
+          `SELECT platform_project_id
+             FROM workspace_platform_project_binding
+            WHERE workspace_project_id = ?`,
+        )
+        .pluck()
+        .all("bb-project-sync"),
+    ).toEqual([scope.projectId]);
+
+    remoteRequirementError = new Error("registered RPC pull failed");
+    try {
+      await expect(
+        host.harness.behavior.callRpc("syncPull", {
+          ...scope,
+          workspaceProjectId: "bb-project-failed-sync",
+          kinds: ["requirement"],
+        }),
+      ).rejects.toThrow("registered RPC pull failed");
+    } finally {
+      remoteRequirementError = null;
+    }
+    expect(
+      context
+        .db()
+        .prepare(
+          `SELECT COUNT(*)
+             FROM workspace_platform_project_binding
+            WHERE workspace_project_id = ?`,
+        )
+        .pluck()
+        .get("bb-project-failed-sync"),
+    ).toBe(0);
     const statusReport = await host.harness.behavior.callRpc("syncStatus", {
       ...scope,
     });

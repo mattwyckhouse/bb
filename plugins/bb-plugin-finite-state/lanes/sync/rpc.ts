@@ -1,5 +1,6 @@
 import type { BbPluginApi } from "@bb/plugin-sdk";
 
+import { bindWorkspacePlatformProject } from "../../lib/store/project-scope.js";
 import { ENTITIES, type EntityKind } from "../../lib/sync/registry.js";
 import { rpcContract } from "../../shared/contract.js";
 import { resolveConflictRpc } from "./conflicts/index.js";
@@ -49,6 +50,11 @@ export function registerSyncRpc(bb: BbPluginApi, deps: EngineDeps): void {
         projectVersionId: input.projectVersionId,
       };
       const report = await pull(deps, scope, kinds);
+      bindWorkspacePlatformProject(
+        deps.db,
+        input.workspaceProjectId,
+        scope.projectId,
+      );
       const metadata = syncMetadata(deps, scope, kinds);
       return {
         ...scope,
