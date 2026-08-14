@@ -17,24 +17,32 @@ import { registerAuthoring } from "./register.js";
 
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
-const PENDING_FROZEN_RPC_METHODS = [
-  "workspaceSummary", // WP-03: foundation workspace summary.
-  "triageRunGet", // WP-28: persisted policy run reports.
-  "triageDecisionWrite", // WP-26: single local triage decisions.
-  "triageDecisionBulkWrite", // WP-26: bulk local triage decisions.
-  "triagePolicyPreview", // WP-28: policy dry-run reports.
-  "triagePolicyApply", // WP-28: policy application.
-  "taraGet", // WP-32: self-fetching TARA inspector detail.
-  "reviewTransition", // WP-40: human review lifecycle transitions.
-  "documentsList", // WP-56: Documents store and viewer.
-  "documentsGet", // WP-56: Documents store and viewer.
-  "documentsSearch", // WP-56: Documents store and viewer.
-  "documentsMetadataUpdate", // WP-56: Documents store and viewer.
-  "documentsExtractionsList", // WP-56: Documents store and viewer.
-  "groundingSourcesList", // WP-82: Grounding store and document index.
-  "groundingQuery", // WP-82: Grounding store and document index.
-  "groundingCoverageGet", // WP-82: Grounding store and document index.
+const PENDING_UNSTARTED_WP = [
+  "documentsList", // WP-56 / FS-70: Documents store and viewer.
+  "documentsGet", // WP-56 / FS-70: Documents store and viewer.
+  "documentsSearch", // WP-56 / FS-70: Documents store and viewer.
+  "documentsMetadataUpdate", // WP-56 / FS-70: Documents store and viewer.
+  "documentsExtractionsList", // WP-56 / FS-70: Documents store and viewer.
+  "groundingSourcesList", // WP-82 / FS-117: Grounding store and document index.
+  "groundingQuery", // WP-82 / FS-117: Grounding store and document index.
+  "groundingCoverageGet", // WP-82 / FS-117: Grounding store and document index.
 ] as const satisfies readonly RpcMethod[];
+
+const SHIPPED_WP_REGISTRATION_DEBT = [
+  "workspaceSummary", // FS-220: register or retire the WP-03 / FS-17 leftover.
+  "triageRunGet", // FS-220: register or retire the WP-28 / FS-42 leftover.
+  "triageDecisionWrite", // FS-220: register or retire the WP-26 / FS-40 leftover.
+  "triageDecisionBulkWrite", // FS-220: register or retire the WP-26 / FS-40 leftover.
+  "triagePolicyPreview", // FS-220: register or retire the WP-28 / FS-42 leftover.
+  "triagePolicyApply", // FS-220: register or retire the WP-28 / FS-42 leftover.
+  "taraGet", // FS-220: register or retire the WP-32 / FS-46 leftover.
+  "reviewTransition", // FS-220: register or retire the WP-40 / FS-54 leftover.
+] as const satisfies readonly RpcMethod[];
+
+const pendingFrozenRpcMethods: readonly RpcMethod[] = [
+  ...PENDING_UNSTARTED_WP,
+  ...SHIPPED_WP_REGISTRATION_DEBT,
+];
 
 afterEach(async () => {
   await Promise.all(
@@ -181,9 +189,9 @@ describe("authoring registration", () => {
       );
     }
     const pendingMethods: ReadonlySet<RpcMethod> = new Set(
-      PENDING_FROZEN_RPC_METHODS,
+      pendingFrozenRpcMethods,
     );
-    const allowlistedButRegistered = PENDING_FROZEN_RPC_METHODS.filter(
+    const allowlistedButRegistered = pendingFrozenRpcMethods.filter(
       (wireMethod) => (registrationCounts.get(wireMethod) ?? 0) !== 0,
     );
     const unallowlistedWithoutExactlyOne = Object.values(RPC_WIRE_METHODS)
@@ -199,7 +207,7 @@ describe("authoring registration", () => {
 
     expect(
       allowlistedButRegistered,
-      "remove newly registered methods from PENDING_FROZEN_RPC_METHODS",
+      "remove newly registered methods from their pending or registration-debt group",
     ).toEqual([]);
     expect(
       unallowlistedWithoutExactlyOne,
