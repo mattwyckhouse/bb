@@ -129,7 +129,7 @@ const NON_RETRYABLE_SYNC_CODES = new Set([
 ]);
 
 function failureCode(message: string, fallback: string): string {
-  return /^([A-Z][A-Z0-9_]+):/u.exec(message)?.[1] ?? fallback;
+  return /^([A-Z][A-Z0-9_]+)(?::|$)/u.exec(message)?.[1] ?? fallback;
 }
 
 function reviewFailure(
@@ -582,9 +582,11 @@ function SurfaceUnavailableState({
 
 function ErrorState({
   failure,
+  onOpenCurrentPlan,
   onRetry,
 }: {
   failure: ReviewFailure;
+  onOpenCurrentPlan(): void;
   onRetry(): void;
 }): React.JSX.Element {
   const title =
@@ -607,11 +609,21 @@ function ErrorState({
           {failure.message}
         </p>
         <p className="mt-2 text-xs leading-5 text-muted-foreground">
-          {failure.retryable
-            ? "No remote write was attempted. Retry starts again with a fresh plan."
-            : "This failure is not retryable from the panel. The request or installed RPC contract must be corrected before review can continue."}
+          {failure.source === "route"
+            ? "This link names a superseded plan. Open the current plan for this scope to continue."
+            : failure.retryable
+              ? "No remote write was attempted. Retry starts again with a fresh plan."
+              : "This failure is not retryable from the panel. The request or installed RPC contract must be corrected before review can continue."}
         </p>
-        {failure.retryable ? (
+        {failure.source === "route" ? (
+          <Button
+            className="mt-5"
+            onClick={onOpenCurrentPlan}
+            variant="outline"
+          >
+            Open current plan
+          </Button>
+        ) : failure.retryable ? (
           <Button className="mt-5" onClick={onRetry} variant="outline">
             <Icon aria-hidden="true" name="RotateCcw" />
             Retry with fresh plan
@@ -724,7 +736,11 @@ export function SyncReviewPanel({
     let continuation = first.next;
     let pageCount = 1;
     while (continuation !== null) {
-      if (pageCount >= 100) throw new Error("SYNC_PLAN_PAGE_LIMIT");
+      if (pageCount >= 100) {
+        throw new Error(
+          "SYNC_PLAN_PAGE_LIMIT: plan exceeds 100 pages (20,000 items); narrow the surface filter",
+        );
+      }
       const next = await rpc.call("syncPlan", {
         projectId: activeScope.projectId,
         projectVersionId: activeScope.projectVersionId,
@@ -1068,6 +1084,16 @@ export function SyncReviewPanel({
         <div className="min-h-0 flex-1 overflow-auto">
           <ErrorState
             failure={state.failure}
+            onOpenCurrentPlan={() => {
+              navigate.toPluginPanel("sync", {
+                subPath: buildReviewSubPath(activeScope, {
+                  surface,
+                  planId: null,
+                  runId: null,
+                }),
+                replace: true,
+              });
+            }}
             onRetry={() => void refresh(false)}
           />
         </div>

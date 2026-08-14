@@ -300,7 +300,7 @@ describe("Sync review panel", () => {
         ),
       ).toBeTruthy();
       expect(
-        slot.queryByRole("button", { name: "Retry current scope" }),
+        slot.queryByRole("button", { name: "Retry with fresh plan" }),
       ).toBeNull();
       expect(slot.inspection.rpcCalls).toEqual([]);
     },
@@ -329,7 +329,7 @@ describe("Sync review panel", () => {
         ),
       ).toBeTruthy();
       expect(
-        slot.queryByRole("button", { name: "Retry current scope" }),
+        slot.queryByRole("button", { name: "Retry with fresh plan" }),
       ).toBeNull();
       expect(slot.inspection.rpcCalls).toEqual([]);
 
@@ -575,6 +575,87 @@ describe("Sync review panel", () => {
       slot.queryByRole("button", { name: "Retry with fresh plan" }),
     ).toBeNull();
     expect(syncPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies bare and detailed internal plan sentinels as non-retryable", async () => {
+    let page = 0;
+    const endlessPlan = vi.fn(() => {
+      page += 1;
+      return {
+        ...plan([item(page)]),
+        total: 100_000,
+        next: `page-${page * 200}`,
+      };
+    });
+    const pageLimit = renderSlot(
+      await syncPanel(),
+      { subPath: `${SCOPE_PATH}/surface/vexDecision` },
+      { rpc: handlers(endlessPlan) },
+    );
+
+    expect(await pageLimit.findByText("SYNC_PLAN_PAGE_LIMIT")).toBeTruthy();
+    expect(
+      pageLimit.getByText(
+        "SYNC_PLAN_PAGE_LIMIT: plan exceeds 100 pages (20,000 items); narrow the surface filter",
+      ),
+    ).toBeTruthy();
+    expect(
+      pageLimit.queryByRole("button", { name: "Retry with fresh plan" }),
+    ).toBeNull();
+    expect(endlessPlan).toHaveBeenCalledTimes(100);
+    pageLimit.lifecycle.unmount();
+
+    let planPage = 0;
+    const changingPlan = vi.fn(() => {
+      planPage += 1;
+      return planPage === 1
+        ? { ...plan([item(1)]), next: "page-200" }
+        : { ...plan([item(2)]), planSha256: "d".repeat(64) };
+    });
+    const changedDuringRead = renderSlot(
+      await syncPanel(),
+      { subPath: `${SCOPE_PATH}/surface/vexDecision` },
+      { rpc: handlers(changingPlan) },
+    );
+
+    expect(
+      await changedDuringRead.findAllByText("SYNC_PLAN_CHANGED_DURING_READ"),
+    ).toHaveLength(2);
+    expect(
+      changedDuringRead.queryByRole("button", {
+        name: "Retry with fresh plan",
+      }),
+    ).toBeNull();
+    expect(changingPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers a truthful escape from a superseded plan deep link", async () => {
+    const slot = renderSlot(
+      await syncPanel(),
+      {
+        subPath: `${SCOPE_PATH}/surface/vexDecision/plan/superseded-plan`,
+      },
+      { rpc: handlers() },
+    );
+
+    expect(await slot.findByText("PLAN_ROUTE_MISMATCH")).toBeTruthy();
+    expect(
+      slot.getByText(
+        "This link names a superseded plan. Open the current plan for this scope to continue.",
+      ),
+    ).toBeTruthy();
+    expect(
+      slot.queryByRole("button", { name: "Retry with fresh plan" }),
+    ).toBeNull();
+    fireEvent.click(slot.getByRole("button", { name: "Open current plan" }));
+    expect(slot.inspection.navigateCalls).toContainEqual({
+      method: "toPluginPanel",
+      path: "sync",
+      options: {
+        subPath: `${SCOPE_PATH}/surface/vexDecision`,
+        replace: true,
+      },
+    });
   });
 
   it("distinguishes connection and status failures from plan failures", async () => {
