@@ -738,8 +738,8 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           );
         }
         expect(
-          await slot.findByText("No local changes", undefined, {
-            timeout: 10_000,
+          await slot.findByRole("button", {
+            name: "Open Sync review: 0 local changes and 0 conflicts",
           }),
         ).toBeTruthy();
         const rpcStatus = await runtime.host.harness.behavior.callRpc(
