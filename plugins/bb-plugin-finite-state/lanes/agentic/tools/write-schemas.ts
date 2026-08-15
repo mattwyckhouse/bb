@@ -49,6 +49,7 @@ export const triageSetSchema = z
     reason: reasonSchema,
     pin: z.enum(["exact_version", "any_version"]).optional(),
     evidence: evidenceSchema,
+    // Optional only for creates; updates must supply the prior contentHash.
     expectedHash: sha256Schema.optional(),
   })
   .strict()
@@ -101,7 +102,21 @@ export const requirementWriteSchema = z
     yaml: z.record(z.string(), z.unknown()),
     expectedHash: sha256Schema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((input, context) => {
+    if (
+      input.reqId.includes("/") ||
+      input.reqId.includes("\\") ||
+      input.reqId.includes("..") ||
+      input.reqId.includes(".git")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["reqId"],
+        message: "Requirement id must not contain path separators or escapes",
+      });
+    }
+  });
 
 const hbomPartSchema = z.union([
   z.object({ id: identifier }).strict(),

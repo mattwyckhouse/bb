@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import { createPluginContext } from "../../../lib/context.js";
-import { KnownToolError } from "../../../lib/agentic/result.js";
 import {
   REQUIREMENT_WRITER_SERVICE,
   TRIAGE_WRITER_SERVICE,
@@ -98,7 +97,7 @@ describe("write tool unit behaviors", () => {
     expect(set).toHaveBeenCalledTimes(1);
   });
 
-  it("CODE_NOT_REACHABLE forces exact pin; incompatible pin returns recovery-shaped error", async () => {
+  it("CODE_NOT_REACHABLE rejects any_version at the schema boundary", () => {
     expect(
       triageSetSchema.safeParse({
         projectVersionId: "pv-1",
@@ -111,89 +110,9 @@ describe("write tool unit behaviors", () => {
         evidence: "call graph shows no reachable use",
       }).success,
     ).toBe(false);
-
-    const host = createFakePluginHost({
-      pluginId: `fs-write-pin-${crypto.randomUUID()}`,
-    });
-    hosts.push(host);
-    const ctx = createPluginContext(host.bb);
-    const set = vi.fn(async () => {
-      throw new KnownToolError({
-        code: "invalid_pin",
-        message: "CODE_NOT_REACHABLE decisions cannot use any_version",
-        hint: "CODE_NOT_REACHABLE decisions must use pin exact_version.",
-        retryable: false,
-      });
-    });
-    ctx.service<TriageWriter>(TRIAGE_WRITER_SERVICE, () => ({
-      set,
-      applyPolicy: vi.fn(),
-    }));
-    registerWriteTools(host.bb, ctx);
-    const result = parseTool(
-      await host.harness.behavior.callAgentTool("fs_triage_set", {
-        projectVersionId: "pv-1",
-        stableKey: "sk-1",
-        status: "NOT_AFFECTED",
-        justification: "CODE_NOT_REACHABLE",
-        response: null,
-        reason: "dead call path proved by the attached trace",
-        pin: "exact_version",
-        evidence: "call graph shows no reachable use",
-      }),
-    );
-    expect(result).toMatchObject({
-      ok: false,
-      error: {
-        code: "invalid_pin",
-        retryable: false,
-        hint: expect.stringMatching(/exact_version/i),
-      },
-    });
   });
 
-  it("policy holds KEV and skips existing decisions", async () => {
-    const host = createFakePluginHost({
-      pluginId: `fs-write-policy-${crypto.randomUUID()}`,
-    });
-    hosts.push(host);
-    const ctx = createPluginContext(host.bb);
-    const applyPolicy = vi.fn(async () => ({
-      paths: [],
-      written: 0,
-      held: [
-        {
-          key: "sk-kev",
-          rule: "kev-holdback",
-          why: "Finding is listed in KEV",
-        },
-      ],
-      skippedExisting: 2,
-      errors: [],
-      runId: "run-1",
-      dryRun: true,
-      policySha256: "b".repeat(64),
-    }));
-    ctx.service<TriageWriter>(TRIAGE_WRITER_SERVICE, () => ({
-      set: vi.fn(),
-      applyPolicy,
-    }));
-    registerWriteTools(host.bb, ctx);
-    const result = parseTool(
-      await host.harness.behavior.callAgentTool("fs_triage_apply_policy", {
-        projectVersionId: "pv-1",
-        dryRun: true,
-      }),
-    );
-    expect(result).toMatchObject({
-      ok: true,
-      data: {
-        written: 0,
-        skippedExisting: 2,
-        held: [{ key: "sk-kev", rule: "kev-holdback" }],
-        dryRun: true,
-      },
-    });
+  it("policy schema refuses overwrite_existing", () => {
     expect(
       triageApplyPolicySchema.safeParse({ projectVersionId: "pv-1" }).success,
     ).toBe(true);

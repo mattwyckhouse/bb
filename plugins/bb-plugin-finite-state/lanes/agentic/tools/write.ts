@@ -17,11 +17,15 @@ import {
   applyHbomExtraction,
   type ExtractionResult,
 } from "../../bom/hbom/extract.js";
-import { HBOM_CHANGED_CHANNEL } from "../../bom/hbom/types.js";
+import {
+  HBOM_CHANGED_CHANNEL,
+  HBOM_RELATIVE_PATH,
+} from "../../bom/hbom/types.js";
 import { HbomStaleError } from "../../bom/hbom/yaml.js";
 import { acceptedPlatformProjectId } from "../../findings/rpc.js";
 import { applyPolicy, PolicyApplyError } from "../../findings/policy/apply.js";
 import { rebuildOverlayIndex } from "../../findings/overlay/indexer.js";
+import { readOverlayFiles } from "../../findings/overlay/reader.js";
 import {
   OverlayCasConflictError,
   setDecision,
@@ -122,6 +126,9 @@ function toolResponse(result: ToolResult<unknown>) {
   };
 }
 
+const REQUIREMENT_ID_PATTERN = /^REQ-[A-Za-z0-9][A-Za-z0-9-]*$/u;
+const TRACKED_WRITE_ROOTS = [".fs/", "product-security/"] as const;
+
 function casMismatch(message: string, details?: unknown): KnownToolError {
   return new KnownToolError({
     code: "cas_mismatch",
@@ -130,6 +137,61 @@ function casMismatch(message: string, details?: unknown): KnownToolError {
     retryable: true,
     details,
   });
+}
+
+function assertTrackedWritePath(path: string): void {
+  const normalized = path.replaceAll("\\", "/");
+  if (
+    normalized.startsWith("/") ||
+    normalized.includes("\0") ||
+    normalized.split("/").includes("..") ||
+    normalized.split("/").includes(".git") ||
+    !TRACKED_WRITE_ROOTS.some((root) => normalized.startsWith(root))
+  ) {
+    throw new KnownToolError({
+      code: "write_path_forbidden",
+      message: `Write path ${normalized} is outside the tracked YAML roots.`,
+      hint: "Agent writes may only target .fs/** or product-security/** relative paths.",
+      retryable: false,
+    });
+  }
+}
+
+function assertSafeRequirementId(reqId: string): void {
+  if (!REQUIREMENT_ID_PATTERN.test(reqId)) {
+    throw new KnownToolError({
+      code: "requirement_id_invalid",
+      message: `Requirement id ${reqId} is not a path-safe REQ-* slug.`,
+      hint: "Use REQ- followed by letters, digits, and hyphens only; path segments and escapes are refused.",
+      retryable: false,
+    });
+  }
+}
+
+function sameComponent(
+  left: DecisionInput["component"],
+  right: DecisionInput["component"],
+): boolean {
+  return (
+    left.purl === right.purl &&
+    left.name === right.name &&
+    left.group === right.group &&
+    left.version === right.version
+  );
+}
+
+async function currentOverlayDigest(
+  root: string,
+  project: string,
+  component: DecisionInput["component"],
+): Promise<string | undefined> {
+  const corpus = await readOverlayFiles(root);
+  const match = corpus.files.find(
+    (candidate) =>
+      candidate.overlay.project === project &&
+      sameComponent(candidate.overlay.component, component),
+  );
+  return match?.sha256;
 }
 
 function toLocalWrite(result: OverlayWriteResult): LocalWrite {
@@ -241,11 +303,32 @@ function createDefaultTriageWriter(
         },
       };
       try {
+        // Mirror the requirements CAS contract: never call setDecision without a
+        // digest when an overlay already exists. Omitting expectedHash on update
+        // would skip the writer CAS check and last-write-wins.
+        const observedDigest = await currentOverlayDigest(
+          root,
+          finding.project_id,
+          component,
+        );
+        if (input.expectedHash === undefined && observedDigest !== undefined) {
+          throw new KnownToolError({
+            code: "cas_mismatch",
+            message:
+              "expectedHash is required when updating an existing triage overlay.",
+            hint: "Pass contentHash from the prior fs_triage_set result (or reload the overlay digest) and retry; never last-write-wins.",
+            retryable: true,
+            details: {
+              currentSha256: observedDigest,
+            },
+          });
+        }
         const result = await setDecision(
           root,
           decisionInput,
-          input.expectedHash,
+          input.expectedHash ?? observedDigest,
         );
+        assertTrackedWritePath(result.file);
         await rebuildOverlayIndex(ctx.db(), root);
         publishFindingsHint(
           bb,
@@ -389,6 +472,11 @@ function createDefaultRequirementWriter(bb: BbPluginApi): RequirementWriter {
   const repository = createSdkRequirementRepository(bb);
   return {
     async write(input, scope) {
+      // Runtime path-safety is independent of Zod so deleting the schema regex
+      // cannot reopen escapes into absolute, .git, or non-product-security paths.
+      assertSafeRequirementId(input.reqId);
+      const path = `product-security/requirements/${input.reqId}.yaml`;
+      assertTrackedWritePath(path);
       const candidate = {
         ...input.yaml,
         id: input.reqId,
@@ -414,6 +502,7 @@ function createDefaultRequirementWriter(bb: BbPluginApi): RequirementWriter {
           retryable: false,
         });
       }
+      assertSafeRequirementId(validated.data.id);
       const existing = await repository.read(scope.projectId, input.reqId);
       const write = await repository.write(
         scope.projectId,
@@ -426,7 +515,6 @@ function createDefaultRequirementWriter(bb: BbPluginApi): RequirementWriter {
           { currentSha256: write.currentSha256 },
         );
       }
-      const path = `product-security/requirements/${input.reqId}.yaml`;
       const op: LocalWrite["op"] =
         existing === null
           ? "create"
@@ -440,6 +528,7 @@ function createDefaultRequirementWriter(bb: BbPluginApi): RequirementWriter {
               .sort()
               .map((field) => ({ field, from: null, to: "updated" }));
       const shaped = writeResult(path, op, diffs);
+      assertTrackedWritePath(shaped.path);
       bb.realtime.publish("requirements:changed", {
         projectId: scope.projectId,
         requirementId: input.reqId,
@@ -490,6 +579,15 @@ function createDefaultHbomExtractor(
             })),
           },
         );
+        assertTrackedWritePath(result.path);
+        if (result.path !== HBOM_RELATIVE_PATH) {
+          throw new KnownToolError({
+            code: "write_path_forbidden",
+            message: `HBOM write path ${result.path} is not the canonical HBOM YAML.`,
+            hint: "HBOM extraction may only update product-security/hbom/hbom.yaml.",
+            retryable: false,
+          });
+        }
         bb.realtime.publish(HBOM_CHANGED_CHANNEL, {
           projectId: scope.projectId,
           path: result.path,
@@ -550,7 +648,7 @@ export function registerWriteTools(bb: BbPluginApi, ctx: PluginContext): void {
   bb.agents.registerTool({
     name: "fs_triage_set",
     description:
-      "Write one VEX triage decision to tracked local YAML under .fs/triage only. Local YAML only; a human reviews and pushes. Never contacts Platform or Assurance Studio.",
+      "Write one VEX triage decision to tracked local YAML under .fs/triage only. Local YAML only; a human reviews and pushes. Never contacts Platform or Assurance Studio. expectedHash is required when updating an existing overlay (pass contentHash from a prior write); omitting it returns retryable cas_mismatch instead of last-write-wins.",
     parameters: triageSetSchema,
     async execute(input, call: PluginAgentToolContext) {
       const result = await executeSafely(
