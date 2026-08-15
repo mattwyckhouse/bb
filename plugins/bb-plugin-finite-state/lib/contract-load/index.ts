@@ -94,13 +94,15 @@ export function createRepoContractMonitor(
               `Repository contract diagnostic ${project.id}/${diagnostic.path}: ${diagnostic.message}`,
             );
           }
-          const payload = {
+          bb.realtime.publish("requirements:changed", {
+            projectId: project.id,
+          });
+          const projectionPayload = {
             projectId: identity.projectId,
             projectVersionId: identity.projectVersionId,
           };
-          bb.realtime.publish("requirements:changed", payload);
-          bb.realtime.publish("tara:changed", payload);
-          bb.realtime.publish("findings:changed", payload);
+          bb.realtime.publish("tara:changed", projectionPayload);
+          bb.realtime.publish("findings:changed", projectionPayload);
         }
       } catch (error) {
         log.warn(

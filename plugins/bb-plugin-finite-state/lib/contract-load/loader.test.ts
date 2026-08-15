@@ -722,6 +722,21 @@ describe("repository contract loader", () => {
         "product-security/threats/malformed.yaml: line 2",
       ),
     });
+    expect(host.harness.inspection.realtimeSignals).toEqual(
+      expect.arrayContaining([
+        {
+          channel: "requirements:changed",
+          payload: { projectId: workspaceProjectId },
+        },
+        {
+          channel: "tara:changed",
+          payload: {
+            projectId: scope.projectId,
+            projectVersionId: scope.projectVersionId,
+          },
+        },
+      ]),
+    );
 
     await expect(
       host.harness.behavior.callRpc("requirementsList", {
