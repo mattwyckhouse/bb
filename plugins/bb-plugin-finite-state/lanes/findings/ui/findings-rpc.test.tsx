@@ -316,6 +316,7 @@ describe("findings UI RPC seams", () => {
     ).resolves.toMatchObject({
       state: "resolved",
       tier: 1,
+      rowTotal: 2,
       rows: [
         {
           key: "ephemeral-new",
@@ -347,6 +348,82 @@ describe("findings UI RPC seams", () => {
       }),
     ).rejects.toThrow(/malformed/u);
     expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("S3: caps findingDetailGet collisions above 200 with truthful rowTotal", async () => {
+    const host = createFakePluginHost({
+      pluginId: "findings-detail-collision-cap",
+      sdk: {
+        projects: {
+          get: ({ projectId }) => ({
+            id: projectId,
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
+      },
+    });
+    hosts.push(host);
+    const db = createPluginContext(host.bb).db();
+    const stableKey = findingStableKey(
+      {
+        cve: "CVE-2026-205",
+        purl: "pkg:generic/gateway@1",
+        name: "gateway",
+        version: "1",
+      },
+      "purl",
+    );
+    db.prepare(
+      `INSERT INTO pull_generation
+      (project_id, project_version_id, generation_id, status, requested_kinds_json, started_at, completed_at, accepted_at, error)
+      VALUES ('platform-project-1','version-1','generation-1','accepted','["finding"]',?,?,?,NULL)`,
+    ).run(
+      "2026-08-13T00:00:00.000Z",
+      "2026-08-13T00:00:00.000Z",
+      "2026-08-13T00:00:00.000Z",
+    );
+    db.prepare(
+      `INSERT INTO sync_state
+      (project_id, project_version_id, entity_kind, accepted_generation_id, staging_generation_id, base_revision, staging_continuation, staged_pages, staged_rows, last_pull, error)
+      VALUES ('platform-project-1','version-1','finding','generation-1',NULL,1,NULL,0,0,?,NULL)`,
+    ).run("2026-08-13T00:00:00.000Z");
+    const insert = db.prepare(`INSERT INTO findings
+      (project_id, project_version_id, generation_id, finding_id, stable_key, cve, component_name, component_version, component_purl, severity, reachability_verdict, reachability_factors, raw, pulled_at)
+      VALUES ('platform-project-1','version-1','generation-1',?,?,?,?,?,?,?,'reachable','[]', '{}',?)`);
+    for (let index = 0; index < 205; index += 1) {
+      insert.run(
+        `collision-${index}`,
+        stableKey,
+        "CVE-2026-205",
+        "gateway",
+        "1",
+        "pkg:generic/gateway@1",
+        "high",
+        "2026-08-13T00:00:00.000Z",
+      );
+    }
+    registerFindingsRpc(host.bb, db);
+
+    const result = await host.harness.callRpc("findingDetailGet", {
+      projectId: "platform-project-1",
+      projectVersionId: "version-1",
+      stableKey,
+    });
+    expect(result).toMatchObject({
+      state: "resolved",
+      tier: 1,
+      rowTotal: 205,
+    });
+    expect(
+      result &&
+        typeof result === "object" &&
+        "rows" in result &&
+        Array.isArray(result.rows)
+        ? result.rows
+        : null,
+    ).toHaveLength(200);
   });
 
   it("leaves cached activity intact when online refresh fails", async () => {

@@ -216,8 +216,12 @@ function policyCount(values: Array<number | null>): number | "Unknown" {
 
 function DuplicateRows({
   rows,
+  rowTotal,
+  truncated,
 }: {
   rows: readonly FindingDetailRow[];
+  rowTotal: number;
+  truncated: boolean;
 }): React.JSX.Element {
   return (
     <section aria-labelledby="finding-source-rows" className="space-y-3">
@@ -232,11 +236,23 @@ function DuplicateRows({
         </h3>
       </div>
       <p className="text-xs text-muted-foreground">
-        {rows.length} cached row{rows.length === 1 ? "" : "s"} resolve to this
-        stable identity. Platform UUIDs are transient per product version and
-        never appear in the authored route. Ingest-level duplicate provenance is
-        not reconstructed here.
+        {truncated
+          ? `Showing ${rows.length} of ${rowTotal} cached rows for this stable identity (detail cap ${rows.length}). Narrow the product version or use a more specific stable key to inspect the rest.`
+          : `${rows.length} cached row${rows.length === 1 ? "" : "s"} resolve to this stable identity.`}{" "}
+        Platform UUIDs are transient per product version and never appear in the
+        authored route. Ingest-level duplicate provenance is not reconstructed
+        here.
       </p>
+      {truncated ? (
+        <p
+          className="rounded-lg border border-warning/40 bg-muted/30 p-3 text-xs"
+          role="status"
+        >
+          Collision capped for display: {rows.length} of {rowTotal} rows shown.
+          The remaining {rowTotal - rows.length} matching rows are omitted from
+          this pane, not collapsed into a single decision.
+        </p>
+      ) : null}
       <ul className="space-y-2">
         {rows.map((row) => (
           <li
@@ -408,7 +424,7 @@ export function FindingDetail({
     );
   }
 
-  const historyRow = selectedRow ?? model.rows[0];
+  const historyRow = selectedRow;
   return (
     <aside
       aria-label="Finding detail"
@@ -463,7 +479,11 @@ export function FindingDetail({
             verdict={model.reachability.verdict}
           />
           <DecisionSection model={model} />
-          <DuplicateRows rows={model.rows} />
+          <DuplicateRows
+            rowTotal={model.resolution.duplicateCount}
+            rows={model.rows}
+            truncated={model.resolution.truncated}
+          />
           {model.rows.length > 1 ? (
             <section aria-label="Transient row selection" className="space-y-2">
               <h3 className="text-sm font-semibold">
@@ -492,7 +512,25 @@ export function FindingDetail({
               </div>
             </section>
           ) : null}
-          {historyRow ? <DecisionHistory row={historyRow} /> : null}
+          {historyRow ? (
+            <DecisionHistory row={historyRow} />
+          ) : model.rows.length > 1 ? (
+            <section
+              aria-labelledby="finding-history-pending"
+              className="space-y-2 rounded-lg border border-border bg-muted/20 p-3 text-xs"
+            >
+              <h3
+                className="text-sm font-semibold"
+                id="finding-history-pending"
+              >
+                Decision history
+              </h3>
+              <p className="text-muted-foreground">
+                Select a cached row above before loading decision history.
+                History is never inferred for a colliding identity.
+              </p>
+            </section>
+          ) : null}
           <FindingComments
             ambiguous={model.rows.length > 1}
             row={selectedRow}

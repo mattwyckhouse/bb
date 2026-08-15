@@ -183,7 +183,7 @@ async function renderDetail(
   options: {
     key?: string;
     rows?: ReturnType<typeof detailRow>[];
-    history?: () => unknown | Promise<unknown>;
+    history?: (input?: unknown) => unknown | Promise<unknown>;
     detail?: () => unknown | Promise<unknown>;
     projectId?: string | null;
   } = {},
@@ -236,7 +236,13 @@ async function renderDetail(
         }),
         findingDetailGet:
           options.detail ??
-          (() => ({ state: "resolved", tier: 1, rows, cache: freshCache })),
+          (() => ({
+            state: "resolved",
+            tier: 1,
+            rows,
+            rowTotal: rows.length,
+            cache: freshCache,
+          })),
         findingsActivityList:
           options.history ??
           (() => ({
@@ -460,11 +466,227 @@ describe("finding detail", () => {
       "New finding comment",
     ) as HTMLTextAreaElement;
     fireEvent.change(draft, { target: { value: "Keep this draft" } });
-    fireEvent.click(slot.getByRole("button", { name: "Add comment" }));
-    expect(await slot.findByText(/authorization-unavailable/u)).toBeTruthy();
+    const add = slot.getByRole("button", {
+      name: "Add comment",
+    }) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    fireEvent.click(add);
     expect(draft.value).toBe("Keep this draft");
     expect(slot.getByText("Cached comment")).toBeTruthy();
-    expect(slot.getByText(/refresh before retrying/u)).toBeTruthy();
+    expect(slot.getByText(/unavailable in v1/u)).toBeTruthy();
+  });
+
+  it("S1: history waits for selected collision row instead of defaulting to rows[0]", async () => {
+    let historyFindingId: string | null = null;
+    const { slot } = await renderDetail({
+      rows: [
+        detailRow("uuid-B-empty-history", "usr/bin/gateway"),
+        detailRow("uuid-A-with-history", "opt/gateway/plugin.so"),
+      ],
+      history: (input) => {
+        historyFindingId =
+          typeof input === "object" && input !== null && "findingId" in input
+            ? String(input.findingId)
+            : null;
+        return {
+          items:
+            historyFindingId === "uuid-A-with-history"
+              ? [
+                  {
+                    projectId: "platform-project-1",
+                    projectVersionId: "version-1",
+                    kind: "findingActivity",
+                    key: "event-selected",
+                    label: "VEX changed",
+                    fields: {
+                      actor: "Reviewer-A",
+                      at: freshCache.asOf,
+                      source: "Selected-row history",
+                      old: { status: "IN_REVIEW" },
+                      new: { status: "EXPLOITABLE" },
+                    },
+                  },
+                ]
+              : [],
+          total: historyFindingId === "uuid-A-with-history" ? 1 : 0,
+          next: null,
+          cache: freshCache,
+        };
+      },
+    });
+    expect(await slot.findByText(/Select a cached row above/u)).toBeTruthy();
+    expect(slot.queryByText("Selected-row history")).toBeNull();
+    expect(slot.queryByText(/No cached audit events/u)).toBeNull();
+    expect(historyFindingId).toBeNull();
+
+    fireEvent.click(
+      slot.getByRole("button", { name: "Use row uuid-A-with-history" }),
+    );
+    expect(await slot.findByText("Selected-row history")).toBeTruthy();
+    expect(historyFindingId).toBe("uuid-A-with-history");
+  });
+
+  it("S2: copying a comment into draft confirms before discarding unsaved text", async () => {
+    const { slot } = await renderDetail();
+    expect(await slot.findByText("Cached comment")).toBeTruthy();
+    const draft = slot.getByLabelText(
+      "New finding comment",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(draft, { target: { value: "unsaved reviewer draft" } });
+    fireEvent.click(
+      slot.getByRole("button", { name: "Copy comment comment-1 into draft" }),
+    );
+    expect(
+      await slot.findByText(/Replace the unsaved comment draft/u),
+    ).toBeTruthy();
+    expect(draft.value).toBe("unsaved reviewer draft");
+    fireEvent.click(slot.getByRole("button", { name: "Keep draft" }));
+    expect(draft.value).toBe("unsaved reviewer draft");
+    expect(slot.queryByText(/Replace the unsaved comment draft/u)).toBeNull();
+  });
+
+  it("S3: over-cap collisions render capped rows with a truthful notice", async () => {
+    const capped = Array.from({ length: 200 }, (_, index) =>
+      detailRow(`collision-${index}`, `usr/bin/gateway-${index}`),
+    );
+    const { slot } = await renderDetail({
+      detail: () => ({
+        state: "resolved",
+        tier: 3,
+        rows: capped,
+        rowTotal: 205,
+        cache: freshCache,
+      }),
+    });
+    expect(
+      await slot.findByText(/Collision capped for display: 200 of 205/u),
+    ).toBeTruthy();
+    expect(slot.getByText(/Showing 200 of 205 cached rows/u)).toBeTruthy();
+    expect(slot.getByText("Identity & intelligence")).toBeTruthy();
+    expect(slot.queryByText("Finding unavailable")).toBeNull();
+  });
+
+  it("S4: cross-link failures show human copy with technical detail available", async () => {
+    const app = await loadPluginApp(() => import("../../../../app.js"));
+    const panel = app.navPanels.find(
+      (candidate) => candidate.path === "findings",
+    );
+    if (!panel) throw new Error("Findings panel not registered");
+    const slot = renderSlot(
+      panel,
+      { subPath: `f/${stableKey}` },
+      {
+        context: { projectId: "bb-project-1" },
+        sidebarThreads: {
+          status: "ready",
+          projects: [
+            { id: "bb-project-1", name: "Project One", isPersonal: false },
+          ],
+        },
+        rpc: {
+          connectionsStatus: connectedRemoteStatus,
+          cachedProjectVersions: () => ({
+            versions: [
+              {
+                platformProjectId: "platform-project-1",
+                projectVersionId: "version-1",
+                asOf: freshCache.asOf,
+                state: "fresh",
+              },
+            ],
+            selectedPlatformProjectId: "platform-project-1",
+            selectedProjectVersionId: "version-1",
+          }),
+          findingsSavedViewsGet: () => ({
+            views: [],
+            sha256: null,
+            recoveredFromCorrupt: false,
+          }),
+          findingsUiList: () => ({
+            items: [listRow()],
+            total: 1,
+            next: null,
+            cache: freshCache,
+          }),
+          findingDetailGet: () => ({
+            state: "resolved",
+            tier: 1,
+            rows: [detailRow("transient-new", "usr/bin/gateway")],
+            rowTotal: 1,
+            cache: freshCache,
+          }),
+          findingsActivityList: () => ({
+            items: [],
+            total: 0,
+            next: null,
+            cache: freshCache,
+          }),
+          findingActivityRefresh: () => ({ hydrated: 0 }),
+          findingsCommentsList: () => ({
+            items: [],
+            total: 0,
+            next: null,
+            cache: freshCache,
+          }),
+          canvasFirmwareLinks: () =>
+            Promise.reject(new Error("HTTP 500: HTTP 404: Project not found")),
+          canvasSbomLinks: () =>
+            Promise.reject(new Error("HTTP 404: Project not found")),
+          canvasRequirementLinks: () => family("requirement"),
+          canvasVerificationLinks: () => family("verification"),
+        },
+      },
+    );
+    const section = await slot.findByRole("region", {
+      name: "Connected surfaces",
+    });
+    await waitFor(() =>
+      expect(
+        within(section).getAllByText(/linked project could not be found/iu)
+          .length,
+      ).toBeGreaterThan(0),
+    );
+    const primaryReasons = [...section.querySelectorAll("p")].filter(
+      (node) =>
+        /linked project could not be found/iu.test(node.textContent ?? "") &&
+        node.closest("details") === null,
+    );
+    expect(primaryReasons.length).toBeGreaterThan(0);
+    expect(
+      primaryReasons.every(
+        (node) => !/HTTP\s+\d{3}:\s*HTTP\s+\d{3}/u.test(node.textContent ?? ""),
+      ),
+    ).toBe(true);
+    const details = within(section).getAllByText("Technical detail");
+    expect(details.length).toBeGreaterThan(0);
+    fireEvent.click(details[0]!);
+    expect(
+      [...section.querySelectorAll("details")].some((node) =>
+        /HTTP 500: HTTP 404: Project not found/u.test(node.textContent ?? ""),
+      ),
+    ).toBe(true);
+  });
+
+  it("S5: comment mutation affordances stay disabled with an explicit reason", async () => {
+    const { slot } = await renderDetail();
+    expect(await slot.findByText("Cached comment")).toBeTruthy();
+    const add = slot.getByRole("button", {
+      name: "Add comment",
+    }) as HTMLButtonElement;
+    const edit = slot.getByRole("button", {
+      name: "Edit comment comment-1",
+    }) as HTMLButtonElement;
+    const remove = slot.getByRole("button", {
+      name: "Delete comment comment-1",
+    }) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    expect(edit.disabled).toBe(true);
+    expect(remove.disabled).toBe(true);
+    expect(slot.getByText(/unavailable in v1 \(authorization\)/u)).toBeTruthy();
+    fireEvent.click(add);
+    fireEvent.click(edit);
+    fireEvent.click(remove);
+    expect(slot.queryByText(/authorization-unavailable/u)).toBeNull();
   });
 
   it("FindingCard self-fetches validated identity in compact read-only mode", async () => {
@@ -497,6 +719,7 @@ describe("finding detail", () => {
             state: "resolved",
             tier: 1,
             rows: [detailRow("card-row", "usr/bin/gateway")],
+            rowTotal: 1,
             cache: freshCache,
           }),
         },
@@ -526,6 +749,7 @@ describe("finding detail", () => {
         state: "orphaned",
         tier: null,
         rows: [],
+        rowTotal: 0,
         cache: freshCache,
       }),
     });
@@ -547,6 +771,7 @@ describe("finding detail", () => {
         state: "resolved",
         tier: 1,
         rows: [staleRow],
+        rowTotal: 1,
         cache: staleCache,
       }),
     });
@@ -560,5 +785,22 @@ describe("finding detail", () => {
     expect(
       (await unconfigured.slot.findAllByText("Choose a findings scope")).length,
     ).toBeGreaterThan(0);
+  });
+});
+
+describe("finding detail user-error helpers", () => {
+  it("peels concatenated HTTP prefixes for human copy", async () => {
+    const { humanizeLinkError, nextCommentDraft } =
+      await import("./user-error.js");
+    const link = humanizeLinkError(
+      new Error("HTTP 500: HTTP 404: Project not found"),
+    );
+    expect(link.summary).toBe("The linked project could not be found.");
+    expect(link.detail).toBe("HTTP 500: HTTP 404: Project not found");
+    expect(nextCommentDraft("keep me", "cached text", false)).toBeNull();
+    expect(nextCommentDraft("keep me", "cached text", true)).toBe(
+      "cached text",
+    );
+    expect(nextCommentDraft("", "cached text", false)).toBe("cached text");
   });
 });

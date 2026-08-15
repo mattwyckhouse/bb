@@ -47,6 +47,9 @@ import {
 } from "./stable-key/index.js";
 import { assertAcceptedFindingsScope } from "./scope.js";
 
+/** Detail returns at most this many collision rows; rowTotal reports the full count. */
+export const FINDING_DETAIL_ROW_CAP = 200;
+
 const findingsRpcContract = {
   findingsList: rpcContract.findingsList,
   findingsGet: rpcContract.findingsGet,
@@ -403,7 +406,12 @@ export const findingsUiRpcContract = defineRpcContract({
       .object({
         state: z.enum(["resolved", "stale", "orphaned"]),
         tier: z.union([z.literal(1), z.literal(2), z.literal(3)]).nullable(),
-        rows: z.array(rpcContract.findingsGet.output).max(200),
+        /** Returned rows, capped at FINDING_DETAIL_ROW_CAP for over-wide collisions. */
+        rows: z
+          .array(rpcContract.findingsGet.output)
+          .max(FINDING_DETAIL_ROW_CAP),
+        /** Full collision count before the detail row cap; may exceed rows.length. */
+        rowTotal: z.number().int().nonnegative(),
         cache: rpcContract.findingsList.output.shape.cache,
       })
       .strict(),
@@ -1709,22 +1717,25 @@ export function registerFindingsRpc(
         input.projectId,
         input.projectVersionId,
       );
-      const rows =
+      const resolved =
         resolution.state === "orphaned"
           ? []
           : resolution.state === "stale"
             ? resolution.candidates
             : resolution.rows;
       const tier = resolution.state === "resolved" ? resolution.tier : null;
+      const rowTotal = resolved.length;
+      const rows = resolved.slice(0, FINDING_DETAIL_ROW_CAP).map((finding) => ({
+        ...summary(finding),
+        fields: localVexFields(db, finding),
+        links: [],
+        cache,
+      }));
       return {
         state: resolution.state,
         tier,
-        rows: rows.map((finding) => ({
-          ...summary(finding),
-          fields: localVexFields(db, finding),
-          links: [],
-          cache,
-        })),
+        rows,
+        rowTotal,
         cache,
       };
     },

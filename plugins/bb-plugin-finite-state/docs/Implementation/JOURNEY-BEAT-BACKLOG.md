@@ -119,3 +119,10 @@ Entry format — one section per defect:
 - **Journey**: Findings triage → write a local decision → press `u` and observe a non-`sr-only` undo banner; select multiple rows → open bulk status → confirm evidence defaults to `{evidence}` and expands per row on write; predicate `triageTargetsRead` with a colliding stable key and a mismatched client `total`
 - **Broke because**: undo success/no-op lived only in an `sr-only` live region; bulk stamped the cursor row's evidence onto every decision; `provenance.by` was hardcoded `bb-user`; unused `filter` prop; predicate `total` was client-trusted and collision-blind; excludedStableKeys over-cap surfaced a raw zod string; TriageEditor used `text-[0.7rem]`
 - **Beat asserts**: undo success/error/info banners are visible (`data-triage-undo-feedback`); bulk writes expand `{evidence}` per target; YAML `provenance.by` equals workspace `git config user.email` when set; `triageTargetsRead` rejects mismatched predicate totals and returns unique stable-key totals
+
+### FS-139 — finding detail follow-ups from FS-39/WP-25 review (S1–S5)
+
+- **Source**: FS-139 / FS-39 independent review S1–S5 + dead tara nav branches
+- **Journey**: Findings table → open colliding stable-key detail → leave row unselected and confirm history does not claim empty for rows[0]; select the audited row and see its timeline; type an unsaved comment draft → copy another comment into draft → Keep draft; open a >200-row collision and see capped disclosure instead of "Finding unavailable"; fail a cross-link RPC with `HTTP 500: HTTP 404: …` and see human copy plus Technical detail; observe Add/Edit/Delete comment disabled with authorization reason
+- **Broke because**: history silently defaulted to `rows[0]`; Edit overwrote drafts; output `.max(200)` hard-failed the pane; raw transport strings rendered as reasons; comment mutations were enabled-but-always-failing
+- **Beat asserts**: no DecisionHistory fetch until a collision row is selected; draft survives Keep; capped pane shows `rowTotal` notice with identity intact; cross-link reason has no leading `HTTP NNN:` chain; mutation buttons are disabled

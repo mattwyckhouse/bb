@@ -13,6 +13,7 @@ import {
   navigateFindingLinkRecovery,
   type FindingCrossLink,
 } from "./links.js";
+import { humanizeLinkError } from "./user-error.js";
 import type { FindingDetailRow } from "./useFindingDetail.js";
 
 type FamilyResult = z.output<
@@ -32,16 +33,11 @@ const ICONS: Record<FindingCrossLink["kind"], IconName> = {
   verification: "Beaker",
 };
 
-function safeMessage(error: unknown): string {
-  return error instanceof Error && error.message
-    ? error.message.slice(0, 240)
-    : "Linked surface unavailable.";
-}
-
 function unready(
   kind: FindingCrossLink["kind"],
   reason: string,
   action: "pull" | "inspect" = "pull",
+  detail?: string,
 ): FindingCrossLink {
   return {
     kind,
@@ -58,8 +54,17 @@ function unready(
               : "Verification results",
     ready: false,
     reason,
+    ...(detail ? { detail } : {}),
     action,
   };
+}
+
+function unreadyFromError(
+  kind: FindingCrossLink["kind"],
+  error: unknown,
+): FindingCrossLink {
+  const message = humanizeLinkError(error);
+  return unready(kind, message.summary, "inspect", message.detail ?? undefined);
 }
 
 function mapFamily(
@@ -167,7 +172,7 @@ export function CrossLinks({
         if (!kind || kind === "tara") return [];
         return result.status === "fulfilled"
           ? mapFamily(kind, result.value)
-          : [unready(kind, safeMessage(result.reason), "inspect")];
+          : [unreadyFromError(kind, result.reason)];
       });
       // WP-34 has no public TARA readiness family. A source slug identifies a
       // possible node target, but it does not prove the downstream model or
@@ -253,6 +258,14 @@ export function CrossLinks({
                   <p className="mt-1 break-words text-muted-foreground">
                     {link.reason}
                   </p>
+                ) : null}
+                {link.detail ? (
+                  <details className="mt-1 text-muted-foreground">
+                    <summary className="cursor-pointer">
+                      Technical detail
+                    </summary>
+                    <p className="mt-1 break-words font-mono">{link.detail}</p>
+                  </details>
                 ) : null}
               </div>
               {link.ready ? (
