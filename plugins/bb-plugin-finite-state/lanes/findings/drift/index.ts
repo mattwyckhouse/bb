@@ -1,8 +1,5 @@
 import type { PluginContext } from "../../../lib/context.js";
-import {
-  registerCachePuller,
-  registeredCachePullers,
-} from "../../sync/engine/adapter.js";
+import { registeredCachePullers } from "../../sync/engine/adapter.js";
 import { classifyDrift, readDriftReport } from "./classify.js";
 import { orphanBaseState, pruneOrphans } from "./orphans.js";
 import { importVendorVexBytes, vendorImportId } from "./vendor/import.js";
@@ -92,23 +89,16 @@ export interface FindingsDriftService {
   }>;
 }
 
-/** Installs local drift/import services and one post-publication refetch hint. */
+/** Installs local drift/import services. Pull refetch hints emit after the accepted-pointer flip. */
 export function registerFindingsDrift(ctx: PluginContext): void {
   const db = ctx.db();
-  const findingPuller = registeredCachePullers().find(
-    (candidate) => candidate.kind === "finding",
-  );
-  if (findingPuller === undefined)
+  if (
+    registeredCachePullers().every((candidate) => candidate.kind !== "finding")
+  ) {
     throw new Error(
       "Findings drift requires the registered findings cache puller",
     );
-  registerCachePuller("finding", async (scope, generationId, onProgress) => {
-    const report = await findingPuller.pull(scope, generationId, onProgress);
-    ctx.bb.realtime.publish(FINDINGS_DRIFT_CHANGED_CHANNEL, {
-      pvId: scope.projectVersionId,
-    });
-    return report;
-  });
+  }
   ctx.service<FindingsDriftService>("findings.drift", () => ({
     refresh(input) {
       const report = classifyDrift(

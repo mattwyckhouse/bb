@@ -1317,6 +1317,105 @@ decisions:
     });
   });
 
+  it("FS-214: pullIsolated emits post-commit hints only for kinds whose accepted pointer flipped", async () => {
+    const scope = {
+      projectId: "project-fs214-hint-order",
+      projectVersionId: "v1",
+    };
+    const requirement: EntityAdapter = {
+      kind: "requirement",
+      klass: "VERSIONED",
+      serializer: createSerializer("requirement"),
+      async *fetchRemote(_scope, progress) {
+        progress({ page: 1, of: 1 });
+        yield [
+          {
+            key: ENTITIES.requirement.key({ reqId: "REQ-FS214" }),
+            remoteId: "remote-requirement-fs214",
+            payload: {
+              id: "remote-requirement-fs214",
+              projectId: scope.projectId,
+              kind: "requirement",
+              fields: { reqId: "REQ-FS214", title: "Published" },
+              humanEdited: null,
+              reviewStatus: null,
+              reviewVersion: null,
+            },
+          },
+        ];
+      },
+      async readWorking() {
+        return [];
+      },
+    };
+    const events: string[] = [];
+    const emitted: EntityKind[][] = [];
+    let generation = 0;
+    const deps = engine(requirement, {
+      adapters: [requirement],
+      createGenerationId: () => `fs214-hint-${++generation}`,
+      published: ({ kinds }) => {
+        events.push(`published:${kinds.join(",")}`);
+        emitted.push([...kinds]);
+      },
+      cachePullers: [
+        {
+          kind: "finding",
+          async pull(pullScope, generationId) {
+            deps.db
+              .prepare(
+                `UPDATE sync_state
+                    SET staged_pages = 1, staged_rows = 1, staged_quarantined = 0
+                  WHERE project_id = ? AND project_version_id = ?
+                    AND entity_kind = 'finding'
+                    AND staging_generation_id = ?`,
+              )
+              .run(
+                pullScope.projectId,
+                pullScope.projectVersionId,
+                generationId,
+              );
+            events.push("staged:finding");
+            return {
+              fetched: 1,
+              baseRows: 99,
+              quarantined: 0,
+              advisories: [],
+            };
+          },
+        },
+      ],
+    });
+
+    const report = await pullIsolated(deps, scope, ["finding", "requirement"], {
+      assuranceStudioProjectId: "as-selected",
+    });
+
+    expect(report.kinds.finding).toMatchObject({
+      status: "failed",
+      generationId: "fs214-hint-1",
+      acceptedAt: null,
+      reasons: [{ code: "PULL_KIND_FAILED", count: 1 }],
+    });
+    expect(report.kinds.requirement).toMatchObject({
+      status: "published",
+      generationId: "fs214-hint-2",
+    });
+    expect(events).toEqual(["staged:finding", "published:requirement"]);
+    expect(emitted).toEqual([["requirement"]]);
+    expect(
+      deps.db
+        .prepare(
+          `SELECT accepted_generation_id
+           FROM sync_state
+          WHERE project_id = ? AND project_version_id = ?
+            AND entity_kind = 'finding'`,
+        )
+        .pluck()
+        .get(scope.projectId, scope.projectVersionId),
+    ).toBeNull();
+  });
+
   it("does not notify when the publication fence moves", async () => {
     const scope = {
       projectId: "project-fenced",
