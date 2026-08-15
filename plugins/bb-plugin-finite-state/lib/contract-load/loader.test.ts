@@ -51,6 +51,83 @@ vi.mock("../../lanes/sync/serialize/yaml.js", async (importOriginal) => {
   return { ...original, parseYaml: vi.fn(original.parseYaml) };
 });
 
+const FOREIGN_OVERLAY_PROJECT = "foreign-project-outside-root";
+
+function insertForeignOverlayRow(
+  store: Store,
+  localState: "pushed" | "dirty" = "pushed",
+): void {
+  store.db
+    .prepare(
+      `INSERT INTO overlay_index
+         (project_id, project_version_id, entity_kind, stable_key, cve, file_path,
+          file_sha256, vex_status, vex_response, vex_justification, vex_reason, pin,
+          provenance_by, provenance_at, evidence, sync_base, pushed_at, local_state,
+          drift_state, match_tier, indexed_at)
+       VALUES (?, '@project', 'vexDecision', ?, 'CVE-2099-1', ?, ?, 'IN_TRIAGE',
+               NULL, NULL, 'foreign', 'exact_version', 'engineer', ?, 'foreign-evidence',
+               NULL, NULL, ?, NULL, NULL, ?)`,
+    )
+    .run(
+      FOREIGN_OVERLAY_PROJECT,
+      `${FOREIGN_OVERLAY_PROJECT}:CVE-2099-1`,
+      `.fs/triage/${FOREIGN_OVERLAY_PROJECT}/foreign.yaml`,
+      "f".repeat(64),
+      "2026-08-14T00:00:00.000Z",
+      localState,
+      "2026-08-14T00:00:00.000Z",
+    );
+}
+
+/**
+ * Queues a foreign triage write on the microtask queue as soon as preserved
+ * overlay rows are copied. If refresh awaits between that copy and restore,
+ * the microtask lands in the gap, rebuild wipes it, and restore brings back
+ * the stale snapshot. An atomic mutation phase finishes before the microtask
+ * runs, so the write survives as the post-refresh state.
+ */
+function armInterleavedForeignTriageWrite(store: Store): () => void {
+  const originalPrepare = store.db.prepare.bind(store.db);
+  const originalExec = store.db.exec.bind(store.db);
+  const preserveInsert =
+    /INSERT INTO contract_load_preserved_overlay_[0-9a-f]+\s+SELECT \* FROM overlay_index/u;
+
+  const afterPreserveCopy = (): void => {
+    queueMicrotask(() => {
+      store.db
+        .prepare(
+          `UPDATE overlay_index
+              SET local_state = 'dirty'
+            WHERE project_id = ?`,
+        )
+        .run(FOREIGN_OVERLAY_PROJECT);
+    });
+  };
+
+  store.db.prepare = ((sql: string) => {
+    const statement = originalPrepare(sql);
+    if (!preserveInsert.test(sql)) return statement;
+    const originalRun = statement.run.bind(statement);
+    statement.run = ((...args: Parameters<typeof originalRun>) => {
+      const result = originalRun(...args);
+      afterPreserveCopy();
+      return result;
+    }) as typeof statement.run;
+    return statement;
+  }) as typeof store.db.prepare;
+
+  store.db.exec = ((sql: string) => {
+    const result = originalExec(sql);
+    if (preserveInsert.test(sql)) afterPreserveCopy();
+    return result;
+  }) as typeof store.db.exec;
+
+  return () => {
+    store.db.prepare = originalPrepare;
+    store.db.exec = originalExec;
+  };
+}
+
 const execFileAsync = promisify(execFile);
 const temporaryRoots: string[] = [];
 const REAL_TRIAGE_FIXTURE = resolve(
@@ -538,6 +615,43 @@ describe("repository contract loader", () => {
     expect(sidecars).toEqual([
       contractLoadSidecarName(secondIdentity.repositoryDigest),
     ]);
+  });
+
+  it("keeps a foreign triage write that races the overlay refresh await gap", async () => {
+    const value = await fixture("overlay-race", true);
+    await loadRepoContract(value.root, value.store, value.scope);
+    insertForeignOverlayRow(value.store, "pushed");
+    expect(
+      value.store.db
+        .prepare(`SELECT local_state FROM overlay_index WHERE project_id = ?`)
+        .get(FOREIGN_OVERLAY_PROJECT),
+    ).toEqual({ local_state: "pushed" });
+
+    const disarm = armInterleavedForeignTriageWrite(value.store);
+    try {
+      const yamlPath = join(
+        value.root,
+        "product-security",
+        "requirements",
+        "REQ-OFFLINE.yaml",
+      );
+      await writeFile(
+        yamlPath,
+        serializeRequirement(requirement("Force overlay refresh.")),
+      );
+      await loadRepoContract(value.root, value.store, value.scope);
+    } finally {
+      disarm();
+    }
+
+    // Atomic preserve/apply/restore finishes before the queued write runs, so the
+    // concurrent triage update is still present. The pre-fix await gap restored
+    // the stale preserved snapshot instead (`pushed`).
+    expect(
+      value.store.db
+        .prepare(`SELECT local_state FROM overlay_index WHERE project_id = ?`)
+        .get(FOREIGN_OVERLAY_PROJECT),
+    ).toEqual({ local_state: "dirty" });
   });
 
   it("exposes a deterministic checkout-movement trigger with no timer sleeps", async () => {

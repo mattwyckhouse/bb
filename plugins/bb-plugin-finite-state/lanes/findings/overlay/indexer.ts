@@ -12,7 +12,11 @@ import { componentKeyFromIdentity } from "../../bom/sbom/rollup.js";
 import { canonicalJson } from "../../sync/serialize/canonical.js";
 import { PROJECT_LEVEL_VERSION_ID } from "../../../lib/store/index.js";
 import { resolveFinding, type FindingResolution } from "../stable-key/index.js";
-import { readOverlayFiles, type OverlayParseError, type ParsedOverlayFile } from "./reader.js";
+import {
+  readOverlayFiles,
+  type OverlayParseError,
+  type ParsedOverlayFile,
+} from "./reader.js";
 import {
   stableKeyFor,
   type OverlayState,
@@ -34,7 +38,14 @@ interface PreservedProjectionRow {
   project_id: string;
   project_version_id: string;
   stable_key: string;
-  drift_state: "reattached_noop" | "reapply" | "stale" | "orphaned" | "conflict" | "needs_completion" | null;
+  drift_state:
+    | "reattached_noop"
+    | "reapply"
+    | "stale"
+    | "orphaned"
+    | "conflict"
+    | "needs_completion"
+    | null;
   policy_warning_count: number;
   policy_violation_count: number;
 }
@@ -46,15 +57,19 @@ interface PreservedProjection {
 }
 
 function projectVersions(db: Database.Database, project: string): string[] {
-  const rows = db.prepare(
-    `SELECT DISTINCT project_version_id
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT project_version_id
        FROM sync_state
       WHERE project_id = ?
         AND entity_kind = 'finding'
         AND accepted_generation_id IS NOT NULL
       ORDER BY project_version_id`,
-  ).all(project) as ProjectVersionRow[];
-  return rows.length === 0 ? [PROJECT_LEVEL_VERSION_ID] : rows.map((row) => row.project_version_id);
+    )
+    .all(project) as ProjectVersionRow[];
+  return rows.length === 0
+    ? [PROJECT_LEVEL_VERSION_ID]
+    : rows.map((row) => row.project_version_id);
 }
 
 function tuple(decision: TriageDecisionV1): VexTuple {
@@ -67,13 +82,27 @@ function tuple(decision: TriageDecisionV1): VexTuple {
 }
 
 function tupleKey(value: VexTuple | null): string {
-  return canonicalJson(value ?? { status: null, justification: null, response: null, reason: null });
+  return canonicalJson(
+    value ?? {
+      status: null,
+      justification: null,
+      response: null,
+      reason: null,
+    },
+  );
 }
 
-function cachedEnum<T extends string>(value: string | null, vocabulary: readonly T[], field: string): T | null {
+function cachedEnum<T extends string>(
+  value: string | null,
+  vocabulary: readonly T[],
+  field: string,
+): T | null {
   if (value === null) return null;
   const parsed = vocabulary.find((candidate) => candidate === value);
-  if (parsed === undefined) throw new Error(`Cached finding ${field} is outside the frozen VEX vocabulary`);
+  if (parsed === undefined)
+    throw new Error(
+      `Cached finding ${field} is outside the frozen VEX vocabulary`,
+    );
   return parsed;
 }
 
@@ -81,26 +110,46 @@ function remoteTuples(resolution: FindingResolution): VexTuple[] {
   if (resolution.state !== "resolved") return [];
   return resolution.rows.map((row) => ({
     status: cachedEnum<VexStatus>(row.vexStatus, VEX_STATUSES, "vex_status"),
-    justification: cachedEnum<VexJustification>(row.vexJustification, VEX_JUSTIFICATIONS, "vex_justification"),
-    response: cachedEnum<VexResponse>(row.vexResponse, VEX_RESPONSES, "vex_response"),
+    justification: cachedEnum<VexJustification>(
+      row.vexJustification,
+      VEX_JUSTIFICATIONS,
+      "vex_justification",
+    ),
+    response: cachedEnum<VexResponse>(
+      row.vexResponse,
+      VEX_RESPONSES,
+      "vex_response",
+    ),
     reason: row.vexReason,
   }));
 }
 
-function stateFor(decision: TriageDecisionV1, resolution: FindingResolution | null): OverlayState {
+function stateFor(
+  decision: TriageDecisionV1,
+  resolution: FindingResolution | null,
+): OverlayState {
   if (resolution?.state === "stale") return "stale";
   if (resolution?.state === "orphaned") return "orphaned";
-  if (resolution?.state === "resolved" && decision.pin === "exact_version" && resolution.versionChanged) return "stale";
+  if (
+    resolution?.state === "resolved" &&
+    decision.pin === "exact_version" &&
+    resolution.versionChanged
+  )
+    return "stale";
   const local = tupleKey(tuple(decision));
   const base = tupleKey(decision.sync.base);
   if (resolution === null) return local === base ? "pushed" : "dirty";
   const remote = remoteTuples(resolution).map(tupleKey);
-  if (remote.length > 0 && remote.every((value) => value === local)) return "pushed";
-  if (local !== base && remote.some((value) => value !== base)) return "conflict";
+  if (remote.length > 0 && remote.every((value) => value === local))
+    return "pushed";
+  if (local !== base && remote.some((value) => value !== base))
+    return "conflict";
   return "dirty";
 }
 
-function matchTier(resolution: FindingResolution | null): "purl" | "nvg" | "ng" | null {
+function matchTier(
+  resolution: FindingResolution | null,
+): "purl" | "nvg" | "ng" | null {
   if (resolution?.state !== "resolved") return null;
   return resolution.tier === 1 ? "purl" : resolution.tier === 2 ? "nvg" : "ng";
 }
@@ -113,12 +162,17 @@ function resolutionFor(
   projectVersionId: string,
 ): FindingResolution | null {
   if (projectVersionId === PROJECT_LEVEL_VERSION_ID) return null;
-  return resolveFinding(db, {
-    schema: "fs-finding-key/v1",
-    project: overlay.project,
-    cve,
-    ...overlay.component,
-  }, projectVersionId, decision.pin);
+  return resolveFinding(
+    db,
+    {
+      schema: "fs-finding-key/v1",
+      project: overlay.project,
+      cve,
+      ...overlay.component,
+    },
+    projectVersionId,
+    decision.pin,
+  );
 }
 
 const INSERT = `INSERT INTO overlay_index
@@ -140,25 +194,35 @@ const INSERT_PROPOSAL = `INSERT INTO overlay_index
    drift_state, match_tier, policy_warning_count, policy_violation_count, indexed_at)
  VALUES (?, ?, 'vendorProposal', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, ?, ?, 0, 0, ?)`;
 
-function projectionKey(project: string, projectVersionId: string, stableKey: string): string {
+function projectionKey(
+  project: string,
+  projectVersionId: string,
+  stableKey: string,
+): string {
   return JSON.stringify([project, projectVersionId, stableKey]);
 }
 
-function preservedProjections(db: Database.Database): Map<string, PreservedProjection> {
-  const rows = db.prepare(
-    `SELECT project_id, project_version_id, stable_key, drift_state,
+function preservedProjections(
+  db: Database.Database,
+): Map<string, PreservedProjection> {
+  const rows = db
+    .prepare(
+      `SELECT project_id, project_version_id, stable_key, drift_state,
             policy_warning_count, policy_violation_count
        FROM overlay_index
       WHERE entity_kind = 'vexDecision'`,
-  ).all() as PreservedProjectionRow[];
-  return new Map(rows.map((row) => [
-    projectionKey(row.project_id, row.project_version_id, row.stable_key),
-    {
-      driftState: row.drift_state,
-      policyWarningCount: row.policy_warning_count,
-      policyViolationCount: row.policy_violation_count,
-    },
-  ]));
+    )
+    .all() as PreservedProjectionRow[];
+  return new Map(
+    rows.map((row) => [
+      projectionKey(row.project_id, row.project_version_id, row.stable_key),
+      {
+        driftState: row.drift_state,
+        policyWarningCount: row.policy_warning_count,
+        policyViolationCount: row.policy_violation_count,
+      },
+    ]),
+  );
 }
 
 function indexFile(
@@ -172,9 +236,21 @@ function indexFile(
   let indexed = 0;
   for (const projectVersionId of projectVersions(db, parsed.overlay.project)) {
     for (const [cve, decision] of Object.entries(parsed.overlay.decisions)) {
-      const resolution = resolutionFor(db, parsed.overlay, cve, decision, projectVersionId);
-      const stableKey = stableKeyFor(parsed.overlay.project, parsed.overlay.component, cve);
-      const prior = preserved.get(projectionKey(parsed.overlay.project, projectVersionId, stableKey));
+      const resolution = resolutionFor(
+        db,
+        parsed.overlay,
+        cve,
+        decision,
+        projectVersionId,
+      );
+      const stableKey = stableKeyFor(
+        parsed.overlay.project,
+        parsed.overlay.component,
+        cve,
+      );
+      const prior = preserved.get(
+        projectionKey(parsed.overlay.project, projectVersionId, stableKey),
+      );
       insert.run(
         parsed.overlay.project,
         projectVersionId,
@@ -202,26 +278,36 @@ function indexFile(
       );
       indexed += 1;
     }
-    for (const [proposalId, proposal] of Object.entries(parsed.overlay.proposals ?? {})) {
-      const resolution = projectVersionId === PROJECT_LEVEL_VERSION_ID
-        ? null
-        : resolveFinding(db, {
-            schema: "fs-finding-key/v1",
-            project: parsed.overlay.project,
-            cve: proposal.cve,
-            ...parsed.overlay.component,
-          }, projectVersionId, "any_version");
-      const resolved = resolution?.state === "resolved";
-      const localState = proposal.state === "needs_completion"
-        ? "needs_completion"
-        : resolved
-          ? "dirty"
-          : "orphaned";
-      const driftState = proposal.state === "needs_completion"
-        ? "needs_completion"
-        : resolved
+    for (const [proposalId, proposal] of Object.entries(
+      parsed.overlay.proposals ?? {},
+    )) {
+      const resolution =
+        projectVersionId === PROJECT_LEVEL_VERSION_ID
           ? null
-          : "orphaned";
+          : resolveFinding(
+              db,
+              {
+                schema: "fs-finding-key/v1",
+                project: parsed.overlay.project,
+                cve: proposal.cve,
+                ...parsed.overlay.component,
+              },
+              projectVersionId,
+              "any_version",
+            );
+      const resolved = resolution?.state === "resolved";
+      const localState =
+        proposal.state === "needs_completion"
+          ? "needs_completion"
+          : resolved
+            ? "dirty"
+            : "orphaned";
+      const driftState =
+        proposal.state === "needs_completion"
+          ? "needs_completion"
+          : resolved
+            ? null
+            : "orphaned";
       insertProposal.run(
         parsed.overlay.project,
         projectVersionId,
@@ -248,16 +334,35 @@ function indexFile(
   return indexed;
 }
 
-export async function rebuildOverlayIndex(db: Database.Database, root: string): Promise<OverlayIndexReport> {
-  const parsed = await readOverlayFiles(root);
+/**
+ * Synchronous overlay_index mutation from already-parsed triage files.
+ * Callers that must not yield between related SQLite steps (for example
+ * preserve/rebuild/restore) should await `readOverlayFiles` first, then invoke
+ * this inside a single `db.transaction` / `store.tx`.
+ */
+export function applyOverlayIndex(
+  db: Database.Database,
+  parsed: {
+    readonly files: readonly ParsedOverlayFile[];
+    readonly errors: readonly OverlayParseError[];
+  },
+): OverlayIndexReport {
   const indexedAt = new Date().toISOString();
-  const indexed = db.transaction(() => {
-    const preserved = preservedProjections(db);
-    db.prepare("DELETE FROM overlay_index WHERE entity_kind IN ('vexDecision', 'vendorProposal')").run();
-    return parsed.files.reduce(
-      (count, file) => count + indexFile(db, file, preserved, indexedAt),
-      0,
-    );
-  })();
-  return { indexed, errors: parsed.errors };
+  const preserved = preservedProjections(db);
+  db.prepare(
+    "DELETE FROM overlay_index WHERE entity_kind IN ('vexDecision', 'vendorProposal')",
+  ).run();
+  const indexed = parsed.files.reduce(
+    (count, file) => count + indexFile(db, file, preserved, indexedAt),
+    0,
+  );
+  return { indexed, errors: [...parsed.errors] };
+}
+
+export async function rebuildOverlayIndex(
+  db: Database.Database,
+  root: string,
+): Promise<OverlayIndexReport> {
+  const parsed = await readOverlayFiles(root);
+  return db.transaction(() => applyOverlayIndex(db, parsed))();
 }

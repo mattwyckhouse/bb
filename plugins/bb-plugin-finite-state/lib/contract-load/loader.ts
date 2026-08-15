@@ -12,7 +12,7 @@ import { dirname, join, relative, sep } from "node:path";
 
 import type { Store } from "../store/index.js";
 import { ENTITIES, type EntityKind } from "../sync/registry.js";
-import { rebuildOverlayIndex } from "../../lanes/findings/overlay/indexer.js";
+import { applyOverlayIndex } from "../../lanes/findings/overlay/indexer.js";
 import { readOverlayFiles } from "../../lanes/findings/overlay/reader.js";
 import { parseCanvasEntity } from "../../lanes/product-security/canvas/editing/writer.js";
 import { architectureEntityPayload } from "../../lanes/product-security/canvas/editing/schema.js";
@@ -1059,50 +1059,49 @@ async function refreshOverlayProjection(
   readonly errors: readonly ContractLoadDiagnostic[];
   readonly projects: readonly string[];
 }> {
+  // Await all filesystem work before any overlay_index mutation. An await
+  // between preserve-copy and restore yields the event loop so a concurrent
+  // triage write can interleave with the periodic background rebuild.
   const discovered = await readOverlayFiles(root);
   const projects = [...new Set(discovered.projects)].sort((left, right) =>
     left.localeCompare(right),
   );
   const ownedProjects = [...new Set([...priorProjects, ...projects])];
   const temporaryTable = `contract_load_preserved_overlay_${randomUUID().replaceAll("-", "")}`;
-  store.db.exec(
-    `CREATE TEMP TABLE ${temporaryTable} AS SELECT * FROM overlay_index WHERE 0`,
-  );
   try {
-    if (ownedProjects.length === 0) {
+    return store.tx(() => {
       store.db.exec(
-        `INSERT INTO ${temporaryTable} SELECT * FROM overlay_index`,
+        `CREATE TEMP TABLE ${temporaryTable} AS SELECT * FROM overlay_index WHERE 0`,
       );
-    } else {
-      const placeholders = ownedProjects.map(() => "?").join(", ");
-      store.db
-        .prepare(
-          `INSERT INTO ${temporaryTable}
-           SELECT * FROM overlay_index WHERE project_id NOT IN (${placeholders})`,
-        )
-        .run(...ownedProjects);
-    }
-    const report = await rebuildOverlayIndex(store.db, root);
-    store.db.exec(`INSERT INTO overlay_index SELECT * FROM ${temporaryTable}`);
-    return {
-      indexed: report.indexed,
-      projects,
-      errors: report.errors.map((error) => ({
-        path: error.file,
-        message:
-          error.line === null
-            ? error.message
-            : `line ${error.line}: ${error.message}`,
-      })),
-    };
-  } catch (error) {
-    store.tx(() => {
-      store.db.exec("DELETE FROM overlay_index");
+      if (ownedProjects.length === 0) {
+        store.db.exec(
+          `INSERT INTO ${temporaryTable} SELECT * FROM overlay_index`,
+        );
+      } else {
+        const placeholders = ownedProjects.map(() => "?").join(", ");
+        store.db
+          .prepare(
+            `INSERT INTO ${temporaryTable}
+             SELECT * FROM overlay_index WHERE project_id NOT IN (${placeholders})`,
+          )
+          .run(...ownedProjects);
+      }
+      const report = applyOverlayIndex(store.db, discovered);
       store.db.exec(
         `INSERT INTO overlay_index SELECT * FROM ${temporaryTable}`,
       );
+      return {
+        indexed: report.indexed,
+        projects,
+        errors: report.errors.map((error) => ({
+          path: error.file,
+          message:
+            error.line === null
+              ? error.message
+              : `line ${error.line}: ${error.message}`,
+        })),
+      };
     });
-    throw error;
   } finally {
     store.db.exec(`DROP TABLE IF EXISTS ${temporaryTable}`);
   }
