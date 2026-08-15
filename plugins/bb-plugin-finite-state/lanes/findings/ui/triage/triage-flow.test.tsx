@@ -283,7 +283,7 @@ describe("manual triage flow", () => {
     await waitFor(() =>
       expect(document.activeElement?.getAttribute("data-index")).toBe("1"),
     );
-    expect(slot.getByText(/EXPLOITABLE written locally/u)).toBeTruthy();
+    expect(await slot.findByText(/EXPLOITABLE written locally/u)).toBeTruthy();
   });
 
   it("blocks NOT_AFFECTED until a frozen justification is chosen", async () => {
@@ -507,7 +507,7 @@ describe("manual triage flow", () => {
       ).toHaveLength(1),
     );
     expect(
-      slot.getByText("3 local YAML decisions written; 0 failed."),
+      await slot.findByText("3 local YAML decisions written; 0 failed."),
     ).toBeTruthy();
     expect(
       slot.queryByRole("form", { name: /3 local overlay identities/u }),
@@ -701,7 +701,9 @@ describe("manual triage flow", () => {
         stableKey: "stable-0",
       }),
     );
-    expect(slot.getByText(/Undid the last local decision/u)).toBeTruthy();
+    expect(
+      await slot.findByText(/Undid the last local decision/u),
+    ).toBeTruthy();
     expect(slot.queryByText(/There is no local decision to undo/u)).toBeNull();
   });
 
@@ -773,7 +775,7 @@ describe("manual triage flow", () => {
         ),
       ).toHaveLength(2),
     );
-    expect(slot.getByText(/27 succeeded, 0 failed/u)).toBeTruthy();
+    expect(await slot.findByText(/27 succeeded, 0 failed/u)).toBeTruthy();
   });
 
   it("keeps per-key accounting when a later chunk loses an exact row during refresh", async () => {
