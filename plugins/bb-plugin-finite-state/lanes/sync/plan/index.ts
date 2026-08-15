@@ -25,6 +25,7 @@ import {
   type EngineDeps,
   type PullProjectBinding,
 } from "../engine/pull.js";
+import { assertRemoteSyncScope } from "../engine/scope.js";
 import { syncMetadata } from "../engine/status.js";
 import { refinePlanCandidate } from "../conflicts/attribution.js";
 import { canonicalJson, contentHash } from "../serialize/canonical.js";
@@ -872,6 +873,7 @@ export async function computePlan(
 ): Promise<Plan> {
   if (scope.projectId.trim().length === 0)
     throw new Error("projectId must not be empty");
+  assertRemoteSyncScope(scope.projectId);
   const adapters = selectedAdapters(deps, kinds);
   for (const adapter of adapters) {
     remoteScopeForKind(adapter.kind, scope, binding);

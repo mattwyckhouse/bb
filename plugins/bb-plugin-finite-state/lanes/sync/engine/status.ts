@@ -18,6 +18,7 @@ import {
   type EngineDeps,
   type PullProjectBinding,
 } from "./pull.js";
+import { assertRemoteSyncScope } from "./scope.js";
 
 /** Ordered local/upstream/conflict/orphan view of authored sync state. */
 export interface StatusReport {
@@ -333,6 +334,7 @@ export async function status(
 ): Promise<StatusReport> {
   if (scope.projectId.trim().length === 0)
     throw new Error("projectId must not be empty");
+  assertRemoteSyncScope(scope.projectId);
   const report = emptyStatusReport();
   const storageVersionId = toStorageProjectVersionId(scope.projectVersionId);
   const adapters = selectedAdapters(deps, kinds);
@@ -370,6 +372,7 @@ export async function statusPerKind(
 ): Promise<StatusPerKindReport> {
   if (scope.projectId.trim().length === 0)
     throw new Error("projectId must not be empty");
+  assertRemoteSyncScope(scope.projectId);
   const report = emptyStatusReport();
   const unavailable: StatusKindUnavailable[] = [];
   const storageVersionId = toStorageProjectVersionId(scope.projectVersionId);

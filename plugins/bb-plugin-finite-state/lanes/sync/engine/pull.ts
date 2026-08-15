@@ -27,6 +27,7 @@ import {
   type WorkingEntity,
 } from "./adapter.js";
 import { diagnoseRemoteFailure } from "../../../lib/remote/errors.js";
+import { assertRemoteSyncScope } from "./scope.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1316,6 +1317,7 @@ export async function pullIsolated(
 ): Promise<IsolatedPullReport> {
   if (scope.projectId.trim().length === 0)
     throw new Error("projectId must not be empty");
+  assertRemoteSyncScope(scope.projectId);
   const selected = selectedKinds(deps, kinds);
   const storageVersionId = toStorageProjectVersionId(scope.projectVersionId);
   const outcomes: IsolatedPullReport["kinds"] = {};
