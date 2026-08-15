@@ -1,0 +1,27 @@
+schema: fs-requirement/v1
+id: REQ-UPDATE-FAILCLOSED
+req_type: security
+priority: P1
+status: implemented
+ears:
+  pattern: state_driven
+  text: WHILE maintenance mode is active, the gateway SHALL deny remote enrollment requests
+  parts:
+    state: maintenance mode is active
+    system: gateway
+    response: deny remote enrollment requests
+rationale: Maintenance windows must not widen the remote attack surface.
+source_description: Maintenance-mode enrollment gate.
+mitigations:
+  - mit-maint-lock
+controls:
+  - ctrl-enrollment-gate
+standards:
+  - iec-62443-4-2
+verification:
+  - check: check-maint-enrollment
+    method: dynamic
+    tier: emulation
+    required: true
+    coverage: full
+    pass_criteria: Enrollment is refused while maintenance mode is active.

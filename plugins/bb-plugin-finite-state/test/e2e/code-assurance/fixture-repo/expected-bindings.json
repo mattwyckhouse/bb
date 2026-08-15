@@ -1,0 +1,26 @@
+[
+  {
+    "stableKey": "REQ-FW-SIG",
+    "earsText": "The gateway SHALL reject unsigned firmware before installation",
+    "status": "approved",
+    "sourcePath": "product-security/requirements/REQ-FW-SIG.yaml"
+  },
+  {
+    "stableKey": "REQ-ADMIN-AUTH",
+    "earsText": "WHEN an administrative HTTP session begins, the httpd SHALL require mutual authentication before serving configuration",
+    "status": "approved",
+    "sourcePath": "product-security/requirements/REQ-ADMIN-AUTH.yaml"
+  },
+  {
+    "stableKey": "REQ-UPDATE-FAILCLOSED",
+    "earsText": "WHILE maintenance mode is active, the gateway SHALL deny remote enrollment requests",
+    "status": "implemented",
+    "sourcePath": "product-security/requirements/REQ-UPDATE-FAILCLOSED.yaml"
+  },
+  {
+    "stableKey": "REQ-COMPLEX-AUDIT",
+    "earsText": "WHERE remote administration is enabled, IF a service session is authorized, WHILE maintenance mode is active, WHEN a configuration write begins, the gateway SHALL record the authenticated operator identity",
+    "status": "draft",
+    "sourcePath": "product-security/requirements/REQ-COMPLEX-AUDIT.yaml"
+  }
+]

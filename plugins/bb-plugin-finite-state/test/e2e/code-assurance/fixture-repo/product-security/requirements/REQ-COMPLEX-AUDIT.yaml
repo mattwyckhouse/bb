@@ -1,0 +1,30 @@
+schema: fs-requirement/v1
+id: REQ-COMPLEX-AUDIT
+req_type: operational
+priority: P2
+status: draft
+ears:
+  pattern: complex
+  text: WHERE remote administration is enabled, IF a service session is authorized, WHILE maintenance mode is active, WHEN a configuration write begins, the gateway SHALL record the authenticated operator identity
+  parts:
+    trigger: a configuration write begins
+    precondition: a service session is authorized
+    state: maintenance mode is active
+    feature: remote administration is enabled
+    system: gateway
+    response: record the authenticated operator identity
+rationale: Privileged writes need an auditable operator attribution trail.
+source_description: Configuration-write audit during maintenance.
+mitigations:
+  - mit-audit-trail
+controls:
+  - ctrl-operator-log
+standards:
+  - cra-essential
+verification:
+  - check: check-config-audit
+    method: document_review
+    tier: manual
+    required: false
+    coverage: partial
+    pass_criteria: Operator identity appears in the configuration audit log.
