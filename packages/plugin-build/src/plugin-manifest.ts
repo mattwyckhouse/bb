@@ -64,11 +64,26 @@ export async function validatePluginBuildManifest(
     if (!assetStat.isFile()) {
       throw new Error(`manifest ${label} must point at a file`);
     }
-    const [realRoot, realAsset] = await Promise.all([
+    // Assets must stay co-located with the plugin. Accept either the plugin
+    // root or the real directory holding the plugin's own package.json: in
+    // linked layouts (a real plugin dir whose entries are symlinks into a
+    // source repo) the manifest and its assets resolve together to the source
+    // repo, which is exactly the co-location this check protects.
+    const [realRoot, realAsset, realPackageJson] = await Promise.all([
       realpath(rootDir),
       realpath(assetPath),
+      realpath(packageJsonPath),
     ]);
-    if (realAsset !== realRoot && !realAsset.startsWith(realRoot + "/")) {
+    const realManifestDir = realPackageJson.slice(
+      0,
+      realPackageJson.lastIndexOf("/"),
+    );
+    const allowedRoots = [realRoot, realManifestDir];
+    if (
+      !allowedRoots.some(
+        (root) => realAsset === root || realAsset.startsWith(root + "/"),
+      )
+    ) {
       throw new Error(
         `manifest ${label} escapes the plugin directory through a symlink`,
       );
