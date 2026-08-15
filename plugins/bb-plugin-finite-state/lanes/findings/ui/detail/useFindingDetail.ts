@@ -7,6 +7,7 @@ import {
 import type { z } from "zod";
 import type { JsonValue } from "../../../../shared/contract.js";
 import type { findingsUiRpcContract } from "../../rpc.js";
+import { humanizeDetailError } from "./user-error.js";
 
 type DetailResult = z.output<
   (typeof findingsUiRpcContract)["findingDetailGet"]["output"]
@@ -72,7 +73,11 @@ export interface FindingDetailRow {
 
 export interface FindingDetailModel {
   stableKey: string;
-  resolution: { tier: 1 | 2 | 3; duplicateCount: number };
+  resolution: {
+    tier: 1 | 2 | 3;
+    duplicateCount: number;
+    truncated: boolean;
+  };
   rows: FindingDetailRow[];
   effective: {
     severity: string;
@@ -368,7 +373,11 @@ function modelFromResult(
           : "undecided";
   return {
     stableKey,
-    resolution: { tier: result.tier, duplicateCount: rows.length },
+    resolution: {
+      tier: result.tier,
+      duplicateCount: result.rowTotal,
+      truncated: result.rowTotal > rows.length,
+    },
     rows,
     effective: {
       severity,
@@ -394,9 +403,7 @@ function modelFromResult(
 }
 
 function safeError(error: unknown): string {
-  return error instanceof Error && error.message
-    ? error.message.slice(0, 300)
-    : "Finding detail could not be loaded.";
+  return humanizeDetailError(error).summary;
 }
 
 export function useFindingDetail(stableKey: string): FindingDetailState {
