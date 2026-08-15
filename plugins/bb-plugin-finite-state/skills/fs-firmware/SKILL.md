@@ -19,7 +19,7 @@ Rootfs, when present, lives under the firmware cache for that `pvId` (ignored by
 2. For a **whole image**, unpack locally with the standalone unpack path the owner service already uses. Then re-check remaining counts. Do not ask the API to hydrate the entire rootfs.
 3. For **explicit files**, `mode: "hydrate"` requires `paths` (1–100 relative paths). This is the admin-gated API fallback. `hydrate_all` does not accept `paths`.
 4. The tool returns `{ pvId, source: "standalone_unpack" | "api", hydrated, remaining, errors }`. If `remaining > 0`, say so. Do not claim the mount is fully materialized.
-5. Prefer `Grep` over dumping binaries. Hydrate `/etc` and `/usr/sbin` (or the paths you need), then grep — for example hardcoded credentials — alongside source.
+5. Prefer `Grep` over dumping binaries. Hydrate `etc` and `usr/sbin` (or the relative paths you need — no leading `/`), then grep — for example hardcoded credentials — alongside source.
 6. Re-running hydration is convergent: it completes missing bytes rather than duplicating them.
 
 Linker files (`.fs/links/firmware.yaml`) record exact paths you actually found. See `fs-product-security` for the overlay write.

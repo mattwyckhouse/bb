@@ -19,7 +19,7 @@ File map (compact):
 
 ## Workflow
 
-1. Query with `fs_tara_query` (`projectId`, `kind`, optional `projectVersionId` / `filter` / paging). `kind` is one of `threat`, `component`, `zone`, `dataflow`, `asset`, `requirement`, `verification`, `attack_path`, `clause`, `trace`. Unresolved YAML⋈cache links are reported, never dropped.
+1. Query with `fs_tara_query` (`projectId`, `kind`, optional `projectVersionId` / `filter` / paging). Owner path runs `threat`, `component`, `zone`, `dataflow`, `asset`, `requirement`, `verification`, and `trace`. `kind: "trace"` requires `filter.requirementId` (`REQ-…`) or the tool returns `not_found`. `attack_path` and `clause` return `unsupported_kind`. Unresolved YAML⋈cache links are reported, never dropped.
 2. Convert seed material with `fs_ears_convert`: `action: "bundle"` is cache-served (last pull; not a live AS call); `action: "validate"` runs gates 1–2 on paths and never writes.
 3. Write one requirement with `fs_requirement_write` `{ reqId, yaml, expectedHash? }`. `yaml` is a parsed object (`schema: fs-requirement/v1`), not a string. Gates 1–2 are all-or-nothing. Gate 3 stays pending human diff review even after a successful write.
 4. To change verification evidence, call `fs_verification_run` `{ requirement, tier?, check? }` (`tier`: `static` | `emulation` | `hil` | `manual` | `hardware`) and wait. The tool returns a durable `job_id` with status `queued`. Queued is not passed. Refetch via `fs_tara_query { kind: "verification" }`.

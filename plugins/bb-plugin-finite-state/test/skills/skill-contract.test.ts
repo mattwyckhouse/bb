@@ -37,6 +37,22 @@ const ROOT_ACTIONS = [
   "fs_bench_run",
   "fs_firmware_materialize",
 ] as const;
+const AMD0013_ACTIONS = [
+  "fs_hw_extract",
+  "fs_build",
+  "fs_flash",
+  "fs_serial",
+  "fs_probe",
+] as const;
+const SKILL_DIRECTORY_NAMES = new Set<string>([
+  ...REQUIRED_SKILLS,
+  "fs-hardware",
+  "fs-bringup",
+  "fs-debug-bench",
+  "fs-citation",
+  "fs-porting",
+  "fs-instruments",
+]);
 const TOOL_NAME = /`fs_[a-z0-9_]+`/g;
 const DIRECTIVE_FENCE = /::(fs-[a-z0-9-]+)/g;
 const DIRECTIVE_TICK = /`(fs-[a-z0-9-]+)`/g;
@@ -121,22 +137,49 @@ function tickTools(text: string): string[] {
   );
 }
 
+function fencedDirectiveIds(text: string): string[] {
+  return [...text.matchAll(DIRECTIVE_FENCE)].map((match) => match[1] ?? "");
+}
+
+function tickedFsIds(text: string): string[] {
+  return [...text.matchAll(DIRECTIVE_TICK)].map((match) => match[1] ?? "");
+}
+
 function mentionedDirectives(text: string): string[] {
-  const fenced = [...text.matchAll(DIRECTIVE_FENCE)].map(
-    (match) => match[1] ?? "",
-  );
-  const ticked = [...text.matchAll(DIRECTIVE_TICK)].map(
-    (match) => match[1] ?? "",
-  );
-  return [...fenced, ...ticked].filter((id) =>
-    (DIRECTIVE_IDS as readonly string[]).includes(id),
-  );
+  return [...fencedDirectiveIds(text), ...tickedFsIds(text)];
 }
 
 function scanForbiddenInstructions(skill: ParsedSkill): string[] {
   return STALE_POSITIVE.flatMap((pattern) =>
     pattern.test(skill.positive) ? [`${skill.name}: ${pattern}`] : [],
   );
+}
+
+function assertRegisteredDirectives(skill: ParsedSkill): void {
+  const registered = new Set<string>(DIRECTIVE_IDS);
+  for (const id of fencedDirectiveIds(skill.positive)) {
+    if (!registered.has(id)) {
+      throw new Error(`${skill.name} cites unknown directive ${id}`);
+    }
+  }
+  for (const id of tickedFsIds(skill.positive)) {
+    if (SKILL_DIRECTORY_NAMES.has(id)) continue;
+    if (!registered.has(id)) {
+      throw new Error(`${skill.name} cites unknown directive ${id}`);
+    }
+  }
+}
+
+function assertSurfaceDoesNotTeachAmd0013(skill: ParsedSkill): void {
+  if (skill.name === "fs-finite-state") return;
+  const taught = [...new Set(tickTools(skill.positive))].filter((name) =>
+    (AMD0013_ACTIONS as readonly string[]).includes(name),
+  );
+  if (taught.length > 0) {
+    throw new Error(
+      `${skill.name} must not teach AMD-0013 ACTION tools; found ${taught.join(", ")}`,
+    );
+  }
 }
 
 function assertNeverOnlyForbidsPush(skill: ParsedSkill): void {
@@ -206,7 +249,9 @@ describe("WP-63 skill contract", () => {
         expect(skill.positive).toMatch(/::fs-plan\{id\}/);
         continue;
       }
-      const directives = mentionedDirectives(skill.positive);
+      const directives = mentionedDirectives(skill.positive).filter((id) =>
+        (DIRECTIVE_IDS as readonly string[]).includes(id),
+      );
       expect(
         directives.length,
         `${skill.name} must pair identity with a registered directive`,
@@ -229,7 +274,6 @@ describe("WP-63 skill contract", () => {
 
   it("validates positive tool and directive names against AGENT_SURFACE", () => {
     const registeredTools = new Set(Object.keys(AGENT_SURFACE.tools));
-    const registeredDirectives = new Set(DIRECTIVE_IDS);
     for (const skill of skills) {
       for (const name of tickTools(skill.positive)) {
         expect(
@@ -237,12 +281,8 @@ describe("WP-63 skill contract", () => {
           `${skill.name} positive section cites unknown ${name}`,
         ).toBe(true);
       }
-      for (const id of mentionedDirectives(skill.positive)) {
-        expect(
-          registeredDirectives.has(id as (typeof DIRECTIVE_IDS)[number]),
-          `${skill.name} cites unknown directive ${id}`,
-        ).toBe(true);
-      }
+      expect(() => assertRegisteredDirectives(skill)).not.toThrow();
+      expect(() => assertSurfaceDoesNotTeachAmd0013(skill)).not.toThrow();
       assertNeverOnlyForbidsPush(skill);
     }
   });
@@ -312,6 +352,55 @@ describe("WP-63 skill contract", () => {
       ].join("\n"),
     );
     expect(() => assertNeverOnlyForbidsPush(neverPoison)).toThrow();
+    const fakeDirective = parseSkillMarkdown(
+      "fs-triage",
+      [
+        "---",
+        "name: fs-triage",
+        "description: fake directive",
+        "---",
+        "",
+        "# Purpose and when to use",
+        "## Identity first",
+        "## Workflow",
+        "Render ::fs-not-a-directive{id} after the query.",
+        "## Evidence and review expectations",
+        "## Tools and native-file boundaries",
+        "## What to render",
+        "## Never",
+        "Never call `fs_sync_push`.",
+        "",
+      ].join("\n"),
+    );
+    expect(mentionedDirectives(fakeDirective.positive)).toContain(
+      "fs-not-a-directive",
+    );
+    expect(() => assertRegisteredDirectives(fakeDirective)).toThrow(
+      /unknown directive fs-not-a-directive/u,
+    );
+    const hardwareTick = parseSkillMarkdown(
+      "fs-firmware",
+      [
+        "---",
+        "name: fs-firmware",
+        "description: hardware action tick",
+        "---",
+        "",
+        "# Purpose and when to use",
+        "## Identity first",
+        "## Workflow",
+        "Call `fs_flash` after hydrate.",
+        "## Evidence and review expectations",
+        "## Tools and native-file boundaries",
+        "## What to render",
+        "## Never",
+        "Never call `fs_sync_push`.",
+        "",
+      ].join("\n"),
+    );
+    expect(() => assertSurfaceDoesNotTeachAmd0013(hardwareTick)).toThrow(
+      /AMD-0013 ACTION tools/u,
+    );
   });
 
   it("tells write-oriented skills to summarize, plan, and stop", () => {
