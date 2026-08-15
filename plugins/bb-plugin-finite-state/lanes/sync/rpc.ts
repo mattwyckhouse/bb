@@ -100,6 +100,8 @@ export function registerSyncRpc(
           scope.projectId,
         ),
       });
+      const { remoteDiagnostics: _remoteDiagnostics, ...contractReport } =
+        report;
       bindWorkspacePlatformProject(
         deps.db,
         input.workspaceProjectId,
@@ -108,7 +110,7 @@ export function registerSyncRpc(
       const metadata = syncMetadata(deps, scope, kinds);
       return {
         ...scope,
-        ...report,
+        ...contractReport,
         baseStateSha256: metadata.baseStateSha256,
       };
     },

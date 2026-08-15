@@ -1,4 +1,5 @@
 import type { EntityKind } from "../../lib/sync/registry.js";
+import type { Json, RemoteService } from "../../lib/remote/types.js";
 
 export interface PullOutcomeReason {
   code: string;
@@ -28,10 +29,26 @@ export type FailedPullOutcome = PullOutcomeCounts & {
 /** Contract-v10 vocabulary shared by engine, CLI, RPC, and Sync UI consumers. */
 export type PullKindOutcome = PublishedPullOutcome | FailedPullOutcome;
 
+export interface PullRemoteDiagnostic {
+  code: string;
+  service: RemoteService;
+  method: string | null;
+  route: string | null;
+  phase: string | null;
+  status: number | null;
+  retryable: boolean;
+  body: Json | null;
+}
+
 export interface IsolatedPullReport {
   kinds: Record<string, PullKindOutcome>;
   workingFastForwarded: boolean;
   divergence: string[];
+}
+
+export interface PullExecutionReport extends IsolatedPullReport {
+  /** CLI-only detail; the frozen syncPull RPC deliberately omits this field. */
+  remoteDiagnostics: Record<string, PullRemoteDiagnostic>;
 }
 
 export function pullFailureCode(message: string): string {
@@ -68,7 +85,7 @@ export function pullReportHasFailures(report: IsolatedPullReport): boolean {
   );
 }
 
-export function renderPullOutcomeCli(report: IsolatedPullReport): string {
+export function renderPullOutcomeCli(report: PullExecutionReport): string {
   const outcomes = Object.entries(report.kinds).sort(([left], [right]) =>
     left.localeCompare(right),
   );
@@ -78,12 +95,29 @@ export function renderPullOutcomeCli(report: IsolatedPullReport): string {
   const failed = outcomes.length - published;
   const lines = [
     `Pull complete: ${published} published, ${failed} failed`,
-    ...outcomes.map(([kind, outcome]) => {
+    ...outcomes.flatMap(([kind, outcome]) => {
       const counts = `${outcome.fetched} fetched, ${outcome.baseRows} base rows, ${outcome.quarantined} quarantined`;
       const reasons = outcome.reasons
         .map((reason) => `${reason.code}=${reason.count}`)
         .join(", ");
-      return `${kind}: ${outcome.status} · ${counts}${reasons.length > 0 ? ` · ${reasons}` : ""}`;
+      const summary = `${kind}: ${outcome.status} · ${counts}${reasons.length > 0 ? ` · ${reasons}` : ""}`;
+      const diagnostic = report.remoteDiagnostics[kind];
+      if (diagnostic === undefined) return [summary];
+      const request = [
+        diagnostic.method,
+        diagnostic.route,
+        diagnostic.status === null ? null : `HTTP ${diagnostic.status}`,
+      ]
+        .filter((value): value is string => value !== null)
+        .join(" ");
+      const body =
+        diagnostic.body === null
+          ? ""
+          : ` body=${JSON.stringify(diagnostic.body)}`;
+      return [
+        summary,
+        `  ${diagnostic.code}: ${diagnostic.service}${request.length > 0 ? ` ${request}` : ""}${body}`,
+      ];
     }),
   ];
   return `${lines.join("\n")}\n`;

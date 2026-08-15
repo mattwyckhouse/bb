@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import type Database from "better-sqlite3";
 
 import { toStorageProjectVersionId } from "../../../lib/store/index.js";
-import { RemoteError } from "../../../lib/remote/types.js";
+import { RemoteError, type Json } from "../../../lib/remote/types.js";
 import { entryFor, type EntityKind } from "../../../lib/sync/registry.js";
 import { canonicalJson } from "../serialize/canonical.js";
 import { BaseSnapshotStore, type BaseRow } from "../store/base-snapshot.js";
@@ -14,6 +14,8 @@ import {
   pullFailureCode,
   type FailedPullOutcome,
   type IsolatedPullReport,
+  type PullExecutionReport,
+  type PullRemoteDiagnostic,
   type PullOutcomeCounts,
 } from "../pull-outcome.js";
 import {
@@ -142,6 +144,7 @@ export class PullFailedError extends Error {
       kind: EntityKind;
       message: string;
       reasonCode: string;
+      remoteDiagnostic?: PullRemoteDiagnostic;
     }>[],
   ) {
     super(
@@ -248,6 +251,83 @@ function storedErrorMessage(error: unknown): string {
     : errorMessage(error);
 }
 
+const UNSAFE_REMOTE_DETAIL_PATTERN =
+  /(?:https?:\/\/[^\s"'<>]*[?@][^\s"'<>]*|authorization(?:\s*[:=]\s*|\s+)(?:bearer\s+)?[^\s"'<>]+|bearer\s+[^\s"'<>]+|(?:api[_-]?key|token|secret|password)(?:\s*[:=]\s*|\s+)[^\s"'<>]+|authorization|api[_-]?key|token=|secret|password)/giu;
+
+function sanitizeRemoteDetail(value: Json): Json {
+  if (typeof value === "string") {
+    return value
+      .replace(UNSAFE_REMOTE_DETAIL_PATTERN, "[redacted]")
+      .slice(0, 2_000);
+  }
+  if (Array.isArray(value)) return value.map(sanitizeRemoteDetail);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(
+        ([key]) =>
+          !/(?:authorization|api.?key|token|secret|password|url|path|command)/iu.test(
+            key,
+          ),
+      )
+      .map(([key, item]) => [key, sanitizeRemoteDetail(item)]),
+  );
+}
+
+function remoteResponseBody(error: RemoteError): Json | null {
+  const details = error.details;
+  if (details === null || typeof details !== "object") return null;
+  if (Array.isArray(details)) return sanitizeRemoteDetail(details);
+  if (Object.hasOwn(details, "response")) {
+    return sanitizeRemoteDetail(details["response"] ?? null);
+  }
+  const body = Object.fromEntries(
+    Object.entries(details).filter(([key]) => key !== "request"),
+  );
+  return Object.keys(body).length === 0 ? null : sanitizeRemoteDetail(body);
+}
+
+function requestRoute(url: string): string | null {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return null;
+  }
+}
+
+function remoteDiagnostic(error: unknown): PullRemoteDiagnostic | null {
+  const remote = remoteFailure(error);
+  if (remote === null) return null;
+  const diagnostic = diagnoseRemoteFailure(remote);
+  return {
+    code: remote.code,
+    service: remote.service,
+    method: diagnostic.request?.method ?? null,
+    route:
+      diagnostic.request === null ? null : requestRoute(diagnostic.request.url),
+    phase: diagnostic.request?.phase ?? null,
+    status: remote.status,
+    retryable: remote.retryable,
+    body: remoteResponseBody(remote),
+  };
+}
+
+function storedGenerationError(error: unknown): string {
+  const diagnostic = remoteDiagnostic(error);
+  if (diagnostic === null) return storedErrorMessage(error);
+  const request = [
+    diagnostic.service,
+    diagnostic.method,
+    diagnostic.route,
+    diagnostic.status === null ? null : `HTTP ${diagnostic.status}`,
+  ]
+    .filter((value): value is string => value !== null)
+    .join(" ");
+  const body =
+    diagnostic.body === null ? "" : ` body=${JSON.stringify(diagnostic.body)}`;
+  return `${diagnostic.code}: ${request}${body}`;
+}
+
 function remoteFailure(error: unknown): RemoteError | null {
   if (error instanceof RemoteError) return error;
   return error instanceof TerminalPullError &&
@@ -266,6 +346,11 @@ function failureReasonCode(error: unknown): string {
 
 function isTerminalKindFailure(error: unknown): boolean {
   return error instanceof TerminalPullError || sqliteConstraint(error);
+}
+
+function isNonRetryableRemoteFailure(error: unknown): boolean {
+  const remote = remoteFailure(error);
+  return remote !== null && !remote.retryable;
 }
 
 function nowIso(deps: EngineDeps): string {
@@ -987,8 +1072,10 @@ function recordKindFailure(
   storageVersionId: string,
   generationId: string,
   kind: EntityKind,
-  message: string,
+  stateMessage: string,
+  generationMessage: string,
   terminal: boolean,
+  completedAt: string,
 ): void {
   db.transaction(() => {
     db.prepare(
@@ -996,7 +1083,7 @@ function recordKindFailure(
         WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?
           AND staging_generation_id = ?`,
     ).run(
-      message.slice(0, 2_000),
+      stateMessage.slice(0, 2_000),
       scope.projectId,
       storageVersionId,
       kind,
@@ -1005,12 +1092,15 @@ function recordKindFailure(
     db.prepare(
       `UPDATE pull_generation
           SET status = CASE WHEN ? THEN 'failed' ELSE status END,
+              completed_at = CASE WHEN ? THEN ? ELSE completed_at END,
               error = ?
         WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
           AND status IN ('staging', 'failed')`,
     ).run(
       terminal ? 1 : 0,
-      `${kind}: ${message}`.slice(0, 2_000),
+      terminal ? 1 : 0,
+      completedAt,
+      `${kind}: ${generationMessage}`.slice(0, 2_000),
       scope.projectId,
       storageVersionId,
       generationId,
@@ -1132,6 +1222,7 @@ export async function pull(
     kind: EntityKind;
     message: string;
     reasonCode: string;
+    remoteDiagnostic?: PullRemoteDiagnostic;
   }> = [];
 
   for (const adapter of adapters) {
@@ -1168,7 +1259,9 @@ export async function pull(
         generationId,
         adapter.kind,
         storedErrorMessage(error),
+        storedErrorMessage(error),
         isTerminalKindFailure(error),
+        nowIso(deps),
       );
     }
   }
@@ -1244,10 +1337,13 @@ export async function pull(
       });
     } catch (error: unknown) {
       const message = errorMessage(error);
+      const diagnostic =
+        cache.kind === "sbomComponent" ? remoteDiagnostic(error) : null;
       failures.push({
         kind: cache.kind,
         message,
         reasonCode: failureReasonCode(error),
+        ...(diagnostic === null ? {} : { remoteDiagnostic: diagnostic }),
       });
       recordKindFailure(
         deps.db,
@@ -1256,7 +1352,13 @@ export async function pull(
         generationId,
         cache.kind,
         storedErrorMessage(error),
-        isTerminalKindFailure(error),
+        cache.kind === "sbomComponent"
+          ? storedGenerationError(error)
+          : storedErrorMessage(error),
+        isTerminalKindFailure(error) ||
+          (cache.kind === "sbomComponent" &&
+            isNonRetryableRemoteFailure(error)),
+        nowIso(deps),
       );
     }
   }
@@ -1314,13 +1416,14 @@ export async function pullIsolated(
   scope: SyncScope,
   kinds?: EntityKind[],
   binding: PullProjectBinding = { assuranceStudioProjectId: null },
-): Promise<IsolatedPullReport> {
+): Promise<PullExecutionReport> {
   if (scope.projectId.trim().length === 0)
     throw new Error("projectId must not be empty");
   assertRemoteSyncScope(scope.projectId);
   const selected = selectedKinds(deps, kinds);
   const storageVersionId = toStorageProjectVersionId(scope.projectVersionId);
   const outcomes: IsolatedPullReport["kinds"] = {};
+  const remoteDiagnostics: Record<string, PullRemoteDiagnostic> = {};
   const divergence = new Set<string>();
   let published = 0;
   let workingFastForwarded = true;
@@ -1361,6 +1464,17 @@ export async function pullIsolated(
       workingFastForwarded &&= report.workingFastForwarded;
       for (const item of report.divergence) divergence.add(item);
     } catch (error: unknown) {
+      const failure =
+        error instanceof PullFailedError
+          ? error.failures.find((item) => item.kind === kind)
+          : undefined;
+      const diagnostic =
+        kind === "sbomComponent"
+          ? (failure?.remoteDiagnostic ?? remoteDiagnostic(error))
+          : null;
+      if (diagnostic !== null && diagnostic !== undefined) {
+        remoteDiagnostics[kind] = diagnostic;
+      }
       const generationId =
         error instanceof PullFailedError
           ? error.generationId
@@ -1388,5 +1502,6 @@ export async function pullIsolated(
     divergence: [...divergence].sort((left, right) =>
       left.localeCompare(right),
     ),
+    remoteDiagnostics,
   };
 }

@@ -58,18 +58,17 @@ interface PullPhase {
 const SAFE_RSQL_SCOPE = /^[A-Za-z0-9_.:+\-/]+$/u;
 
 function componentScopeFilter(input: SbomPullInput): string {
-  if (
-    !SAFE_RSQL_SCOPE.test(input.projectId) ||
-    !SAFE_RSQL_SCOPE.test(input.projectVersionId)
-  ) {
+  if (!SAFE_RSQL_SCOPE.test(input.projectVersionId)) {
     throw new SbomPullError(
       "SBOM_SCOPE_INVALID",
-      "Project and project version must be safe Platform filter values",
+      "Project version must be a safe Platform filter value",
     );
   }
   // Vendored Platform OpenAPI 0.3.0, GET /public/v0/components:
-  // `project` and `projectVersion` are documented RSQL filter attributes.
-  return `project==${input.projectId};projectVersion==${input.projectVersionId}`;
+  // Project versions uniquely scope components. Do not send the plugin's
+  // project short code through `project`, which accepts only a Platform UUID
+  // or numeric legacy id.
+  return `projectVersion==${input.projectVersionId}`;
 }
 
 async function assertVersionScope(
