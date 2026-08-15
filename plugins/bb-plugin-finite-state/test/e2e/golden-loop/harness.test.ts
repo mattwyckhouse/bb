@@ -10,10 +10,7 @@ import { describe, expect, it } from "vitest";
 import { createPluginContext } from "../../../lib/context.js";
 import { registerActionTools } from "../../../lanes/agentic/tools/actions.js";
 import { assertion } from "./assertions.js";
-import {
-  createGoldenLoopHarness,
-  type GoldenLoopHarness,
-} from "./harness.js";
+import { createGoldenLoopHarness, type GoldenLoopHarness } from "./harness.js";
 import { assertDeterministicRuns, semanticReport } from "./reporter.js";
 import {
   GOLDEN_LOOP_BEATS,
@@ -383,9 +380,9 @@ describe.sequential("Golden Loop harness", () => {
     try {
       await first.runAll();
       await second.runAll();
-      expect(() => assertDeterministicRuns(first.report!, second.report!)).toThrow(
-        "GOLDEN_LOOP_EVIDENCE_MISMATCH",
-      );
+      expect(() =>
+        assertDeterministicRuns(first.report!, second.report!),
+      ).toThrow("GOLDEN_LOOP_EVIDENCE_MISMATCH");
     } finally {
       await first.dispose();
       await second.dispose();

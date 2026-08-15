@@ -37,7 +37,10 @@ function installedGuard(beat: string): OfflineNetworkGuard {
   return guard;
 }
 
-function materializeWarmSeed(databasePath: string, host: ReturnType<typeof createFakePluginHost>): void {
+function materializeWarmSeed(
+  databasePath: string,
+  host: ReturnType<typeof createFakePluginHost>,
+): void {
   const db = host.bb.storage.database();
   db.pragma("foreign_keys = OFF");
   db.prepare("ATTACH DATABASE ? AS warm_seed").run(databasePath);
@@ -153,10 +156,7 @@ describe.sequential("Golden Loop offline gate", () => {
   it("executes every fenced runbook command through the shipped CLI", async () => {
     const host = createFakePluginHost({ pluginId: "finite-state" });
     await plugin(host.bb);
-    const worktree = resolve(
-      PLUGIN_ROOT,
-      "test/e2e/golden-loop/seed/worktree",
-    );
+    const worktree = resolve(PLUGIN_ROOT, "test/e2e/golden-loop/seed/worktree");
     materializeWarmSeed(
       resolve(PLUGIN_ROOT, "test/e2e/golden-loop/seed/warm-cache/data.db"),
       host,
@@ -197,10 +197,9 @@ describe.sequential("Golden Loop offline gate", () => {
             projectId: "workspace-golden-loop",
             threadId: "thread-golden-loop-docs",
           });
-          expect(
-            result.exitCode,
-            `${name}: ${command}\n${result.stderr}`,
-          ).toBe(0);
+          expect(result.exitCode, `${name}: ${command}\n${result.stderr}`).toBe(
+            0,
+          );
         }
       }
     } finally {

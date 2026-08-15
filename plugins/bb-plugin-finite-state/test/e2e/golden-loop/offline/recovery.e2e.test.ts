@@ -21,7 +21,10 @@ import { applyPolicy } from "../../../../lanes/findings/policy/apply.js";
 import { parseTriagePolicy } from "../../../../lanes/findings/policy/schema.js";
 import { readOverlayFiles } from "../../../../lanes/findings/overlay/reader.js";
 import { setDecision } from "../../../../lanes/findings/overlay/writer.js";
-import { stableKeyFor, type VexTuple } from "../../../../lanes/findings/overlay/schema.js";
+import {
+  stableKeyFor,
+  type VexTuple,
+} from "../../../../lanes/findings/overlay/schema.js";
 import { registerFindingsStableKeyStub } from "../../../../lanes/findings/stable-key/index.js";
 import { ADMIN_BYTES_RECOVERY } from "../../../../lanes/firmware/api/admin-gate.js";
 import { syncMetadata } from "../../../../lanes/sync/engine/status.js";
@@ -128,52 +131,52 @@ function insertFinding(
     vexReason: null,
   } satisfies Record<string, Json>;
   state.details.set(input.id, detail);
-  state.db.prepare(
-    `INSERT INTO findings
+  state.db
+    .prepare(
+      `INSERT INTO findings
        (project_id, project_version_id, generation_id, finding_id, stable_key,
         cve, component_name, component_group, component_version, component_purl,
         vex_status, vex_response, vex_justification, vex_reason, raw, pulled_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, '1.0.0', ?, NULL, NULL, NULL, NULL, ?, ?)`,
-  ).run(
-    PROJECT,
-    PV,
-    GENERATION,
-    input.id,
-    key,
-    input.cve,
-    input.name,
-    input.purl,
-    JSON.stringify(detail),
-    AT,
-  );
+    )
+    .run(
+      PROJECT,
+      PV,
+      GENERATION,
+      input.id,
+      key,
+      input.cve,
+      input.name,
+      input.purl,
+      JSON.stringify(detail),
+      AT,
+    );
   return key;
 }
 
-function insertGuard(
-  state: PushFixture,
-  key: string,
-  cve: string,
-): void {
-  state.db.prepare(
-    `INSERT INTO overlay_index
+function insertGuard(state: PushFixture, key: string, cve: string): void {
+  state.db
+    .prepare(
+      `INSERT INTO overlay_index
        (project_id, project_version_id, entity_kind, stable_key, cve, file_path,
         file_sha256, vex_status, vex_response, vex_justification, vex_reason, pin,
         provenance_by, provenance_at, evidence, sync_base, pushed_at, local_state,
         drift_state, match_tier, indexed_at)
      VALUES (?, ?, 'vexDecision', ?, ?, ?, ?, ?, NULL, NULL, ?, 'exact_version',
              'engineer', ?, 'FS-84 recovery', NULL, NULL, 'dirty', NULL, 'purl', ?)`,
-  ).run(
-    PROJECT,
-    PV,
-    key,
-    cve,
-    `.fs/triage/${PROJECT}/${cve}.yaml`,
-    "a".repeat(64),
-    DESIRED.status,
-    DESIRED.reason,
-    AT,
-    AT,
-  );
+    )
+    .run(
+      PROJECT,
+      PV,
+      key,
+      cve,
+      `.fs/triage/${PROJECT}/${cve}.yaml`,
+      "a".repeat(64),
+      DESIRED.status,
+      DESIRED.reason,
+      AT,
+      AT,
+    );
 }
 
 function fieldValue(
@@ -324,7 +327,8 @@ function platformFor(
     },
     async getFindingDetail(input) {
       const detail = state.details.get(input.findingId);
-      if (detail === undefined) throw new Error(`Missing finding ${input.findingId}`);
+      if (detail === undefined)
+        throw new Error(`Missing finding ${input.findingId}`);
       return structuredClone(detail);
     },
     async *getFindings(input) {
@@ -398,7 +402,9 @@ describe("Golden Loop failure recovery", () => {
       finalState: "resumable",
     });
     expect(proof.visibleStatus).toContain("PLAN_CONFLICT_UNRESOLVED");
-    expect(state.db.prepare("SELECT COUNT(*) FROM push_log").pluck().get()).toBe(0);
+    expect(
+      state.db.prepare("SELECT COUNT(*) FROM push_log").pluck().get(),
+    ).toBe(0);
     expect(proof.finalState).toBe("resumable");
   });
 
@@ -502,7 +508,11 @@ describe("Golden Loop failure recovery", () => {
         visibleStatus: `${first.items[1]!.error!.code}: ${first.summary.applied} applied, ${first.summary.failed} pending`,
         durableArtifacts: [
           join(persisted.root, ".fs-sync", "push-fs84-partial-push.json"),
-          join(persisted.root, ".fs-sync", `plan-${persisted.plan.planId}.json`),
+          join(
+            persisted.root,
+            ".fs-sync",
+            `plan-${persisted.plan.planId}.json`,
+          ),
         ],
         recoverySteps: [
           "query status first",
@@ -562,7 +572,11 @@ describe("Golden Loop failure recovery", () => {
       holdback: [],
       options: { overwrite_existing: false },
     });
-    const scope = { projectId: PROJECT, projectVersionId: PV, project: PROJECT };
+    const scope = {
+      projectId: PROJECT,
+      projectVersionId: PV,
+      project: PROJECT,
+    };
     const controller = new AbortController();
     let writes = 0;
     const interruptedWriter: typeof setDecision = async (...args) => {
@@ -589,12 +603,14 @@ describe("Golden Loop failure recovery", () => {
         evaluated: preview,
       }),
     ).rejects.toThrow("injected writer interruption");
-    expect(
-      db.prepare("SELECT status, written FROM triage_runs").get(),
-    ).toEqual({ status: "partial", written: 1 });
+    expect(db.prepare("SELECT status, written FROM triage_runs").get()).toEqual(
+      { status: "partial", written: 1 },
+    );
     const interruptedFiles = await readOverlayFiles(root);
     expect(interruptedFiles.files).toHaveLength(1);
-    expect(parse(await readFile(interruptedFiles.files[0]!.absoluteFile, "utf8"))).toMatchObject({
+    expect(
+      parse(await readFile(interruptedFiles.files[0]!.absoluteFile, "utf8")),
+    ).toMatchObject({
       schema: "fs-triage/v1",
     });
 
@@ -607,7 +623,11 @@ describe("Golden Loop failure recovery", () => {
       expectedPolicySha256: recoveryPreview.policySha256,
       evaluated: recoveryPreview,
     });
-    expect(recovered).toMatchObject({ written: 2, skippedExisting: 1, errors: [] });
+    expect(recovered).toMatchObject({
+      written: 2,
+      skippedExisting: 1,
+      errors: [],
+    });
     const recoveredFiles = await readOverlayFiles(root);
     expect(recoveredFiles.files).toHaveLength(3);
     for (const file of recoveredFiles.files) {
@@ -616,7 +636,9 @@ describe("Golden Loop failure recovery", () => {
       });
     }
     expect(
-      db.prepare("SELECT status, written FROM triage_runs ORDER BY rowid").all(),
+      db
+        .prepare("SELECT status, written FROM triage_runs ORDER BY rowid")
+        .all(),
     ).toEqual([
       { status: "partial", written: 1 },
       { status: "completed", written: 2 },
@@ -627,7 +649,10 @@ describe("Golden Loop failure recovery", () => {
         interruptedFiles.files[0]!.absoluteFile,
         "sqlite:triage_runs",
       ],
-      recoverySteps: ["parse authored YAML", "preview and rerun remaining decisions"],
+      recoverySteps: [
+        "parse authored YAML",
+        "preview and rerun remaining decisions",
+      ],
       finalState: "recovered",
     });
     expect(proof.unsupportedSuccessShown).toBe(false);

@@ -201,13 +201,14 @@ export class OfflineNetworkGuard {
     }
     const guard = this;
     const originalSocketConnect = net.Socket.prototype.connect;
-    this.replace(net.Socket.prototype, "connect", function (
-      this: net.Socket,
-      ...args: unknown[]
-    ) {
-      guard.authorize("socket", socketTarget(args));
-      return Reflect.apply(originalSocketConnect, this, args);
-    });
+    this.replace(
+      net.Socket.prototype,
+      "connect",
+      function (this: net.Socket, ...args: unknown[]) {
+        guard.authorize("socket", socketTarget(args));
+        return Reflect.apply(originalSocketConnect, this, args);
+      },
+    );
     const originalTlsConnect = tls.connect;
     this.replace(tls, "connect", (...args: unknown[]) => {
       this.authorize("tls", socketTarget(args));

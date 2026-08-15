@@ -669,10 +669,9 @@ export async function createGoldenLoopHarness(
         finalTreeSha256: createHash("sha256")
           .update(finalTreeContents)
           .digest("hex"),
-        evidenceSha256: await deterministicEvidenceDigest(
-          artifactRoot,
-          [...evidenceFiles],
-        ),
+        evidenceSha256: await deterministicEvidenceDigest(artifactRoot, [
+          ...evidenceFiles,
+        ]),
       };
       report = {
         schemaVersion: 1,
