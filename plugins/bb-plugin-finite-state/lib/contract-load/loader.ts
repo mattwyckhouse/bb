@@ -14,6 +14,8 @@ import type { Store } from "../store/index.js";
 import { ENTITIES, type EntityKind } from "../sync/registry.js";
 import { rebuildOverlayIndex } from "../../lanes/findings/overlay/indexer.js";
 import { readOverlayFiles } from "../../lanes/findings/overlay/reader.js";
+import { parseCanvasEntity } from "../../lanes/product-security/canvas/editing/writer.js";
+import { architectureEntityPayload } from "../../lanes/product-security/canvas/editing/schema.js";
 import { canonicalRequirement } from "../../lanes/product-security/requirements/cards/adapter.js";
 import { requirementSemanticSha256 } from "../../lanes/product-security/requirements/cards/adapter.js";
 import type {
@@ -576,7 +578,14 @@ async function parseProjection(root: string): Promise<{
           requirement,
         };
       } else {
-        const payload = createSerializer(kind).fromYaml(text, file);
+        const payload =
+          kind === "asset" ||
+          kind === "component" ||
+          kind === "dataflow" ||
+          kind === "threat" ||
+          kind === "zone"
+            ? architectureEntityPayload(parseCanvasEntity(kind, text, file))
+            : createSerializer(kind).fromYaml(text, file);
         entity = {
           file,
           kind,

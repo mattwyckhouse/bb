@@ -125,7 +125,17 @@ async function initializeRepository(
     await mkdir(join(root, "product-security", "threats"), { recursive: true });
     await writeFile(
       join(root, "product-security", "threats", "threat-offline.yaml"),
-      "slug: threat-offline\ntitle: Offline threat\n",
+      `slug: threat-offline
+name: Offline threat
+category: spoofing
+threat_source: manual
+severity: high
+affected_components: []
+affected_assets: []
+dataflows: []
+mitigations: []
+assumptions: []
+`,
     );
     await writeFile(
       join(root, "product-security", "threats", "malformed.yaml"),
@@ -407,6 +417,26 @@ describe("repository contract loader", () => {
         .prepare("SELECT COUNT(*) AS count FROM requirement_check_mappings")
         .get(),
     ).toEqual({ count: 2 });
+  });
+
+  it("rejects accepted-cache shapes that are not valid authored TARA YAML", async () => {
+    const value = await fixture("strict-tara-shape");
+    const threats = join(value.root, "product-security", "threats");
+    await mkdir(threats, { recursive: true });
+    await writeFile(
+      join(threats, "cache-shaped-threat.yaml"),
+      "slug: cache-shaped-threat\ntitle: Missing authored fields\n",
+    );
+
+    const result = await loadRepoContract(value.root, value.store, value.scope);
+    expect(result.entityCounts["requirement"]).toBe(1);
+    expect(result.entityCounts["threat"]).toBe(0);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        path: "product-security/threats/cache-shaped-threat.yaml",
+        message: expect.stringContaining("expected string"),
+      }),
+    ]);
   });
 
   it("prunes only a stale canonical-path sidecar and its exact synthetic scope", async () => {
