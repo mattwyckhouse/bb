@@ -9,6 +9,7 @@ import {
 } from "../../lib/store/project-scope.js";
 import type { JsonValue } from "../../shared/contract.js";
 import { rpcContract } from "../../shared/contract.js";
+import { resolveProjectWorktreeRoot } from "../documents/store.js";
 import { registerCachePuller } from "../sync/engine/adapter.js";
 import { applyHbomExtraction } from "./hbom/extract.js";
 import {
@@ -19,6 +20,7 @@ import {
   getHbomComponent,
   listHbomReview,
   resolveHbomReview,
+  type ReviewDeps,
 } from "./hbom/review.js";
 import { createSbomHttpHandler } from "./sbom/export-http.js";
 import { pullSbom } from "./sbom/pull.js";
@@ -85,6 +87,31 @@ export function createBomCommandServices(
       );
     },
   };
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  if (typeof value !== "object") return false;
+  return Object.values(value).every(isJsonValue);
+}
+
+function jsonFilters(value: unknown): Record<string, JsonValue> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const filters: Record<string, JsonValue> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (isJsonValue(entry)) filters[key] = entry;
+  }
+  return filters;
 }
 
 function optionalString(
@@ -356,8 +383,16 @@ export function registerBom(bb: BbPluginApi, ctx: PluginContext): void {
         cache: page.cache,
       };
     },
-    bomComponentGet(input) {
-      if (input.mode === "hardware") return getHbomComponent();
+    async bomComponentGet(input) {
+      if (input.mode === "hardware") {
+        const root = await resolveProjectWorktreeRoot(bb, input.projectId);
+        const deps: ReviewDeps = { db, root };
+        return getHbomComponent(deps, {
+          projectId: input.projectId,
+          projectVersionId: input.projectVersionId,
+          componentId: input.componentId,
+        });
+      }
       if (input.projectVersionId === null) {
         throw new Error(
           "SBOM_PROJECT_VERSION_REQUIRED: software inventory is version-scoped",
@@ -415,11 +450,21 @@ export function registerBom(bb: BbPluginApi, ctx: PluginContext): void {
         cache: page.cache,
       };
     },
-    hbomReviewList() {
-      return listHbomReview();
+    async hbomReviewList(input) {
+      const root = await resolveProjectWorktreeRoot(bb, input.projectId);
+      const deps: ReviewDeps = { db, root };
+      return listHbomReview(deps, {
+        projectId: input.projectId,
+        projectVersionId: input.projectVersionId,
+        pageSize: input.pageSize,
+        continuation: input.continuation,
+        filters: jsonFilters(Reflect.get(input, "filters")),
+      });
     },
-    hbomReviewResolve() {
-      return resolveHbomReview();
+    async hbomReviewResolve(input) {
+      const root = await resolveProjectWorktreeRoot(bb, input.projectId);
+      const deps: ReviewDeps = { db, root };
+      return resolveHbomReview(deps, input);
     },
     hbomExtractionApply() {
       return applyHbomExtraction();

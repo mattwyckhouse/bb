@@ -542,7 +542,9 @@ describe("cached SBOM query", () => {
         pageSize: 20,
         continuation: null,
       }),
-    ).rejects.toThrow(/NOT_IMPLEMENTED/u);
+    ).rejects.toThrow(
+      /DOCUMENT_WORKTREE_REQUIRED|BOM_PROJECT_SOURCE_REQUIRED|FINDINGS_PROJECT_SOURCE|project/iu,
+    );
     const missingExportQuery = await host.harness.behavior.fetchHttp(
       "GET",
       "/sbom/export",
