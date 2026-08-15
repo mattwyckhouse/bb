@@ -95,9 +95,7 @@ function openFileStore(dbPath: string): Store {
   };
 }
 
-async function materializeFixtureCheckout(
-  tag: string,
-): Promise<{
+async function materializeFixtureCheckout(tag: string): Promise<{
   root: string;
   store: Store;
   scope: ReturnType<typeof contractLoadScope>;
