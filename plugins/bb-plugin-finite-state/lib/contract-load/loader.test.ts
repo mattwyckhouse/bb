@@ -14,7 +14,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import { createFakePluginHost } from "@bb/plugin-sdk/testing";
+import {
+  createFakePluginHost,
+  makeThreadResponse,
+} from "@bb/plugin-sdk/testing";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -820,7 +823,7 @@ describe("repository contract loader", () => {
     await host.harness.lifecycle.dispose();
   });
 
-  it("rejects repo-local scope before a registered sync plan can reach the network", async () => {
+  it("rejects repo-local scope at every registered sync engine boundary", async () => {
     const value = await fixture("registered");
     const networkGuard = vi.fn(async () => {
       return Response.json(
@@ -862,11 +865,26 @@ describe("repository contract loader", () => {
     };
     context.service<RemoteServices>("remote-services", () => services);
     registerSync(host.bb, context);
+    host.harness.sdk.stub("threads.get", async () =>
+      makeThreadResponse({
+        id: "thread-contract-load-cli",
+        projectId: "bb-project-offline",
+        environmentId: "environment-contract-load-cli",
+      }),
+    );
+    host.harness.sdk.stub("environments.get", async () => ({
+      id: "environment-contract-load-cli",
+      projectId: "bb-project-offline",
+      hostId: "host-contract-load-cli",
+      path: value.root,
+    }));
     const hostStore = openStore(host.bb);
     const identity = await repoContractIdentity(value.root);
     const scope = contractLoadScope(identity.repositoryDigest);
     await loadRepoContract(value.root, hostStore, scope);
 
+    const repoLocalError =
+      "REPO_LOCAL_SCOPE_NOT_SYNCABLE: This is a repo-local checkout projection, so there is nothing to sync; repository YAML is the source of truth.";
     await expect(
       host.harness.behavior.callRpc("syncPlan", {
         ...scope,
@@ -874,10 +892,66 @@ describe("repository contract loader", () => {
       }),
     ).rejects.toMatchObject({
       code: "handler_error",
-      message:
-        "REPO_LOCAL_SCOPE_NOT_SYNCABLE: This is a repo-local checkout projection, so there is nothing to sync; repository YAML is the source of truth.",
+      message: repoLocalError,
     });
     expect(networkGuard).not.toHaveBeenCalled();
+
+    await expect(
+      host.harness.behavior.callRpc("syncPull", {
+        ...scope,
+        workspaceProjectId: "bb-project-offline",
+        kinds: ["vexDecision"],
+      }),
+    ).rejects.toMatchObject({
+      code: "handler_error",
+      message: repoLocalError,
+    });
+    expect(networkGuard).not.toHaveBeenCalled();
+    expect(
+      hostStore.db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM workspace_platform_project_binding WHERE platform_project_id = ?",
+        )
+        .get(scope.projectId),
+    ).toEqual({ count: 0 });
+
+    await expect(
+      host.harness.behavior.callRpc("syncStatus", {
+        ...scope,
+        kinds: ["vexDecision"],
+      }),
+    ).rejects.toMatchObject({
+      code: "handler_error",
+      message: repoLocalError,
+    });
+    expect(networkGuard).not.toHaveBeenCalled();
+
+    const cliContext = {
+      cwd: "/untrusted-contract-load-cwd",
+      threadId: "thread-contract-load-cli",
+      projectId: "bb-project-offline",
+    };
+    for (const verb of ["plan", "pull", "status"] as const) {
+      await expect(
+        host.harness.behavior.runCli(
+          [
+            "finite-state",
+            verb,
+            "triage",
+            "--project",
+            scope.projectId,
+            "--version",
+            scope.projectVersionId,
+          ],
+          cliContext,
+        ),
+      ).resolves.toEqual({
+        exitCode: 1,
+        stdout: "",
+        stderr: `bb finite-state failed: ${repoLocalError}`,
+      });
+      expect(networkGuard).not.toHaveBeenCalled();
+    }
 
     const ordinaryScope = {
       projectId: "platform-project-ordinary",
@@ -895,7 +969,7 @@ describe("repository contract loader", () => {
     expect(networkGuard).toHaveBeenCalledTimes(1);
 
     // Push is globally frozen today; this records that cover without pretending
-    // it distinguishes scopes. The shared sync guard is ready for any unfreeze.
+    // it distinguishes scopes. Any unfreeze must use the guarded engine entries.
     await expect(
       host.harness.behavior.callRpc("syncPush", {
         ...scope,
@@ -909,13 +983,6 @@ describe("repository contract loader", () => {
       message: expect.stringContaining("authorization-unavailable"),
     });
     expect(host.harness.sdk.callsTo("http.request")).toEqual([]);
-    expect(
-      hostStore.db
-        .prepare(
-          "SELECT COUNT(*) AS count FROM workspace_platform_project_binding WHERE platform_project_id = ?",
-        )
-        .get(scope.projectId),
-    ).toEqual({ count: 0 });
     platform.close();
     assuranceStudio.close();
     await host.harness.lifecycle.dispose();
