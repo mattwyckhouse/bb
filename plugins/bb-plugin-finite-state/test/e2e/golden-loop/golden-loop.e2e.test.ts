@@ -223,6 +223,7 @@ import { GOLDEN_LOOP_BEATS, type GoldenLoopBeat } from "./scenario.js";
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../../../..");
 const FIXTURE_ROOT = resolve(import.meta.dirname, "../../mock-remote/fixtures");
 const PRE_POLICY_SEED_ROOT = resolve(import.meta.dirname, "seed/pre-policy");
+const POST_PUSH_PLAN_PATH = ".fs-sync/plan-01M0029CG20000000000000002.json";
 const WORKSPACE_PROJECT_ID = "workspace-golden-loop";
 const GOLDEN_SEED_WORKSPACE_PROJECT_ID = "workspace-golden-loop-seed";
 const GOLDEN_SEED_PROJECT_ID = "project-ax3000-demo";
@@ -1072,6 +1073,23 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
             `Human push was incomplete: ${JSON.stringify(pushReport)}`,
           );
         }
+        await waitFor(
+          async () => {
+            const postPushPlan = object(
+              JSON.parse(
+                await readFile(
+                  join(runtime.worktree, POST_PUSH_PLAN_PATH),
+                  "utf8",
+                ),
+              ),
+              "persisted post-push plan",
+            );
+            expect(string(postPushPlan["planId"], "post-push plan id")).toBe(
+              "01M0029CG20000000000000002",
+            );
+          },
+          { timeout: 10_000 },
+        );
         expect(
           await slot.findByRole("button", {
             name: "Open Sync review: 0 local changes and 0 conflicts",
@@ -3542,6 +3560,23 @@ async function createRun(
   return { harness, runtime };
 }
 
+async function expectPostPushRefreshCaptured(
+  harness: GoldenLoopHarness,
+): Promise<void> {
+  const captured = object(
+    JSON.parse(
+      await readFile(
+        join(harness.runDirectory, "artifacts/beat-01/tree-after.json"),
+        "utf8",
+      ),
+    ),
+    "beat 1 captured tree",
+  );
+  expect(string(captured["status"], "beat 1 captured status")).toContain(
+    `?? ${POST_PUSH_PLAN_PATH}`,
+  );
+}
+
 afterEach(() => {
   cleanup();
   deterministicEntropy.next = null;
@@ -3573,6 +3608,7 @@ describe.sequential("Golden Loop incremental acceptance", () => {
         );
         expect(unexpected, JSON.stringify(unexpected, null, 2)).toEqual([]);
         first.harness.assertNoExternalNetwork();
+        await expectPostPushRefreshCaptured(first.harness);
         expect(first.harness.report?.durationMs).toBeLessThan(15 * 60 * 1_000);
         firstReport = structuredClone(first.harness.report!);
         const second = await createRun("run-2");
@@ -3580,6 +3616,7 @@ describe.sequential("Golden Loop incremental acceptance", () => {
           const secondResults = await second.harness.runAll();
           expect(secondResults).toHaveLength(16);
           second.harness.assertNoExternalNetwork();
+          await expectPostPushRefreshCaptured(second.harness);
           expect(semanticReport(second.harness.report!)).toEqual(
             semanticReport(firstReport),
           );
