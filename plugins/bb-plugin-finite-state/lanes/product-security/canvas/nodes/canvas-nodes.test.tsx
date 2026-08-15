@@ -821,3 +821,53 @@ describe("WP-32 inspector and project scope", () => {
     ]);
   });
 });
+
+describe("FS-229 canvas directive mode", () => {
+  it("hides stencil/inspector/context chrome and clamps height when readOnly", () => {
+    const model = architectureFixture();
+    const graph = toCanvasGraph(model);
+    const adjacency = buildArchitectureAdjacency(model);
+    const panel = render(
+      <ProductSecurityCanvasWorkspace
+        adjacency={adjacency}
+        focusId="component-software"
+        graph={graph}
+        model={model}
+        onFocusRoute={() => undefined}
+        onRepairSourceFile={() => undefined}
+      >
+        <div>Canvas placeholder</div>
+      </ProductSecurityCanvasWorkspace>,
+    );
+    expect(panel.getByLabelText("Architecture stencil")).toBeTruthy();
+    expect(panel.getByLabelText("Architecture inspector")).toBeTruthy();
+    expect(
+      panel.container.querySelector('[data-canvas-mode="panel"]'),
+    ).toBeTruthy();
+    panel.unmount();
+
+    const directive = render(
+      <ProductSecurityCanvasWorkspace
+        adjacency={adjacency}
+        focusId="component-software"
+        graph={graph}
+        maxHeight={420}
+        model={model}
+        onFocusRoute={() => undefined}
+        onRepairSourceFile={() => undefined}
+        readOnly
+      >
+        <div>Canvas placeholder</div>
+      </ProductSecurityCanvasWorkspace>,
+    );
+    expect(directive.queryByLabelText("Architecture stencil")).toBeNull();
+    expect(directive.queryByLabelText("Architecture inspector")).toBeNull();
+    const shell = directive.container.querySelector(
+      '[data-canvas-mode="directive"]',
+    );
+    expect(shell).toBeTruthy();
+    expect((shell as HTMLElement).style.maxHeight).toBe("420px");
+    expect((shell as HTMLElement).style.height).toBe("420px");
+    directive.unmount();
+  });
+});
