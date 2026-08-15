@@ -1,20 +1,14 @@
-import { useEffect, useState } from "react";
 import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
-import {
-  experimental_useSidebarThreads,
-  useBbContext,
-  useBbNavigate,
-  useRpc,
-} from "@bb/plugin-sdk/app";
+import { useBbNavigate } from "@bb/plugin-sdk/app";
 import type { BomRoute } from "../sbom/routes.js";
-import { bomAppRpcContract } from "../../rpc.js";
 import { HbomGrid } from "./hbom-grid.js";
 import { PartDetail } from "./part-detail.js";
 import { ReviewQueue } from "./review-queue.js";
 
 export interface HbomRoutesProps {
   route: Extract<BomRoute, { tab: "hardware" }>;
+  workspaceProjectId: string | null;
 }
 
 function IngestPlaceholder({
@@ -61,68 +55,11 @@ function IngestPlaceholder({
   );
 }
 
-export function HbomRoutes({ route }: HbomRoutesProps): React.JSX.Element {
+export function HbomRoutes({
+  route,
+  workspaceProjectId,
+}: HbomRoutesProps): React.JSX.Element {
   const navigate = useBbNavigate();
-  const rpc = useRpc<typeof bomAppRpcContract>();
-  const { projectId: routeProjectId } = useBbContext();
-  const sidebar = experimental_useSidebarThreads();
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
-    null,
-  );
-  const workspaceProjectId = routeProjectId ?? selectedProjectId;
-  const [platformProjectId, setPlatformProjectId] = useState<string | null>(
-    null,
-  );
-  const [projectVersionId, setProjectVersionId] = useState<string | null>(null);
-  const [versionsLoading, setVersionsLoading] = useState(false);
-  const [versionsError, setVersionsError] = useState<string | null>(null);
-  const [versionRequest, setVersionRequest] = useState(0);
-
-  useEffect(() => {
-    if (!workspaceProjectId) {
-      setPlatformProjectId(null);
-      setProjectVersionId(null);
-      setVersionsLoading(false);
-      setVersionsError(null);
-      return;
-    }
-    let active = true;
-    setVersionsLoading(true);
-    setVersionsError(null);
-    void rpc
-      .call("bomCachedProjectVersions", { projectId: workspaceProjectId })
-      .then((result) => {
-        if (!active) return;
-        const selected =
-          result.versions.find(
-            (version) =>
-              version.platformProjectId === result.selectedPlatformProjectId &&
-              version.projectVersionId === result.selectedProjectVersionId,
-          ) ?? result.versions[0];
-        // HBOM YAML is project-scoped; keep platform ids for AS linkage display
-        // but read/review with null version (storage maps to @project).
-        setPlatformProjectId(selected?.platformProjectId ?? workspaceProjectId);
-        setProjectVersionId(null);
-      })
-      .catch((cause: unknown) => {
-        if (!active) return;
-        setPlatformProjectId(workspaceProjectId);
-        setProjectVersionId(null);
-        setVersionsError(
-          cause instanceof Error
-            ? cause.message
-            : "Cached project versions could not be loaded.",
-        );
-      })
-      .finally(() => {
-        if (active) setVersionsLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [rpc, versionRequest, workspaceProjectId]);
-
-  const scopeProjectId = platformProjectId ?? workspaceProjectId;
 
   const chrome = (
     <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-card px-3">
@@ -154,41 +91,10 @@ export function HbomRoutes({ route }: HbomRoutesProps): React.JSX.Element {
       >
         Ingest
       </Button>
-      <div className="ml-auto flex items-center gap-2">
-        {!routeProjectId ? (
-          <select
-            aria-label="Project"
-            className="h-8 max-w-56 rounded-md border border-input bg-background px-2 text-xs"
-            onChange={(event) =>
-              setSelectedProjectId(event.target.value || null)
-            }
-            value={workspaceProjectId ?? ""}
-          >
-            <option value="">Select project</option>
-            {sidebar.projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        ) : null}
-        {versionsLoading ? (
-          <span className="text-xs text-muted-foreground">Loading scope…</span>
-        ) : null}
-        {versionsError ? (
-          <Button
-            onClick={() => setVersionRequest((value) => value + 1)}
-            size="sm"
-            variant="outline"
-          >
-            Retry scope
-          </Button>
-        ) : null}
-      </div>
     </div>
   );
 
-  if (!scopeProjectId) {
+  if (!workspaceProjectId) {
     return (
       <div className="flex h-full min-h-0 flex-col">
         {chrome}
@@ -214,7 +120,7 @@ export function HbomRoutes({ route }: HbomRoutesProps): React.JSX.Element {
     return (
       <div className="flex h-full min-h-0 flex-col">
         {chrome}
-        <IngestPlaceholder projectId={scopeProjectId} />
+        <IngestPlaceholder projectId={workspaceProjectId} />
       </div>
     );
   }
@@ -224,10 +130,7 @@ export function HbomRoutes({ route }: HbomRoutesProps): React.JSX.Element {
       <div className="flex h-full min-h-0 flex-col">
         {chrome}
         <div className="min-h-0 flex-1">
-          <ReviewQueue
-            projectId={scopeProjectId}
-            projectVersionId={projectVersionId}
-          />
+          <ReviewQueue projectId={workspaceProjectId} projectVersionId={null} />
         </div>
       </div>
     );
@@ -246,8 +149,8 @@ export function HbomRoutes({ route }: HbomRoutesProps): React.JSX.Element {
                 subPath: `hardware/${encodeURIComponent(partId)}`,
               })
             }
-            projectId={scopeProjectId}
-            projectVersionId={projectVersionId}
+            projectId={workspaceProjectId}
+            projectVersionId={null}
           />
         </div>
         {route.partId ? (
@@ -257,8 +160,8 @@ export function HbomRoutes({ route }: HbomRoutesProps): React.JSX.Element {
               onClose={() =>
                 navigate.toPluginPanel("bom", { subPath: "hardware" })
               }
-              projectId={scopeProjectId}
-              projectVersionId={projectVersionId}
+              projectId={workspaceProjectId}
+              projectVersionId={null}
             />
           </div>
         ) : null}
