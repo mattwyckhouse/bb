@@ -230,8 +230,12 @@
     "prohibitedWorkPackageReasons": {
       "WP02": "ADR — bb Is Not Modified: builtin registration is a BB release decision; dispatch is prohibited and FS-16 stays in backlog until the ADR is superseded."
     },
-    "stoppedWorkPackages": ["WP74", "WP78", "WP82", "WP100"],
+    "stoppedWorkPackages": ["WP67", "WP74", "WP78", "WP82", "WP100"],
     "stoppedWorkPackageReasons": {
+      "WP67": {
+        "reason": "FS-81 first dispatch (2026-08-15 07:1xZ) verified the WP doc is superseded by shipped reality: the harness GOLDEN_LOOP_BEATS registry runs all fourteen beats green with no vacant slots (validateGoldenLoopScenario rejects WP-67's act-one beat names), the committed seed is post-policy (policyWritten: 305), and the interruption criterion needs production policy-run checkpointing (apply.ts aborts before persistReport) — all outside WP-67 ownership. No code was written. WP-68/69/70 chain behind this and inherit the same reconciliation.",
+        "resumeCondition": "Supervisor/owner reconciliation of WP-67/68/69/70 against the shipped 14-beat harness: either declare them superseded where covered and commission narrow replacement WPs for the genuinely missing journey semantics (pre-policy seed variant + policy dry-run-to-write beat, durable partial policy-run persistence, human edit/reject diff journey), or ratify revised WP docs. Escalated 2026-08-15 07:2xZ; also queued in the morning digest."
+      },
       "WP78": {
         "reason": "L9 is post-core per the AUTHORITY ruling (2026-08-14) and the overnight operating directive (2026-08-15) forbids opening L9/L10. WP78 became dependency-ready when WP44 shipped, so without this stop the ready-queue watchdog re-flags FS-113 every cycle.",
         "resumeCondition": "Core complete (G4 beats and the AUTHORITY near-term set WP99-WP102 landed) or explicit owner reprioritization of L9 - same gate as WP74/WP82."
