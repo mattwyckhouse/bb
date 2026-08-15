@@ -12,6 +12,17 @@ function badRequest(code: string, message: string): Response {
   return Response.json({ error: { code, message } }, { status: 400 });
 }
 
+const PLATFORM_PROJECT_ID =
+  /^(?:[0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu;
+
+function hasInvalidProjectFilter(expression: string | null): boolean {
+  if (expression === null) return false;
+  return expression.split(";").some((clause) => {
+    const match = /^project==(.+)$/u.exec(clause);
+    return match !== null && !PLATFORM_PROJECT_ID.test(match[1]);
+  });
+}
+
 function rsqlFilter(
   values: readonly Record<string, unknown>[],
   expression: string | null,
@@ -158,6 +169,20 @@ export function registerBomHandlers(
       return badRequest(
         "PLATFORM_INVALID_COMPONENT_FILTER",
         "Component filter is invalid",
+      );
+    }
+    // Vendored Platform OpenAPI 0.3.0, GET /public/v0/components, defines
+    // `project` as the unique project ID (numeric example 2345678901234567891).
+    // Live Platform also accepts UUIDs, but rejects plugin short codes.
+    if (hasInvalidProjectFilter(url.searchParams.get("filter"))) {
+      return Response.json(
+        {
+          detail:
+            "Invalid value for filter field 'project': expected a UUID or a numeric legacy id.",
+          authorization: "Bearer must-not-reach-diagnostics",
+          note: "provided token=must-not-reach-diagnostics",
+        },
+        { status: 400 },
       );
     }
     const project = [...state.projects.values()][0];

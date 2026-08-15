@@ -109,7 +109,7 @@ describe("registered SBOM pull surfaces", () => {
     let componentRequests = 0;
     let versionRequests = 0;
     let failComponentRequest: number | null = null;
-    let rejectComponentWithVerified400 = false;
+    let replayLegacyProjectFilter = false;
     const platform = new PlatformClient({
       baseUrl: "http://platform.mock",
       token: "fs172-token",
@@ -132,16 +132,13 @@ describe("registered SBOM pull surfaces", () => {
         }
         if (url.pathname.includes("component")) {
           componentRequests += 1;
-          if (rejectComponentWithVerified400) {
-            return Response.json(
-              {
-                detail:
-                  "Invalid value for filter field 'project': expected a UUID or a numeric legacy id.",
-                authorization: "Bearer must-not-reach-diagnostics",
-                note: "provided token=must-not-reach-diagnostics",
-              },
-              { status: 400 },
+          if (replayLegacyProjectFilter) {
+            const filter = url.searchParams.get("filter");
+            url.searchParams.set(
+              "filter",
+              [`project==I491NAX`, filter].filter(Boolean).join(";"),
             );
+            return mock.platform.fetch(url, init);
           }
           if (
             failComponentRequest !== null &&
@@ -393,7 +390,9 @@ describe("registered SBOM pull surfaces", () => {
       });
       expect(page.items.length).toBeGreaterThan(0);
 
-      rejectComponentWithVerified400 = true;
+      // Replay the pre-FS-237 transport query. The mock returns Platform's
+      // verified 400 only because the actual RSQL now contains a short code.
+      replayLegacyProjectFilter = true;
       const rejectedJson = await host.harness.behavior.runCli(
         [
           "finite-state",
@@ -491,7 +490,7 @@ describe("registered SBOM pull surfaces", () => {
         "Invalid value for filter field 'project': expected a UUID or a numeric legacy id.",
       );
       expect(rejectedHuman.stdout).not.toContain("must-not-reach-diagnostics");
-      rejectComponentWithVerified400 = false;
+      replayLegacyProjectFilter = false;
 
       const versionRequestsBeforeRetryableFailure = versionRequests;
       componentRequests = 0;

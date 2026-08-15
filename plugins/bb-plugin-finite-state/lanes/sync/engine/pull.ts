@@ -263,14 +263,10 @@ function sanitizeRemoteDetail(value: Json): Json {
   if (Array.isArray(value)) return value.map(sanitizeRemoteDetail);
   if (value === null || typeof value !== "object") return value;
   return Object.fromEntries(
-    Object.entries(value)
-      .filter(
-        ([key]) =>
-          !/(?:authorization|api.?key|token|secret|password|url|path|command)/iu.test(
-            key,
-          ),
-      )
-      .map(([key, item]) => [key, sanitizeRemoteDetail(item)]),
+    Object.entries(value).map(([key, item]) => [
+      key,
+      sanitizeRemoteDetail(item),
+    ]),
   );
 }
 
@@ -1356,6 +1352,10 @@ export async function pull(
           ? storedGenerationError(error)
           : storedErrorMessage(error),
         isTerminalKindFailure(error) ||
+          // Non-retryable remote errors require operator action. Marking the
+          // generation failed deliberately discards mid-stream resumability,
+          // so the next attempt refetches from page one: correctness over the
+          // rare auth-failure resume efficiency.
           (cache.kind === "sbomComponent" &&
             isNonRetryableRemoteFailure(error)),
         nowIso(deps),
