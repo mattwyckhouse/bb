@@ -369,12 +369,12 @@ describe("resumable SBOM pull", () => {
     );
     expect(inputs).toEqual([
       {
-        filter: "project==p;projectVersion==v",
+        filter: "projectVersion==v",
         excluded: false,
         page: { pageSize: 200 },
       },
       {
-        filter: "project==p;projectVersion==v",
+        filter: "projectVersion==v",
         excluded: true,
         page: { pageSize: 200 },
       },
@@ -474,9 +474,9 @@ describe("resumable SBOM pull", () => {
     db.close();
   });
 
-  it("rejects RSQL scope injection before contacting Platform", async () => {
+  it("rejects project-version RSQL injection before contacting Platform", async () => {
     const db = createDb();
-    seedStaging(db, "invalid-scope", "p;name==foreign", "v");
+    seedStaging(db, "invalid-scope", "p", "v;name==foreign");
     const worktreeRoot = await root();
     const listComponents = vi.fn(async function* () {
       yield { items: [], total: 0, next: null };
@@ -489,7 +489,7 @@ describe("resumable SBOM pull", () => {
           stagingRoot: worktreeRoot,
           generationId: "invalid-scope",
         },
-        { projectId: "p;name==foreign", projectVersionId: "v" },
+        { projectId: "p", projectVersionId: "v;name==foreign" },
       ),
     ).rejects.toMatchObject({ code: "SBOM_SCOPE_INVALID" });
     expect(listComponents).not.toHaveBeenCalled();
@@ -635,7 +635,7 @@ describe("resumable SBOM pull", () => {
       resumed: true,
     });
     expect(resumedInputs[0]).toEqual({
-      filter: "project==p;projectVersion==v",
+      filter: "projectVersion==v",
       excluded: false,
       page: { pageSize: 200, continuation: "after-one" },
     });

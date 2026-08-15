@@ -109,6 +109,7 @@ describe("registered SBOM pull surfaces", () => {
     let componentRequests = 0;
     let versionRequests = 0;
     let failComponentRequest: number | null = null;
+    let replayLegacyProjectFilter = false;
     const platform = new PlatformClient({
       baseUrl: "http://platform.mock",
       token: "fs172-token",
@@ -131,6 +132,14 @@ describe("registered SBOM pull surfaces", () => {
         }
         if (url.pathname.includes("component")) {
           componentRequests += 1;
+          if (replayLegacyProjectFilter) {
+            const filter = url.searchParams.get("filter");
+            url.searchParams.set(
+              "filter",
+              [`project==I491NAX`, filter].filter(Boolean).join(";"),
+            );
+            return mock.platform.fetch(url, init);
+          }
           if (
             failComponentRequest !== null &&
             componentRequests >= failComponentRequest
@@ -381,6 +390,109 @@ describe("registered SBOM pull surfaces", () => {
       });
       expect(page.items.length).toBeGreaterThan(0);
 
+      // Replay the pre-FS-237 transport query. The mock returns Platform's
+      // verified 400 only because the actual RSQL now contains a short code.
+      replayLegacyProjectFilter = true;
+      const rejectedJson = await host.harness.behavior.runCli(
+        [
+          "finite-state",
+          "pull",
+          "sbomComponent",
+          "--project",
+          projectId,
+          "--version",
+          projectVersionId,
+          "--json",
+        ],
+        { projectId: "bb-project-fs172", threadId: "thread-fs172" },
+      );
+      expect(rejectedJson).toMatchObject({ exitCode: 1, stderr: "" });
+      const rejectedReport = JSON.parse(rejectedJson.stdout) as {
+        kinds: { sbomComponent: { reasons: unknown } };
+        remoteDiagnostics: Record<string, unknown>;
+      };
+      expect(rejectedReport.kinds.sbomComponent.reasons).toEqual([
+        { code: "http", count: 1 },
+      ]);
+      expect(rejectedReport.remoteDiagnostics).toEqual({
+        sbomComponent: {
+          code: "REMOTE_HTTP_400",
+          service: "platform",
+          method: "GET",
+          route: "/public/v0/components",
+          phase: "request headers for getComponentsV0",
+          status: 400,
+          retryable: false,
+          body: {
+            detail:
+              "Invalid value for filter field 'project': expected a UUID or a numeric legacy id.",
+            note: "provided [redacted]",
+          },
+        },
+      });
+      expect(rejectedJson.stdout).not.toMatch(
+        /(?:must-not-reach-diagnostics|\/public\/v0\/components\?)/u,
+      );
+      const failedGeneration = ctx
+        .db()
+        .prepare<
+          [string, string],
+          { status: string; completed_at: string | null; error: string }
+        >(
+          `SELECT status, completed_at, error
+             FROM pull_generation
+            WHERE project_id = ? AND project_version_id = ?
+            ORDER BY started_at DESC, generation_id DESC
+            LIMIT 1`,
+        )
+        .get(projectId, projectVersionId)!;
+      expect(failedGeneration).toMatchObject({
+        status: "failed",
+        completed_at: expect.any(String),
+      });
+      expect(failedGeneration.error).toContain(
+        "sbomComponent: REMOTE_HTTP_400: platform GET /public/v0/components HTTP 400",
+      );
+      expect(failedGeneration.error).toContain(
+        "Invalid value for filter field 'project': expected a UUID or a numeric legacy id.",
+      );
+      expect(failedGeneration.error).not.toMatch(
+        /(?:must-not-reach-diagnostics|\/public\/v0\/components\?)/u,
+      );
+      expect(
+        ctx
+          .db()
+          .prepare<[string, string], { error: string }>(
+            `SELECT error FROM sync_state
+              WHERE project_id = ? AND project_version_id = ?
+                AND entity_kind = 'sbomComponent'`,
+          )
+          .get(projectId, projectVersionId)!.error,
+      ).toBe("REMOTE_HTTP_400: remote request failed");
+
+      const rejectedHuman = await host.harness.behavior.runCli(
+        [
+          "finite-state",
+          "pull",
+          "sbomComponent",
+          "--project",
+          projectId,
+          "--version",
+          projectVersionId,
+        ],
+        { projectId: "bb-project-fs172", threadId: "thread-fs172" },
+      );
+      expect(rejectedHuman).toMatchObject({ exitCode: 1, stderr: "" });
+      expect(rejectedHuman.stdout).toContain(
+        "REMOTE_HTTP_400: platform GET /public/v0/components HTTP 400",
+      );
+      expect(rejectedHuman.stdout).toContain(
+        "Invalid value for filter field 'project': expected a UUID or a numeric legacy id.",
+      );
+      expect(rejectedHuman.stdout).not.toContain("must-not-reach-diagnostics");
+      replayLegacyProjectFilter = false;
+
+      const versionRequestsBeforeRetryableFailure = versionRequests;
       componentRequests = 0;
       failComponentRequest = 2;
       const failed = await host.harness.behavior.runCli(
@@ -396,7 +508,7 @@ describe("registered SBOM pull surfaces", () => {
         { projectId: "bb-project-fs172", threadId: "thread-fs172" },
       );
       expect(failed.exitCode).toBe(1);
-      expect(versionRequests).toBe(2);
+      expect(versionRequests).toBe(versionRequestsBeforeRetryableFailure + 1);
       expect(componentRequests).toBe(7);
       expect(
         host.harness.inspection.realtimeSignals.filter(
@@ -428,7 +540,7 @@ describe("registered SBOM pull surfaces", () => {
         { projectId: "bb-project-fs172", threadId: "thread-fs172" },
       );
       expect(recovered).toMatchObject({ exitCode: 0, stderr: "" });
-      expect(versionRequests).toBe(3);
+      expect(versionRequests).toBe(versionRequestsBeforeRetryableFailure + 2);
       expect(
         host.harness.inspection.realtimeSignals.filter(
           (signal) => signal.channel === "bom:changed",
