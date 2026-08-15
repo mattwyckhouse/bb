@@ -96,7 +96,7 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
   }, [navigate, subPath]);
   const workspaceProjectId = routeProjectId ?? selectedProjectId;
   useEffect(() => {
-    if (!workspaceProjectId || route?.tab !== "software") {
+    if (!workspaceProjectId) {
       setVersions([]);
       setPlatformProjectId(null);
       setProjectVersionId(null);
@@ -138,7 +138,7 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
     return () => {
       active = false;
     };
-  }, [route?.tab, rpc, versionRequest, workspaceProjectId]);
+  }, [rpc, versionRequest, workspaceProjectId]);
   if (!route) return <BadBomRoute />;
   const routeTabs = (
     <>
@@ -252,7 +252,7 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
       <section className="flex h-full min-h-0 flex-col bg-background text-foreground">
         {routeTabs}
         <div className="min-h-0 flex-1">
-          <HbomRoutes route={route} />
+          <HbomRoutes route={route} workspaceProjectId={workspaceProjectId} />
         </div>
       </section>
     );
