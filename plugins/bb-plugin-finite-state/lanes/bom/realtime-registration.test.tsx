@@ -142,6 +142,7 @@ describe("registered BOM realtime boundary", () => {
         panel,
         { subPath: "software" },
         {
+          context: { projectId: workspaceProjectId },
           sidebarThreads: {
             status: "ready",
             projects: [
@@ -188,15 +189,10 @@ describe("registered BOM realtime boundary", () => {
         },
       );
 
-      const projectPicker = await slot.findByRole("combobox", {
-        name: "Project",
-      });
+      await slot.findByRole("combobox", { name: "Project" });
       expect(slot.getAllByRole("combobox", { name: "Project" })).toHaveLength(
         1,
       );
-      fireEvent.change(projectPicker, {
-        target: { value: workspaceProjectId },
-      });
 
       await waitFor(() => {
         const versionPicker = slot.getByRole("combobox", {
@@ -212,19 +208,14 @@ describe("registered BOM realtime boundary", () => {
 
       slot.lifecycle.rerender(<PanelComponent subPath="hardware" />);
 
-      expect(await slot.findByText("No hardware parts")).toBeTruthy();
-      const retainedVersionPicker = slot.getByRole("combobox", {
-        name: "Finite State project version",
+      await waitFor(() => {
+        expect(
+          slot.inspection.rpcCalls.filter(
+            (call) => call.method === "hbomReviewList",
+          ),
+        ).not.toHaveLength(0);
+        expect(requestedProjectIds).not.toHaveLength(0);
       });
-      if (!(retainedVersionPicker instanceof HTMLSelectElement)) {
-        throw new Error("Retained version picker did not render as a select");
-      }
-      expect(retainedVersionPicker.value).toBe(
-        `${platformProjectId}/${projectVersionId}`,
-      );
-      expect(slot.getAllByRole("combobox", { name: "Project" })).toHaveLength(
-        1,
-      );
       expect(
         slot.inspection.rpcCalls.filter(
           (call) => call.method === "hbomReviewList",
@@ -241,10 +232,120 @@ describe("registered BOM realtime boundary", () => {
       );
       expect(requestedProjectIds).not.toContain(platformProjectId);
       expect(requestedProjectIds).toContain(workspaceProjectId);
+
+      expect(await slot.findByText("No hardware parts")).toBeTruthy();
+      const retainedVersionPicker = slot.getByRole("combobox", {
+        name: "Finite State project version",
+      });
+      if (!(retainedVersionPicker instanceof HTMLSelectElement)) {
+        throw new Error("Retained version picker did not render as a select");
+      }
+      expect(retainedVersionPicker.value).toBe(
+        `${platformProjectId}/${projectVersionId}`,
+      );
+      expect(retainedVersionPicker.disabled).toBe(true);
+      expect(retainedVersionPicker.getAttribute("aria-describedby")).toBe(
+        "bom-hardware-version-hint",
+      );
+      expect(slot.getByText("HBOM is project-scoped")).toBeTruthy();
+      expect(slot.getAllByRole("combobox", { name: "Project" })).toHaveLength(
+        1,
+      );
       slot.lifecycle.unmount();
     } finally {
       await host.harness.lifecycle.dispose();
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("offers registered Hardware version lookup recovery", async () => {
+    const workspaceProjectId = "workspace-project-fs240";
+    let versionReads = 0;
+    const host = createFakePluginHost({
+      pluginId: "finite-state-fs240-hardware-version-retry",
+      sdk: {
+        projects: {
+          get: ({ projectId }) => ({ id: projectId, sources: [] }),
+        },
+      },
+    });
+
+    try {
+      const ctx = createPluginContext(host.bb);
+      registerBom(host.bb, ctx);
+      const app = await loadPluginApp(() => import("../../app.js"));
+      const panel = app.navPanels.find((candidate) => candidate.path === "bom");
+      if (!panel) throw new Error("BOM panel not registered");
+
+      const slot = renderSlot(
+        panel,
+        { subPath: "hardware" },
+        {
+          context: { projectId: workspaceProjectId },
+          sidebarThreads: {
+            status: "ready",
+            projects: [
+              {
+                id: workspaceProjectId,
+                name: "FS-240 Workspace",
+                isPersonal: false,
+              },
+            ],
+          },
+          rpc: {
+            connectionsStatus: connectedRemoteStatus,
+            bomCachedProjectVersions: () => {
+              versionReads += 1;
+              if (versionReads === 1) {
+                throw new Error("offline cache read failed");
+              }
+              return {
+                versions: [],
+                selectedPlatformProjectId: null,
+                selectedProjectVersionId: null,
+              };
+            },
+            async hbomReviewList(input) {
+              return rpcContract.hbomReviewList.output.parse(
+                await host.harness.behavior.callRpc("hbomReviewList", input),
+              );
+            },
+          },
+        },
+      );
+
+      expect((await slot.findByRole("alert")).textContent).toContain(
+        "Cached versions unavailable: offline cache read failed",
+      );
+      const versionPicker = slot.getByRole("combobox", {
+        name: "Finite State project version",
+      });
+      if (!(versionPicker instanceof HTMLSelectElement)) {
+        throw new Error("Version picker did not render as a select");
+      }
+      expect(versionPicker.disabled).toBe(true);
+      expect(slot.getByText("HBOM is project-scoped")).toBeTruthy();
+
+      fireEvent.click(
+        slot.getByRole("button", { name: "Retry version lookup" }),
+      );
+
+      await waitFor(() => expect(versionReads).toBe(2));
+      await waitFor(() => expect(slot.queryByRole("alert")).toBeNull());
+      expect(slot.inspection.rpcCalls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            method: "hbomReviewList",
+            input: expect.objectContaining({
+              projectId: workspaceProjectId,
+              projectVersionId: null,
+            }),
+          }),
+        ]),
+      );
+      slot.lifecycle.unmount();
+    } finally {
+      await host.harness.lifecycle.dispose();
     }
   });
 

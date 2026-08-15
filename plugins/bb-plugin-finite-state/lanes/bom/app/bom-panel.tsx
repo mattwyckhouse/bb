@@ -241,8 +241,13 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
           </label>
           <select
             aria-label="Finite State project version"
+            aria-describedby={
+              route.tab === "hardware" ? "bom-hardware-version-hint" : undefined
+            }
             className="h-8 max-w-72 rounded-md border border-input bg-background px-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-            disabled={!workspaceProjectId || versionsLoading}
+            disabled={
+              route.tab === "hardware" || !workspaceProjectId || versionsLoading
+            }
             id="bom-project-version"
             onChange={(event) => {
               const selected = versions.find(
@@ -283,6 +288,14 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
               </option>
             ))}
           </select>
+          {route.tab === "hardware" ? (
+            <span
+              className="text-xs text-muted-foreground"
+              id="bom-hardware-version-hint"
+            >
+              HBOM is project-scoped
+            </span>
+          ) : null}
         </div>
       </nav>
     </>
@@ -291,6 +304,21 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
     return (
       <section className="flex h-full min-h-0 flex-col bg-background text-foreground">
         {routeTabs}
+        {versionsError ? (
+          <div
+            className="flex shrink-0 items-center gap-3 border-b border-border bg-card px-3 py-2 text-xs text-muted-foreground"
+            role="alert"
+          >
+            <span>Cached versions unavailable: {versionsError}</span>
+            <Button
+              onClick={() => setVersionRequest((current) => current + 1)}
+              size="sm"
+              variant="outline"
+            >
+              Retry version lookup
+            </Button>
+          </div>
+        ) : null}
         <div className="min-h-0 flex-1">
           <HbomRoutes route={route} workspaceProjectId={workspaceProjectId} />
         </div>
