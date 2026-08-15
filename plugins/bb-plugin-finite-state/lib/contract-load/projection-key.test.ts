@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   computeProjectionKey,
+  REPO_LOCAL_PROJECT_ID_PREFIX,
   repoContractIdentity,
 } from "./projection-key.js";
 
@@ -104,7 +105,7 @@ describe("repository contract projection key", () => {
     const identity = await repoContractIdentity(join(root, "."));
     expect(identity.repositoryDigest).toMatch(/^[0-9a-f]{64}$/u);
     expect(identity.projectId).toBe(
-      `fs-local-repo:${identity.repositoryDigest}`,
+      `${REPO_LOCAL_PROJECT_ID_PREFIX}${identity.repositoryDigest}`,
     );
     expect(identity.projectVersionId).toBe(
       `fs-local-checkout:${identity.repositoryDigest}`,

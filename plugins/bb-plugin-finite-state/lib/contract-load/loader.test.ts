@@ -25,12 +25,10 @@ import type { RemoteServices } from "../remote/types.js";
 import { openStore, type Store } from "../store/index.js";
 import { WORKSPACE_PLATFORM_PROJECT_PREDICATE } from "../store/project-scope.js";
 import { MIGRATIONS } from "../store/schema.js";
-import { createRequirementAdapter } from "../../lanes/product-security/requirements/sync/adapter.js";
 import type { RequirementYamlV1 } from "../../lanes/product-security/requirements/cards/schema.js";
 import { serializeRequirement } from "../../lanes/product-security/requirements/cards/adapter.js";
 import { registerProductSecurity } from "../../lanes/product-security/register.js";
 import { registerBench } from "../../lanes/bench/register.js";
-import { registerAdapter } from "../../lanes/sync/engine/adapter.js";
 import { registerSync } from "../../lanes/sync/register.js";
 import { parseYaml } from "../../lanes/sync/serialize/yaml.js";
 import { registerRepoContractLoadService } from "./index.js";
@@ -822,10 +820,13 @@ describe("repository contract loader", () => {
     await host.harness.lifecycle.dispose();
   });
 
-  it("keeps the synthetic scope unplannable and unpushable on registered RPCs", async () => {
+  it("rejects repo-local scope before a registered sync plan can reach the network", async () => {
     const value = await fixture("registered");
-    const deniedFetch = vi.fn(async () => {
-      throw new Error("NETWORK_CALL_FORBIDDEN");
+    const networkGuard = vi.fn(async () => {
+      return Response.json(
+        { error: { code: "OFFLINE_TEST_GUARD" } },
+        { status: 401 },
+      );
     });
     const host = createFakePluginHost({
       pluginId: "finite-state-contract-load-registered",
@@ -847,12 +848,12 @@ describe("repository contract loader", () => {
     const platform = new PlatformClient({
       baseUrl: "https://platform.invalid",
       token: "offline-test-token",
-      fetch: deniedFetch,
+      fetch: networkGuard,
     });
     const assuranceStudio = new AssuranceStudioClient({
       baseUrl: "https://assurance-studio.invalid",
       apiKey: "offline-test-key",
-      fetch: deniedFetch,
+      fetch: networkGuard,
     });
     const services: RemoteServices = {
       platform,
@@ -860,7 +861,6 @@ describe("repository contract loader", () => {
       forgeCompute: null,
     };
     context.service<RemoteServices>("remote-services", () => services);
-    registerAdapter(createRequirementAdapter(assuranceStudio));
     registerSync(host.bb, context);
     const hostStore = openStore(host.bb);
     const identity = await repoContractIdentity(value.root);
@@ -870,12 +870,32 @@ describe("repository contract loader", () => {
     await expect(
       host.harness.behavior.callRpc("syncPlan", {
         ...scope,
-        workspaceProjectId: "bb-project-offline",
+        kinds: ["vexDecision"],
       }),
     ).rejects.toMatchObject({
       code: "handler_error",
-      message: expect.stringContaining("AS_PROJECT_SELECTION_REQUIRED"),
+      message:
+        "REPO_LOCAL_SCOPE_NOT_SYNCABLE: This is a repo-local checkout projection, so there is nothing to sync; repository YAML is the source of truth.",
     });
+    expect(networkGuard).not.toHaveBeenCalled();
+
+    const ordinaryScope = {
+      projectId: "platform-project-ordinary",
+      projectVersionId: "platform-version-ordinary",
+    };
+    await expect(
+      host.harness.behavior.callRpc("syncPlan", {
+        ...ordinaryScope,
+        kinds: ["vexDecision"],
+      }),
+    ).resolves.toMatchObject({
+      ...ordinaryScope,
+      staleness: { degraded: true },
+    });
+    expect(networkGuard).toHaveBeenCalledTimes(1);
+
+    // Push is globally frozen today; this records that cover without pretending
+    // it distinguishes scopes. The shared sync guard is ready for any unfreeze.
     await expect(
       host.harness.behavior.callRpc("syncPush", {
         ...scope,
@@ -888,7 +908,6 @@ describe("repository contract loader", () => {
       code: "handler_error",
       message: expect.stringContaining("authorization-unavailable"),
     });
-    expect(deniedFetch).not.toHaveBeenCalled();
     expect(host.harness.sdk.callsTo("http.request")).toEqual([]);
     expect(
       hostStore.db

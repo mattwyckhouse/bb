@@ -60,6 +60,7 @@ export function createRepoContractMonitor(
   );
 
   async function runCheck(): Promise<readonly RepoContractCheckResult[]> {
+    // Repo-contract projection deliberately skips personal projects.
     const projects = await bb.sdk.projects.list({ includePersonal: false });
     const roots = new Set<string>();
     const selected = projects
@@ -143,5 +144,6 @@ export function registerRepoContractLoadService(
 export { contractLoadScope, loadRepoContract } from "./loader.js";
 export {
   computeProjectionKey,
+  REPO_LOCAL_PROJECT_ID_PREFIX,
   repoContractIdentity,
 } from "./projection-key.js";

@@ -30,6 +30,7 @@ import { BaseSnapshotStore } from "../../lanes/sync/store/base-snapshot.js";
 import {
   computeProjectionKey,
   CONTRACT_ROOTS,
+  REPO_LOCAL_PROJECT_ID_PREFIX,
   repoContractIdentity,
   type ProjectionKey,
 } from "./projection-key.js";
@@ -37,7 +38,6 @@ import {
 const SIDECAR_VERSION = 1 as const;
 const SIDECAR_PREFIX = "contract-load-";
 const SIDECAR_PATTERN = /^contract-load-([0-9a-f]{64})\.json$/u;
-const SYNTHETIC_PROJECT_PREFIX = "fs-local-repo:";
 const SYNTHETIC_VERSION_PREFIX = "fs-local-checkout:";
 
 type ProjectedKind =
@@ -136,7 +136,7 @@ function sidecarFile(store: Store, repositoryDigest: string): string {
 
 function projectionScope(repositoryDigest: string): ContractLoadScope {
   return {
-    projectId: `${SYNTHETIC_PROJECT_PREFIX}${repositoryDigest}`,
+    projectId: `${REPO_LOCAL_PROJECT_ID_PREFIX}${repositoryDigest}`,
     projectVersionId: `${SYNTHETIC_VERSION_PREFIX}${repositoryDigest}`,
   };
 }

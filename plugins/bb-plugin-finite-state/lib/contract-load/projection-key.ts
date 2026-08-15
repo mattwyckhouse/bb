@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 export const CONTRACT_ROOTS = [".fs", "product-security"] as const;
+export const REPO_LOCAL_PROJECT_ID_PREFIX = "fs-local-repo:";
 
 export interface ProjectionKey {
   readonly headCommit: string;
@@ -107,7 +108,7 @@ export async function repoContractIdentity(
   return {
     canonicalRoot,
     repositoryDigest,
-    projectId: `fs-local-repo:${repositoryDigest}`,
+    projectId: `${REPO_LOCAL_PROJECT_ID_PREFIX}${repositoryDigest}`,
     projectVersionId: `fs-local-checkout:${repositoryDigest}`,
   };
 }
