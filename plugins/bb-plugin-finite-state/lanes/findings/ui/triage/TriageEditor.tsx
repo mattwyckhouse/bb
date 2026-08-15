@@ -44,6 +44,7 @@ export function TriageEditor({
   reasonConfirmed,
   pending,
   commitBlockedReason,
+  bulkPlaceholders = false,
   prior,
   error,
   onChange,
@@ -58,6 +59,7 @@ export function TriageEditor({
   reasonConfirmed: boolean;
   pending: boolean;
   commitBlockedReason: string | null;
+  bulkPlaceholders?: boolean;
   prior: PriorDecision | null;
   error: TriageWriteError | null;
   onChange(draft: TriageDraft): void;
@@ -173,8 +175,7 @@ export function TriageEditor({
                     name="CircleCheck"
                   />
                 )}
-                Write YAML{" "}
-                <kbd className="ml-1 text-[0.7rem] opacity-70">⌘↵</kbd>
+                Write YAML <kbd className="ml-1 text-2xs opacity-70">⌘↵</kbd>
               </Button>
             </div>
           </div>
@@ -285,6 +286,13 @@ export function TriageEditor({
                   explicitly confirm it; a seed is not approval.
                 </p>
               ) : null}
+              {bulkPlaceholders ? (
+                <p className="text-xs text-muted-foreground">
+                  Bulk placeholder{" "}
+                  <code className="font-mono">{"{evidence}"}</code> expands to
+                  each finding&apos;s reachability evidence at write time.
+                </p>
+              ) : null}
             </div>
             <div className="space-y-2 xl:col-span-2">
               <Label htmlFor="triage-evidence">Evidence reviewed</Label>
@@ -297,6 +305,14 @@ export function TriageEditor({
                 rows={3}
                 value={draft.evidence}
               />
+              {bulkPlaceholders ? (
+                <p className="text-xs text-muted-foreground">
+                  Defaults to <code className="font-mono">{"{evidence}"}</code>{" "}
+                  so each selected row keeps its own evidence. Replace the
+                  placeholder only when every decision should share the same
+                  string.
+                </p>
+              ) : null}
             </div>
             <div className="space-y-2">
               <Label id="triage-pin-label">Version pin</Label>

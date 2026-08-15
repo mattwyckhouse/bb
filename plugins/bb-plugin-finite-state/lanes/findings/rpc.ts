@@ -1,5 +1,6 @@
 import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
 import type Database from "better-sqlite3";
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
@@ -20,7 +21,10 @@ import {
   listFindingComments,
 } from "./cache/comments.js";
 import { getCachedFinding, queryFindings } from "./cache/query.js";
-import { findingsCacheState } from "./cache/query.js";
+import {
+  countDistinctFindingStableKeys,
+  findingsCacheState,
+} from "./cache/query.js";
 import type { CachedFinding, FindingsFilter } from "./cache/types.js";
 import type { FindingsDriftService } from "./drift/index.js";
 import type { VendorImportResult } from "./drift/vendor/import.js";
@@ -183,7 +187,12 @@ const triageSelectionSchema = z.discriminatedUnion("mode", [
     .object({
       mode: z.literal("predicate"),
       filters: savedFilterSchema,
-      excludedStableKeys: z.array(z.string().min(1).max(512)).max(2_000),
+      excludedStableKeys: z
+        .array(z.string().min(1).max(512))
+        .max(
+          2_000,
+          "Too many excluded findings for predicate bulk triage (limit 2000). Narrow the filter or clear exclusions, then retry.",
+        ),
       total: z.number().int().nonnegative(),
     })
     .strict(),
@@ -483,6 +492,64 @@ export async function findingsProjectSource(
 const EMPTY_SHA256 =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
+const triageActorCache = new Map<string, Promise<string>>();
+
+function runGitConfig(
+  root: string,
+  key: "user.email" | "user.name",
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      ["config", "--get", key],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 3_000,
+        windowsHide: true,
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_OPTIONAL_LOCKS: "0",
+          LC_ALL: "C",
+        },
+      },
+      (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout.trim());
+      },
+    );
+  });
+}
+
+async function resolveTriageActor(root: string): Promise<string> {
+  const cached = triageActorCache.get(root);
+  if (cached) return cached;
+  const pending = (async () => {
+    try {
+      const email = await runGitConfig(root, "user.email");
+      if (email.length > 0) return email.slice(0, 200);
+    } catch {
+      // Fall through to user.name, then the local-fallback label.
+    }
+    try {
+      const name = await runGitConfig(root, "user.name");
+      if (name.length > 0) return name.slice(0, 200);
+    } catch {
+      // Keep the historical fallback when the workspace has no git identity.
+    }
+    return "bb-user";
+  })();
+  triageActorCache.set(root, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    triageActorCache.delete(root);
+    throw error;
+  }
+}
+
 function triageIdentity(finding: CachedFinding) {
   if (!finding.cve || !finding.componentName)
     throw new Error("TRIAGE_IDENTITY_INCOMPLETE");
@@ -676,6 +743,7 @@ async function writeTriageDecision(
       snapshot.sha256 ?? undefined,
     );
   }
+  const actor = await resolveTriageActor(root);
   const decisionInput = {
     project: finding.projectId,
     component: identity.component,
@@ -687,7 +755,7 @@ async function writeTriageDecision(
     reason: item.reason,
     pin: item.pin,
     provenance: {
-      by: "bb-user",
+      by: actor,
       at: new Date().toISOString(),
       evidence: item.evidence,
     },
@@ -1683,26 +1751,31 @@ export function registerFindingsRpc(
           next: null,
         };
       }
-      const page = queryFindings(
+      const filter = findingFilter({
+        projectId: input.platformProjectId,
+        projectVersionId: input.projectVersionId,
+        pageSize: 25,
+        continuation: input.continuation,
+        filters: input.selection.filters,
+      });
+      const counts = countDistinctFindingStableKeys(
         db,
-        findingFilter({
-          projectId: input.platformProjectId,
-          projectVersionId: input.projectVersionId,
-          pageSize: 25,
-          continuation: input.continuation,
-          filters: input.selection.filters,
-        }),
+        filter,
+        input.selection.excludedStableKeys,
       );
+      if (input.selection.total !== counts.findingTotal) {
+        throw new Error(
+          `TRIAGE_PREDICATE_TOTAL_MISMATCH: client total ${input.selection.total} does not match ${counts.findingTotal} matching findings for this filter`,
+        );
+      }
+      const page = queryFindings(db, filter);
       const excluded = new Set(input.selection.excludedStableKeys);
       const findings = page.items.filter(
         (finding) => !excluded.has(finding.stableKey),
       );
       return {
         items: findings.map((finding) => triageTarget(corpus, finding)),
-        total: Math.max(
-          0,
-          input.selection.total - input.selection.excludedStableKeys.length,
-        ),
+        total: counts.uniqueStableKeys,
         next: page.nextCursor,
       };
     },
