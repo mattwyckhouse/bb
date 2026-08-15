@@ -272,7 +272,7 @@ export const productSecurityNodeEdgeTypes: EdgeTypes = {
   dataflow: DataflowEdge,
 };
 
-interface ProductSecurityCanvasWorkspaceProps {
+export interface ProductSecurityCanvasWorkspaceProps {
   model: ArchitectureModel;
   graph: CanvasArchitectureGraph;
   adjacency: ReadonlyMap<string, ArchitectureAdjacency>;
@@ -280,6 +280,15 @@ interface ProductSecurityCanvasWorkspaceProps {
   onFocusRoute(kind: ArchitectureSelectionKind, slug: string): void;
   onRepairSourceFile(sourceFile: string, slug: string): void;
   children: ReactNode;
+  /**
+   * Directive / in-message mode (WP-61). Default false — panel behavior
+   * unchanged. When true: no stencil, inspector, or context menu, and menus
+   * cannot open. Pair with `maxHeight` and a `React.lazy` import in the
+   * directive wrapper.
+   */
+  readOnly?: boolean;
+  /** Optional height clamp in CSS pixels for message-surface embedding. */
+  maxHeight?: number;
 }
 
 export function ProductSecurityCanvasWorkspace({
@@ -290,6 +299,8 @@ export function ProductSecurityCanvasWorkspace({
   onFocusRoute,
   onRepairSourceFile,
   children,
+  readOnly = false,
+  maxHeight,
 }: ProductSecurityCanvasWorkspaceProps): React.JSX.Element {
   const [selectedIds, setSelectedIdsState] = useState<readonly string[]>(
     focusId ? [focusId] : [],
@@ -303,9 +314,13 @@ export function ProductSecurityCanvasWorkspace({
     fitSelectionRef.current = callback;
   }, []);
   const fitSelection = useCallback(() => fitSelectionRef.current?.(), []);
-  const openMenu = useCallback((nextMenu: ArchitectureContextMenuState) => {
-    setMenu(nextMenu);
-  }, []);
+  const openMenu = useCallback(
+    (nextMenu: ArchitectureContextMenuState) => {
+      if (readOnly) return;
+      setMenu(nextMenu);
+    },
+    [readOnly],
+  );
   const closeMenu = useCallback(() => setMenu(null), []);
   const nodesBySlug = useMemo(
     () => new Map(model.nodes.map((node) => [node.slug, node])),
@@ -324,7 +339,7 @@ export function ProductSecurityCanvasWorkspace({
       unresolved: graph.unresolved,
       selectedIds,
       focusId,
-      menu,
+      menu: readOnly ? null : menu,
       setSelectedIds,
       setFitSelection,
       fitSelection,
@@ -345,26 +360,41 @@ export function ProductSecurityCanvasWorkspace({
       onFocusRoute,
       onRepairSourceFile,
       openMenu,
+      readOnly,
       selectedIds,
       setFitSelection,
       setSelectedIds,
     ],
   );
+  const shellStyle =
+    maxHeight === undefined
+      ? undefined
+      : {
+          maxHeight,
+          height: maxHeight,
+          overflow: "hidden" as const,
+        };
   return (
     <ArchitectureSelectionContext.Provider value={context}>
       <div
         className="flex h-full min-h-0 bg-background text-foreground"
+        data-canvas-mode={readOnly ? "directive" : "panel"}
         onClick={closeMenu}
+        style={shellStyle}
       >
-        <Stencil />
+        {readOnly ? null : <Stencil />}
         <div className="relative min-w-0 flex-1">
           <ReactFlowProvider>
             {children}
             <CanvasCoordinator />
           </ReactFlowProvider>
         </div>
-        <Inspector />
-        <ContextMenu />
+        {readOnly ? null : (
+          <>
+            <Inspector />
+            <ContextMenu />
+          </>
+        )}
       </div>
     </ArchitectureSelectionContext.Provider>
   );

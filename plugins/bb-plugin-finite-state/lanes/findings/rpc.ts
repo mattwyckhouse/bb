@@ -481,6 +481,43 @@ export const findingsUiRpcContract = defineRpcContract({
       .object({ file: z.string(), afterSha256: z.string().length(64) })
       .strict(),
   },
+  // Lane-local directive read (AMD-0025): intentionally not the retired
+  // frozen `triageRunGet` name or shape — truthful durable triage_runs summary.
+  triageSummaryGet: {
+    input: z
+      .object({
+        projectId: z.string().min(1).max(512),
+        projectVersionId: z.string().min(1).max(512),
+        runId: z.string().min(1).max(512),
+      })
+      .strict(),
+    output: z
+      .object({
+        runId: z.string().min(1).max(512),
+        source: z.enum(["manual", "policy", "vendor_import", "drift"]),
+        status: z.enum(["running", "completed", "partial", "failed"]),
+        dryRun: z.boolean(),
+        written: z.number().int().nonnegative(),
+        held: z.number().int().nonnegative(),
+        conflicts: z.number().int().nonnegative(),
+        skippedExisting: z.number().int().nonnegative(),
+        errors: z.number().int().nonnegative(),
+        holdbacks: z
+          .array(
+            z
+              .object({
+                stableKey: z.string().min(1).max(512),
+                rule: z.string().min(1).max(512),
+                why: z.string().min(1).max(2000),
+              })
+              .strict(),
+          )
+          .max(100),
+        createdAt: z.string().min(1).max(64),
+        finishedAt: z.string().min(1).max(64).nullable(),
+      })
+      .strict(),
+  },
 });
 
 const SAVED_VIEWS_PATH = "product-security/findings/views.json";
@@ -1889,5 +1926,94 @@ export function registerFindingsRpc(
             );
       return { file: result.file, afterSha256: result.afterSha256 };
     },
+    triageSummaryGet(input) {
+      const row = db
+        .prepare<
+          [string, string, string],
+          {
+            run_id: string;
+            source: "manual" | "policy" | "vendor_import" | "drift";
+            dry_run: 0 | 1;
+            status: "running" | "completed" | "partial" | "failed";
+            written: number;
+            held: number;
+            conflicts: number;
+            skipped_existing: number;
+            errors: number;
+            report_json: string;
+            created_at: string;
+            finished_at: string | null;
+          }
+        >(
+          `SELECT run_id, source, dry_run, status, written, held, conflicts,
+                  skipped_existing, errors, report_json, created_at, finished_at
+             FROM triage_runs
+            WHERE project_id = ? AND project_version_id = ? AND run_id = ?`,
+        )
+        .get(input.projectId, input.projectVersionId, input.runId);
+      if (!row) {
+        throw new Error("TRIAGE_RUN_NOT_FOUND");
+      }
+      return {
+        runId: row.run_id,
+        source: row.source,
+        status: row.status,
+        dryRun: row.dry_run === 1,
+        written: row.written,
+        held: row.held,
+        conflicts: row.conflicts,
+        skippedExisting: row.skipped_existing,
+        errors: row.errors,
+        holdbacks: holdbacksFromReportJson(row.report_json),
+        createdAt: row.created_at,
+        finishedAt: row.finished_at,
+      };
+    },
   });
+}
+
+function holdbacksFromReportJson(
+  reportJson: string,
+): Array<{ stableKey: string; rule: string; why: string }> {
+  try {
+    const parsed: unknown = JSON.parse(reportJson);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return [];
+    }
+    const held = Reflect.get(parsed, "held");
+    if (!Array.isArray(held)) return [];
+    const holdbacks: Array<{ stableKey: string; rule: string; why: string }> =
+      [];
+    for (const entry of held) {
+      if (holdbacks.length >= 100) break;
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        continue;
+      }
+      const stableKey = Reflect.get(entry, "stableKey");
+      const rule = Reflect.get(entry, "rule");
+      const why = Reflect.get(entry, "why");
+      if (
+        typeof stableKey !== "string" ||
+        typeof rule !== "string" ||
+        typeof why !== "string" ||
+        stableKey.length === 0 ||
+        rule.length === 0 ||
+        why.length === 0
+      ) {
+        continue;
+      }
+      holdbacks.push({
+        stableKey: stableKey.slice(0, 512),
+        rule: rule.slice(0, 512),
+        why: why.slice(0, 2000),
+      });
+    }
+    return holdbacks;
+  } catch {
+    return [];
+  }
 }
