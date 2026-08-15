@@ -28,15 +28,7 @@ const PENDING_UNSTARTED_WP = [
   "groundingCoverageGet", // WP-82 / FS-117: Grounding store and document index.
 ] as const satisfies readonly RpcMethod[];
 
-const SHIPPED_WP_REGISTRATION_DEBT = [
-  "workspaceSummary", // FS-220 / AMD-0025: retirement awaits owner ratification.
-  "triageRunGet", // FS-220 / AMD-0025: retirement awaits owner ratification.
-] as const satisfies readonly RpcMethod[];
-
-const pendingFrozenRpcMethods: readonly RpcMethod[] = [
-  ...PENDING_UNSTARTED_WP,
-  ...SHIPPED_WP_REGISTRATION_DEBT,
-];
+const pendingFrozenRpcMethods: readonly RpcMethod[] = [...PENDING_UNSTARTED_WP];
 
 afterEach(async () => {
   await Promise.all(

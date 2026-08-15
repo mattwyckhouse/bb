@@ -105,14 +105,12 @@ const EXPECTED_LOGICAL_METHODS = [
   "triage.orphans.prune",
   "triage.policy.apply",
   "triage.policy.preview",
-  "triage.run.get",
   "triage.vendorVex.apply",
   "triage.vendorVex.preview",
   "verifications.manualAttestation.record",
   "verifications.matrix",
   "verifications.run.get",
   "verifications.run.start",
-  "workspace.summary",
 ] as const;
 
 const AMD_0011_CURSOR_PAGED_METHODS = new Set([
@@ -180,15 +178,15 @@ function objectField(
 }
 
 describe("rpc-contract-freeze", () => {
-  it("exports version ten and all 88 bijective logical-to-wire names", () => {
-    expect(CONTRACT_VERSION).toBe(10);
+  it("exports version eleven and all 86 bijective logical-to-wire names", () => {
+    expect(CONTRACT_VERSION).toBe(11);
     expect(Object.keys(RPC_WIRE_METHODS).sort()).toEqual(
       [...EXPECTED_LOGICAL_METHODS].sort(),
     );
-    expect(Object.keys(RPC_WIRE_METHODS)).toHaveLength(88);
+    expect(Object.keys(RPC_WIRE_METHODS)).toHaveLength(86);
 
     const wireNames = Object.values(RPC_WIRE_METHODS);
-    expect(new Set(wireNames).size).toBe(88);
+    expect(new Set(wireNames).size).toBe(86);
     expect(Object.keys(rpcContract).sort()).toEqual([...wireNames].sort());
     for (const [logicalName, wireName] of Object.entries(RPC_WIRE_METHODS)) {
       expect(wireName).toBe(lowerCamelWireName(logicalName));

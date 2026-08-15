@@ -609,12 +609,13 @@ specs: `docs/Product Specs/SPEC 07` and `SPEC 08`._
 
 ### AMD-0025 — Retire two frozen reads that cannot name their shipped data
 
-- Status: proposed — owner ratification required; this entry does not authorize a frozen edit
+- Status: approved
+- Approved: 2026-08-15 01:02Z, product owner Matt Wyckhouse, verbatim decision `Ratify`, relayed by coordinator thread `thr_hg37weivk7` in FS-220 comment `01M01F3KEXP35MGZJ7P8KBDHPN`.
 - Artifacts:
   - `plugins/bb-plugin-finite-state/shared/contract.ts`
 - Contract version: 11
 - Prior artifact hash: `a8ddb7d20a3b989f80841b3688781f4e5ee82e5386a37cec668253d1890df30a` (mechanically verified contract-v10 AMD-0024 baseline)
-- Proposed new artifact hash: `2f0dddc865a9121452a9cd69d7f63232edaf51148e18433252c7149e3d131b11` (contract v11 after only the exact removals below; rebase and re-hash before acceptance if another amendment advances the baseline)
+- New artifact hash: `2f0dddc865a9121452a9cd69d7f63232edaf51148e18433252c7149e3d131b11` (contract v11 after only the exact removals below)
 - Proposal digest: `6ac18208f38ef1c1f73bcd47e033d03a38879f441c46b8ac9fbb2e80366aa72b`, the SHA-256 of this canonical payload including its final newline:
 
       AMD-0025
@@ -623,12 +624,12 @@ specs: `docs/Product Specs/SPEC 07` and `SPEC 08`._
       retire=triage.run.get|triageRunGet
       retire=workspace.summary|workspaceSummary
 
-- Proposed contract: remove `workspace.summary` / `workspaceSummary` and `triage.run.get` / `triageRunGet` from `RPC_WIRE_METHODS`, `RPC_METHOD_CLASSIFICATIONS`, their private schemas, and `rpcContract`; increment `CONTRACT_VERSION` from 10 to 11. No other wire name, classification, input, output, default, or meaning changes.
+- Ratified contract: remove `workspace.summary` / `workspaceSummary` and `triage.run.get` / `triageRunGet` from `RPC_WIRE_METHODS`, `RPC_METHOD_CLASSIFICATIONS`, their private schemas, and `rpcContract`; increment `CONTRACT_VERSION` from 10 to 11. No other wire name, classification, input, output, default, or meaning changes.
 - `workspaceSummary` reason: its frozen input carries only Platform project/version scope. A plugin RPC handler receives no thread, environment, or verified worktree identity, while actual workspace pending/orphan state is worktree-specific. The production sync RPC therefore pins `worktreeRoot: null`; returning zeros would conceal authored changes, and a lane-local method with added workspace coordinates would be a shadow rather than this frozen method. `syncStatus` remains the truthful cache/upstream read, and thread-scoped CLI status remains the truthful local-worktree read.
 - `triageRunGet` reason: its frozen output can carry only `written`, `held`, `conflicts`, `findingIds`, and cache metadata. Shipped durable `triage_runs` state also has source, terminal status, skipped-existing and error counts, while the policy report contains bounded holdback stable keys, rules, and reasons required by `::fs-triage-summary`. Policy runs deliberately do not persist full finding dumps, so they cannot truthfully populate an unqualified `findingIds` array; the frozen shape also cannot render the required holdback reasons. A differently shaped directive/read RPC must be designed explicitly rather than projecting this incomplete shape.
-- Migration: no database migration. After ratification, apply the exact contract-v11 removals above; update shared-contract inventory tests, WP-03 contract documentation, and every generated consumer; remove both entries from `SHIPPED_WP_REGISTRATION_DEBT`; run the frozen accept flow and broadcast v11. The durable `triage_runs` table and its bounded reports remain unchanged for a future truthful summary surface.
+- Migration: no database migration. Apply the exact contract-v11 removals above; update shared-contract inventory tests, WP-03 contract documentation, and every generated consumer; delete the now-empty `SHIPPED_WP_REGISTRATION_DEBT` group; run the frozen accept flow and broadcast v11. The durable `triage_runs` table and its bounded reports remain unchanged for a future truthful summary surface.
 - Affected WPs and gates: FS-220; WP-03/17/28/42/61/67; shared contract inventory and hash baseline; registered-surface completeness test; Findings directive and sync-status consumers; Node 22.19 typecheck/test/lint/build and frozen-artifact gates.
-- Approval provenance: pending explicit product-owner ratification. FS-220 implementation has no authority to approve this proposal.
+- Approval provenance: owner Matt ratified the exact proposal at 01:02Z with the verbatim decision `Ratify`. The ratified record preserves accepted v10 hash `a8ddb7d20a3b989f80841b3688781f4e5ee82e5386a37cec668253d1890df30a`, candidate v11 hash `2f0dddc865a9121452a9cd69d7f63232edaf51148e18433252c7149e3d131b11`, and canonical proposal digest `6ac18208f38ef1c1f73bcd47e033d03a38879f441c46b8ac9fbb2e80366aa72b` unchanged from PR #176 head `7a87d1c85`.
 - Affected-lane reviewer: pending independent exact-head audit after owner ratification and v11 implementation.
 - Broadcast and merge commits: pending.
 - Evidence: FS-148 part-2 audit identified both methods as zero-handler debt left by done WPs. FS-220 verified the RPC context/worktree constraint in `lanes/sync/register.ts` and the durable-policy mismatch in `lanes/findings/policy/apply.ts`, `lanes/findings/policy/report.ts`, `lib/store/schema.ts`, SPEC 02 section 6.4, and WP-67 beat 4. FS-147 establishes that a differently shaped lane-local RPC cannot silently substitute for a reserved frozen name.
