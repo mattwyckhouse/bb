@@ -1,0 +1,12 @@
+# HBOM merge precedence/conflict matrix (WP-46).
+# rank: human(100) > datasheet=bom_import=vendor(80) > schematic(60) > as_component(40) > inferred(20)
+cases:
+  - { incumbent: empty, challenger: datasheet, values: any, expected: merged, notes: "rule 2 empty target receives proposal" }
+  - { incumbent: inferred, challenger: datasheet, values: different, expected: merged, notes: "rule 3 higher precedence demotes old" }
+  - { incumbent: datasheet, challenger: datasheet, values: same, expected: corroborated, notes: "rule 4 equal/same corroborates" }
+  - { incumbent: datasheet, challenger: bom_import, values: different, expected: conflict, notes: "rule 5 equal/different conflicts" }
+  - { incumbent: datasheet, challenger: vendor, values: different, expected: conflict, notes: "vendor equal-rank with datasheet" }
+  - { incumbent: datasheet, challenger: schematic, values: different, expected: candidate, notes: "rule 6 lower precedence becomes candidate" }
+  - { incumbent: human, challenger: datasheet, values: different, expected: candidate, notes: "rule 6 human cells immutable" }
+  - { incumbent: datasheet, challenger: datasheet, values: different, same_document: true, expected: merged, notes: "rule 7 same doc/part/field replaces prior" }
+  - { incumbent: datasheet, challenger: inferred, values: different, challenger_confidence: 0.99, expected: candidate, notes: "confidence never outranks provenance" }
