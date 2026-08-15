@@ -18,11 +18,6 @@ import { registerAuthoring } from "./register.js";
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
 const PENDING_UNSTARTED_WP = [
-  "documentsList", // WP-56 / FS-70: Documents store and viewer.
-  "documentsGet", // WP-56 / FS-70: Documents store and viewer.
-  "documentsSearch", // WP-56 / FS-70: Documents store and viewer.
-  "documentsMetadataUpdate", // WP-56 / FS-70: Documents store and viewer.
-  "documentsExtractionsList", // WP-56 / FS-70: Documents store and viewer.
   "groundingSourcesList", // WP-82 / FS-117: Grounding store and document index.
   "groundingQuery", // WP-82 / FS-117: Grounding store and document index.
   "groundingCoverageGet", // WP-82 / FS-117: Grounding store and document index.
