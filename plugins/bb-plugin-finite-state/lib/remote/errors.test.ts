@@ -4,8 +4,10 @@ import {
   connectionStatusMessage,
   diagnoseRemoteFailure,
   responseError,
+  settingsFailureDiagnostic,
   transportError,
   unavailableError,
+  unavailableFromDiagnostic,
   withRemoteRequestTimeout,
 } from "./errors.js";
 import { RemoteError } from "./types.js";
@@ -114,6 +116,36 @@ describe("remote failure diagnostics", () => {
       },
       credential: null,
     });
+  });
+
+  it("prefers a precise settings-slot diagnostic over the generic not-configured copy", () => {
+    const diagnostic = settingsFailureDiagnostic(
+      "platform",
+      "Platform URL (platformBaseUrl) must end with /api because Platform routes omit that prefix.",
+    );
+    try {
+      unavailableFromDiagnostic("platform", diagnostic);
+      throw new Error("expected unavailableFromDiagnostic to throw");
+    } catch (error: unknown) {
+      expect(diagnoseRemoteFailure(error)).toEqual({
+        kind: "settings",
+        message:
+          "Platform URL (platformBaseUrl) must end with /api because Platform routes omit that prefix.",
+        retryable: false,
+        service: "platform",
+        status: null,
+        request: null,
+        credential: null,
+      });
+    }
+    try {
+      unavailableFromDiagnostic("platform", null);
+      throw new Error("expected unavailableFromDiagnostic to throw");
+    } catch (error: unknown) {
+      expect(diagnoseRemoteFailure(error).message).toContain(
+        "Platform is not configured",
+      );
+    }
   });
 
   it("does not misclassify an internal exception as network unreachability", () => {

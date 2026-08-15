@@ -64,15 +64,19 @@ function createService(options: ServiceOptions): MockServiceServer {
           const headers = new Headers();
           for (const [name, value] of Object.entries(incoming.headers)) {
             if (value === undefined) continue;
-            if (Array.isArray(value)) value.forEach((item) => headers.append(name, item));
+            if (Array.isArray(value))
+              value.forEach((item) => headers.append(name, item));
             else headers.set(name, value);
           }
-          const hasBody = incoming.method !== "GET" && incoming.method !== "HEAD";
+          const hasBody =
+            incoming.method !== "GET" && incoming.method !== "HEAD";
           let body: string | undefined;
           if (hasBody) {
             const chunks: Uint8Array[] = [];
             for await (const chunk of incoming) {
-              chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+              chunks.push(
+                typeof chunk === "string" ? Buffer.from(chunk) : chunk,
+              );
             }
             body = Buffer.concat(chunks).toString("utf8");
           }
@@ -83,7 +87,9 @@ function createService(options: ServiceOptions): MockServiceServer {
           });
           const response = await route(request);
           outgoing.statusCode = response.status;
-          response.headers.forEach((value, name) => outgoing.setHeader(name, value));
+          response.headers.forEach((value, name) =>
+            outgoing.setHeader(name, value),
+          );
           if (response.body === null) outgoing.end();
           else outgoing.end(Buffer.from(await response.arrayBuffer()));
         } catch {
@@ -91,7 +97,10 @@ function createService(options: ServiceOptions): MockServiceServer {
           outgoing.setHeader("content-type", "application/json");
           outgoing.end(
             JSON.stringify({
-              error: { code: "MOCK_SERVER_ERROR", message: "Mock server failed" },
+              error: {
+                code: "MOCK_SERVER_ERROR",
+                message: "Mock server failed",
+              },
             }),
           );
         }
@@ -105,11 +114,20 @@ function createService(options: ServiceOptions): MockServiceServer {
       });
       const address = nextServer.address();
       if (address === null || typeof address === "string") {
-        await new Promise<void>((resolveClose) => nextServer.close(() => resolveClose()));
-        throw new Error(`Mock ${options.service} server did not receive an address`);
+        await new Promise<void>((resolveClose) =>
+          nextServer.close(() => resolveClose()),
+        );
+        throw new Error(
+          `Mock ${options.service} server did not receive an address`,
+        );
       }
       server = nextServer;
-      baseUrl = loopbackBaseUrl(address);
+      // Platform settings must end with /api (FS-205). Return that mount so
+      // listeners can paste the URL into connection settings without a proxy.
+      baseUrl =
+        options.service === "platform"
+          ? `${loopbackBaseUrl(address)}/api`
+          : loopbackBaseUrl(address);
       return baseUrl;
     },
     reset() {
@@ -128,7 +146,9 @@ function createService(options: ServiceOptions): MockServiceServer {
   };
 }
 
-export function createMockRemote(options: MockRemoteOptions): MockRemoteHarness {
+export function createMockRemote(
+  options: MockRemoteOptions,
+): MockRemoteHarness {
   const platform = createService({
     service: "platform",
     token: options.platformToken,

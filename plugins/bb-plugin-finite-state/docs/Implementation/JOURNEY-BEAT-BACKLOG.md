@@ -126,3 +126,10 @@ Entry format — one section per defect:
 - **Journey**: Findings table → open colliding stable-key detail → leave row unselected and confirm history does not claim empty for rows[0]; select the audited row and see its timeline; type an unsaved comment draft → copy another comment into draft → Keep draft; open a >200-row collision and see capped disclosure instead of "Finding unavailable"; fail a cross-link RPC with `HTTP 500: HTTP 404: …` and see human copy plus Technical detail; observe Add/Edit/Delete comment disabled with authorization reason
 - **Broke because**: history silently defaulted to `rows[0]`; Edit overwrote drafts; output `.max(200)` hard-failed the pane; raw transport strings rendered as reasons; comment mutations were enabled-but-always-failing
 - **Beat asserts**: no DecisionHistory fetch until a collision row is selected; draft survives Keep; capped pane shows `rowTotal` notice with identity intact; cross-link reason has no leading `HTTP NNN:` chain; mutation buttons are disabled
+
+### FS-228 — seeded mock `/api` mount + CLI slot diagnostic (sweep #10 S10-F1/F2)
+
+- **Source**: FS-228 / UX sweep 2026-08-15 (S10-F1 MAJOR, S10-F2 MEDIUM)
+- **Journey**: start listening seeded mock → paste `platformBaseUrl` from `listen()` into plugin settings with a token → Connections status reaches `connected` without an `/api`-stripping proxy; separately, set both Platform settings with a bare-origin URL → `bb finite-state as-projects` / `pull` / `status`
+- **Broke because**: FS-205 required `/api` while the mock served bare `/public/v0`; e2e bypassed settings→controller→validator; CLI printed generic "not configured" while the controller held the precise "must end with `/api`" diagnostic
+- **Beat asserts**: `listen().platformBaseUrl` ends with `/api` and both `/public/v0` and `/api/public/v0` return 200 over real HTTP; settings→controller→self-diagnosis is `ok` against that URL; CLI unavailable stderr contains `must end with /api` and never instructs setting what is already set

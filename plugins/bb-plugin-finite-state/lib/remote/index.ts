@@ -13,6 +13,7 @@ import {
   diagnoseRemoteFailure,
   settingsFailureDiagnostic,
   unavailableError,
+  unavailableFromDiagnostic,
   type RemoteFailureDiagnostic,
 } from "./errors.js";
 import { ForgeComputeClient } from "./forge-compute/client.js";
@@ -101,38 +102,34 @@ interface Slot<Client> {
   generation: number;
 }
 
-function unavailable(): never {
-  throw unavailableError("platform");
-}
-function unavailableAs(): never {
-  throw unavailableError("assurance-studio");
-}
-function unavailableForge(): never {
-  throw unavailableError("forge-compute");
-}
-
 class PlatformDelegate implements PlatformClientContract {
-  constructor(private readonly current: () => PlatformClientContract | null) {}
+  constructor(
+    private readonly current: () => PlatformClientContract | null,
+    private readonly diagnostic: () => RemoteFailureDiagnostic | null,
+  ) {}
+  private refuse(): never {
+    return unavailableFromDiagnostic("platform", this.diagnostic());
+  }
   health(ctx?: RemoteCallContext) {
-    return this.current()?.health(ctx) ?? unavailable();
+    return this.current()?.health(ctx) ?? this.refuse();
   }
   listProjects(page?: RemotePageRequest, ctx?: RemoteCallContext) {
-    return this.current()?.listProjects(page, ctx) ?? unavailable();
+    return this.current()?.listProjects(page, ctx) ?? this.refuse();
   }
   listVersions(id: string, page?: RemotePageRequest, ctx?: RemoteCallContext) {
-    return this.current()?.listVersions(id, page, ctx) ?? unavailable();
+    return this.current()?.listVersions(id, page, ctx) ?? this.refuse();
   }
   getFindings(
     input: { projectVersionId: string; page?: RemotePageRequest },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.getFindings(input, ctx) ?? unavailable();
+    return this.current()?.getFindings(input, ctx) ?? this.refuse();
   }
   getFindingDetail(
     input: { projectVersionId: string; findingId: string },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.getFindingDetail(input, ctx) ?? unavailable();
+    return this.current()?.getFindingDetail(input, ctx) ?? this.refuse();
   }
   getFindingActivity(
     input: {
@@ -143,7 +140,7 @@ class PlatformDelegate implements PlatformClientContract {
     },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.getFindingActivity(input, ctx) ?? unavailable();
+    return this.current()?.getFindingActivity(input, ctx) ?? this.refuse();
   }
   listFindingComments(
     input: {
@@ -153,25 +150,25 @@ class PlatformDelegate implements PlatformClientContract {
     },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.listFindingComments(input, ctx) ?? unavailable();
+    return this.current()?.listFindingComments(input, ctx) ?? this.refuse();
   }
   getFindingsSummary(id: string, ctx?: RemoteCallContext) {
-    return this.current()?.getFindingsSummary(id, ctx) ?? unavailable();
+    return this.current()?.getFindingsSummary(id, ctx) ?? this.refuse();
   }
   setVexStatus(input: VexInput, ctx?: RemoteCallContext) {
-    return this.current()?.setVexStatus(input, ctx) ?? unavailable();
+    return this.current()?.setVexStatus(input, ctx) ?? this.refuse();
   }
   batchSetVexStatus(
     input: { projectVersionId: string; findings: VexDecisionInput[] },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.batchSetVexStatus(input, ctx) ?? unavailable();
+    return this.current()?.batchSetVexStatus(input, ctx) ?? this.refuse();
   }
   clearVexStatus(
     input: { projectVersionId: string; findingIds: string[] },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.clearVexStatus(input, ctx) ?? unavailable();
+    return this.current()?.clearVexStatus(input, ctx) ?? this.refuse();
   }
   downloadSbom(
     input: {
@@ -181,7 +178,7 @@ class PlatformDelegate implements PlatformClientContract {
     },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.downloadSbom(input, ctx) ?? unavailable();
+    return this.current()?.downloadSbom(input, ctx) ?? this.refuse();
   }
   listComponents(
     input: {
@@ -193,7 +190,7 @@ class PlatformDelegate implements PlatformClientContract {
     },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.listComponents(input, ctx) ?? unavailable();
+    return this.current()?.listComponents(input, ctx) ?? this.refuse();
   }
   searchComponents(
     input: {
@@ -204,7 +201,7 @@ class PlatformDelegate implements PlatformClientContract {
     },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.searchComponents(input, ctx) ?? unavailable();
+    return this.current()?.searchComponents(input, ctx) ?? this.refuse();
   }
   browseFirmwareFilesystem(
     input: {
@@ -217,7 +214,7 @@ class PlatformDelegate implements PlatformClientContract {
     ctx?: RemoteCallContext,
   ) {
     return (
-      this.current()?.browseFirmwareFilesystem(input, ctx) ?? unavailable()
+      this.current()?.browseFirmwareFilesystem(input, ctx) ?? this.refuse()
     );
   }
   getFirmwareFile(
@@ -233,7 +230,7 @@ class PlatformDelegate implements PlatformClientContract {
     ctx?: RemoteCallContext,
   ): Promise<Record<string, Json> | RemoteArtifact> {
     const client = this.current();
-    if (!client) return unavailable();
+    if (!client) return this.refuse();
     return input.mode === "meta"
       ? client.getFirmwareFile(input, ctx)
       : client.getFirmwareFile(input, ctx);
@@ -242,22 +239,26 @@ class PlatformDelegate implements PlatformClientContract {
     input: SecurityAssessmentRequest,
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.securityAssessment(input, ctx) ?? unavailable();
+    return this.current()?.securityAssessment(input, ctx) ?? this.refuse();
   }
 }
 
 class AssuranceStudioDelegate implements AssuranceStudioClientContract {
   constructor(
     private readonly current: () => AssuranceStudioClientContract | null,
+    private readonly diagnostic: () => RemoteFailureDiagnostic | null,
   ) {}
+  private refuse(): never {
+    return unavailableFromDiagnostic("assurance-studio", this.diagnostic());
+  }
   health(ctx?: RemoteCallContext) {
-    return this.current()?.health(ctx) ?? unavailableAs();
+    return this.current()?.health(ctx) ?? this.refuse();
   }
   listProjectLinks(
     input: { platformProjectId: string; page?: RemotePageRequest },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.listProjectLinks(input, ctx) ?? unavailableAs();
+    return this.current()?.listProjectLinks(input, ctx) ?? this.refuse();
   }
   listEntities(
     kind: AsEntityKind,
@@ -268,21 +269,21 @@ class AssuranceStudioDelegate implements AssuranceStudioClientContract {
     },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.listEntities(kind, input, ctx) ?? unavailableAs();
+    return this.current()?.listEntities(kind, input, ctx) ?? this.refuse();
   }
   getEntity(
     kind: AsEntityKind,
     input: { projectId: string; id: string },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.getEntity(kind, input, ctx) ?? unavailableAs();
+    return this.current()?.getEntity(kind, input, ctx) ?? this.refuse();
   }
   createEntity(
     kind: AsCreatableEntityKind,
     input: { projectId: string; fields: Record<string, Json> },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.createEntity(kind, input, ctx) ?? unavailableAs();
+    return this.current()?.createEntity(kind, input, ctx) ?? this.refuse();
   }
   updateEntity(
     kind: AsEntityKind,
@@ -294,7 +295,7 @@ class AssuranceStudioDelegate implements AssuranceStudioClientContract {
     },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.updateEntity(kind, input, ctx) ?? unavailableAs();
+    return this.current()?.updateEntity(kind, input, ctx) ?? this.refuse();
   }
   deleteEntity(
     kind: AsEntityKind,
@@ -306,7 +307,7 @@ class AssuranceStudioDelegate implements AssuranceStudioClientContract {
     },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.deleteEntity(kind, input, ctx) ?? unavailableAs();
+    return this.current()?.deleteEntity(kind, input, ctx) ?? this.refuse();
   }
   listProjectSbomPackages(
     input: {
@@ -316,9 +317,7 @@ class AssuranceStudioDelegate implements AssuranceStudioClientContract {
     },
     ctx?: RemoteCallContext,
   ) {
-    return (
-      this.current()?.listProjectSbomPackages(input, ctx) ?? unavailableAs()
-    );
+    return this.current()?.listProjectSbomPackages(input, ctx) ?? this.refuse();
   }
   listVerificationChecks(
     input: {
@@ -330,22 +329,24 @@ class AssuranceStudioDelegate implements AssuranceStudioClientContract {
     },
     ctx?: RemoteCallContext,
   ) {
-    return (
-      this.current()?.listVerificationChecks(input, ctx) ?? unavailableAs()
-    );
+    return this.current()?.listVerificationChecks(input, ctx) ?? this.refuse();
   }
   getVerificationCheck(
     input: { projectId: string; checkId: string },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.getVerificationCheck(input, ctx) ?? unavailableAs();
+    return this.current()?.getVerificationCheck(input, ctx) ?? this.refuse();
   }
   runVerificationChecks(
     input: { projectId: string; checkIds?: string[]; rerunPassed?: boolean },
     ctx?: RemoteCallContext,
   ) {
-    return this.current()?.runVerificationChecks(input, ctx) ?? unavailableAs();
+    return this.current()?.runVerificationChecks(input, ctx) ?? this.refuse();
   }
+}
+
+function unavailableForge(): never {
+  throw unavailableError("forge-compute");
 }
 
 class ForgeDelegate implements ForgeComputeClientContract {
@@ -547,9 +548,13 @@ export function createRemoteServiceController(
     message: "Forge Compute is disabled",
     checkedAt: null,
   });
-  const platformDelegate = new PlatformDelegate(() => platform.client);
+  const platformDelegate = new PlatformDelegate(
+    () => platform.client,
+    () => platform.diagnostic,
+  );
   const assuranceStudioDelegate = new AssuranceStudioDelegate(
     () => assuranceStudio.client,
+    () => assuranceStudio.diagnostic,
   );
   const forgeDelegate = new ForgeDelegate(() => forge.client);
   const services: RemoteServices = {

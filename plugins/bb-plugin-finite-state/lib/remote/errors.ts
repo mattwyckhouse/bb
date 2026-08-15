@@ -165,10 +165,14 @@ export class IndeterminateRemoteWriteError extends RemoteError {
   }
 }
 
-export function unavailableError(service: RemoteService): RemoteError {
+export function unavailableError(
+  service: RemoteService,
+  reason?: string,
+): RemoteError {
   const presentation = SERVICE_PRESENTATION[service];
   return new RemoteError(
-    `${presentation.name} is not configured. Set ${presentation.urlLabel} (${presentation.urlSetting}) and ${presentation.credentialLabel} (${presentation.credentialSetting}).`,
+    reason ??
+      `${presentation.name} is not configured. Set ${presentation.urlLabel} (${presentation.urlSetting}) and ${presentation.credentialLabel} (${presentation.credentialSetting}).`,
     {
       service,
       code: "REMOTE_UNAVAILABLE",
@@ -178,6 +182,24 @@ export function unavailableError(service: RemoteService): RemoteError {
       details: null,
     },
   );
+}
+
+/**
+ * Prefer a precise settings-slot diagnostic over the generic "not configured"
+ * copy when both URL and credential are set but shape-invalid (S10-F2).
+ */
+export function unavailableFromDiagnostic(
+  service: RemoteService,
+  diagnostic: RemoteFailureDiagnostic | null,
+): never {
+  if (
+    diagnostic !== null &&
+    diagnostic.kind === REMOTE_FAILURE_KINDS.settings &&
+    diagnostic.message.length > 0
+  ) {
+    throw unavailableError(service, diagnostic.message);
+  }
+  throw unavailableError(service);
 }
 
 export function unsupportedError(
