@@ -886,6 +886,19 @@ function normalizePluginAgentConfiguration(args: {
   };
 }
 
+function isResponseLike(value: unknown): value is Response {
+  if (value instanceof Response) return true;
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as Response;
+  return (
+    typeof candidate.status === "number" &&
+    typeof candidate.headers === "object" &&
+    candidate.headers !== null &&
+    typeof candidate.arrayBuffer === "function" &&
+    typeof candidate.clone === "function"
+  );
+}
+
 export function createPluginService(deps: PluginServiceDeps): PluginService {
   const logger = deps.logger;
   const bundledPlugins =
@@ -1692,10 +1705,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         `http ${route.method} ${route.path}`,
         async () => {
           const response = await route.handler(context);
-          if (!(response instanceof Response)) {
+          // Plugin handlers run in their own realm, so a perfectly valid
+          // Response constructed there fails an identity `instanceof` check
+          // against this realm's constructor. Accept structurally valid
+          // Response objects from either realm.
+          if (!isResponseLike(response)) {
             throw new Error("http route handler must return a Response");
           }
-          return response;
+          return response as Response;
         },
       );
       if (outcome.ok) return outcome.value;
