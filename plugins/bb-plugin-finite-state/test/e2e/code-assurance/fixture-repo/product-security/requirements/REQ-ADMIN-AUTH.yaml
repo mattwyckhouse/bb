@@ -1,0 +1,28 @@
+schema: fs-requirement/v1
+id: REQ-ADMIN-AUTH
+req_type: security
+priority: P1
+status: approved
+ears:
+  pattern: event_driven
+  text: WHEN an administrative HTTP session begins, the httpd SHALL require mutual authentication before serving configuration
+  parts:
+    trigger: an administrative HTTP session begins
+    system: httpd
+    response: require mutual authentication before serving configuration
+rationale: Admin surfaces on the golden-loop httpd build must not be anonymous.
+source_description: AX3000 httpd administrative endpoints.
+mitigations:
+  - mit-admin-mfa
+controls:
+  - ctrl-mutual-tls
+standards:
+  - cra-essential
+verification:
+  - check: check-httpd-auth
+    method: config_check
+    tier: static
+    required: true
+    coverage: full
+    pass_criteria: Administrative routes reject unauthenticated clients.
+    fail_criteria: An anonymous client reaches an administrative route.

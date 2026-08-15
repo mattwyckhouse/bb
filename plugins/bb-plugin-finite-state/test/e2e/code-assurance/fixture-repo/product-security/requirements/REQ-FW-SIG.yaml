@@ -1,0 +1,29 @@
+schema: fs-requirement/v1
+id: REQ-FW-SIG
+req_type: security
+priority: P0
+status: approved
+ears:
+  pattern: ubiquitous
+  text: The gateway SHALL reject unsigned firmware before installation
+  parts:
+    system: gateway
+    response: reject unsigned firmware before installation
+rationale: The update boundary must fail closed (golden-loop firmware trust).
+source_description: AX3000 update path must refuse unsigned images.
+mitigations:
+  - mit-signed-update
+controls:
+  - ctrl-secure-boot
+standards:
+  - iec-62443-4-2
+verification:
+  - check: check-firmware-signature
+    method: binary_analysis
+    tier: static
+    required: true
+    coverage: full
+    pass_criteria: Every accepted image has a trusted signature.
+    fail_criteria: An unsigned image is accepted.
+    expected_evidence:
+      - signature verification report
