@@ -710,6 +710,36 @@ settings accept base-10 integer strings through Extensions → Plugins or
 The five settings other than `maxActiveRuns` are snapshotted into each new run.
 Settings changes do not require a plugin reload.
 
+### Finite State standalone firmware unpack
+
+Local firmware-image materialization in the Finite State plugin is disabled
+until `standaloneUnpackExecutablePath` names the reviewed wrapper executable.
+The companion `standaloneUnpackImage` setting defaults to
+`localhost:5000/services-unpack:latest`. Both apply live:
+
+```bash
+bb plugin config finite-state set standaloneUnpackExecutablePath /absolute/path/to/unpack-wrapper
+bb plugin config finite-state set standaloneUnpackImage localhost:5000/services-unpack:latest
+```
+
+The wrapper setting is host-local. Configure it on the bb host that owns the
+firmware worktree; leaving it blank preserves the explicit unconfigured state.
+
+Run firmware operations from a bb thread so the plugin can use the thread's
+project and environment identity instead of trusting the shell working directory:
+
+```bash
+bb finite-state firmware pull <pv-id> --image <workspace-relative-firmware-file> [--max-depth 12]
+bb finite-state firmware pull <pv-id> --source api [--scan <scan-id>]
+bb finite-state firmware status <pv-id> [--json]
+bb finite-state firmware hydrate <pv-id> <path>...
+bb finite-state firmware diff <from-pv-id> <to-pv-id> [--cursor <cursor>] [--json]
+```
+
+Local image materialization is the primary path. The API form is a metadata
+fallback; `hydrate` requires explicit per-file paths and never performs bulk
+rootfs hydration. Diff reads local manifest sidecars and works offline.
+
 `bb plugin install npm:<package>[@<version|tag|range>]` requires `npm` on PATH
 (packages are installed with `--ignore-scripts`). Git plugins also use npm with
 lifecycle scripts disabled, so they may depend on third-party packages; bb
@@ -780,6 +810,19 @@ enrolled to other servers. Atomic reservations under
 <port>` when an explicit port is required.
 
 ## Source Development
+
+Finite State Golden Loop rehearsals accept `GOLDEN_LOOP_EVIDENCE_DIR` as an
+absolute or checkout-relative destination for the two sanitized run reports and
+beat artifacts. Run the regression tier through Turbo so its declared
+environment reaches Vitest, and force execution when the purpose is a nightly
+or post-merge rehearsal rather than a cached test replay:
+
+```bash
+GOLDEN_LOOP_EVIDENCE_DIR=/tmp/finite-state-golden-loop \
+  pnpm exec turbo run test --filter=bb-plugin-finite-state --force -- \
+  test/e2e/golden-loop/harness.test.ts \
+  test/e2e/golden-loop/golden-loop.e2e.test.ts
+```
 
 For source development only, `pnpm dev` and `pnpm start` load the repo-root
 dotenv cascade. Add a repo-root `.env` only when you need to override the

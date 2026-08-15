@@ -49,6 +49,7 @@ const EXTERNAL = [
   /^hono($|\/)/,
   /^react($|\/|-)/,
   /^react-dom($|\/)/,
+  /^vitest($|\/)/,
   /^zod($|\/)/,
 ];
 

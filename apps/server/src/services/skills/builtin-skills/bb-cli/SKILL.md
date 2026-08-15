@@ -732,6 +732,23 @@ them by mixing ink into canvas), the `--primary` accent, the secondary text tier
     `bb plugin remove <id>` (builtin removals are remembered).
   - `bb plugin config <id> [set <key> <value> | unset <key>]` — declared
     settings. Reload the plugin after configuring (`bb plugin reload <id>`).
+    Finite State's local firmware path uses
+    `standaloneUnpackExecutablePath` (blank means disabled) and
+    `standaloneUnpackImage` (default
+    `localhost:5000/services-unpack:latest`); those two settings apply live
+    and do not require reload.
+    From a bb thread, firmware commands are available as:
+    `bb finite-state firmware pull <pv-id> --image <workspace-relative-file> [--max-depth 12]`,
+    `bb finite-state firmware pull <pv-id> --source api [--scan <scan-id>]`,
+    `bb finite-state firmware status <pv-id> [--json]`,
+    `bb finite-state firmware hydrate <pv-id> <path>...`, and
+    `bb finite-state firmware diff <from-pv-id> <to-pv-id> [--cursor <cursor>] [--json]`.
+    Hydration is per-file only; diff reads cached sidecars offline.
+    Evaluate the full cached requirement matrix with
+    `bb finite-state bench verdict <pv-id> [--digest <sha256>] [--json]`.
+    Omit `--digest` for the currently mounted firmware; an explicit digest is
+    labeled historical when it differs from the mounted bytes. Exit status is
+    `0` only for Safe to OTA, `1` for Not safe to OTA, and `2` for Inconclusive.
   - `bb plugin logs <id> [-n N] [-f]` — the plugin's `bb.log` output.
   - `bb plugin run <id> [args...]` — explicit form of a plugin's CLI command.
   - `bb plugin new <name> [--app]` — scaffold a plugin (`--app` adds a frontend
