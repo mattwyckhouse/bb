@@ -18,6 +18,7 @@ import { HBOM_SCHEMA_ID } from "../../bom/hbom/types.js";
 import { rebuildOverlayIndex } from "../../findings/overlay/indexer.js";
 import { setDecision } from "../../findings/overlay/writer.js";
 import { stableKeyFor } from "../../findings/overlay/schema.js";
+import { registerFindingsRpc } from "../../findings/rpc.js";
 import { registerWriteTools } from "./write.js";
 
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
@@ -170,6 +171,7 @@ async function triageFixture(opts?: { secondCve?: string }) {
     findings,
   });
   registerWriteTools(host.bb, ctx);
+  registerFindingsRpc(host.bb, ctx.db(), {});
   return {
     root,
     host,
@@ -509,6 +511,162 @@ options:
         }),
       ]),
     );
+  });
+
+  it("persists a truthful partial policy run on abort and converges on rerun", async () => {
+    const fixture = await triageFixture({ secondCve: "CVE-2026-200" });
+    const thirdCve = "CVE-2026-300";
+    const thirdStableKey = stableKeyFor(
+      fixture.platformProjectId,
+      fixture.component,
+      thirdCve,
+    );
+    fixture.ctx
+      .db()
+      .prepare(
+        `INSERT INTO findings
+          (project_id, project_version_id, generation_id, finding_id, stable_key, cve,
+           component_name, component_group, component_version, component_purl,
+           in_kev, reachability_score, vuln_in_dataset, reachability_factors, raw, pulled_at)
+         VALUES (?, ?, 'generation-1', 'finding-3', ?, ?,
+                 'busybox', NULL, '1.36.1', 'pkg:generic/busybox@1.36.1',
+                 0, -1, 1, '[]', '{}', '2026-08-15T00:00:00.000Z')`,
+      )
+      .run(
+        fixture.platformProjectId,
+        fixture.projectVersionId,
+        thirdStableKey,
+        thirdCve,
+      );
+    await mkdir(join(fixture.root, ".fs", "triage"), { recursive: true });
+    await writeFile(
+      join(fixture.root, ".fs", "triage", "policy.yaml"),
+      `schema: fs-triage-policy/v1
+rules:
+  - name: unreachable-not-affected
+    when:
+      reachability: unreachable
+      vuln_in_dataset: true
+    set:
+      status: NOT_AFFECTED
+      justification: CODE_NOT_REACHABLE
+      response: null
+      reason: Unreachable in this build
+      pin: exact_version
+holdback: []
+options:
+  overwrite_existing: false
+`,
+      "utf8",
+    );
+
+    const controller = new AbortController();
+    const nativeThrowIfAborted = controller.signal.throwIfAborted.bind(
+      controller.signal,
+    );
+    let abortChecks = 0;
+    Object.defineProperty(controller.signal, "throwIfAborted", {
+      value() {
+        abortChecks += 1;
+        if (abortChecks === 5) {
+          controller.abort(
+            new DOMException("interrupted after two writes", "AbortError"),
+          );
+        }
+        nativeThrowIfAborted();
+      },
+    });
+
+    const interrupted = await fixture.host.harness.behavior.callAgentTool(
+      "fs_triage_apply_policy",
+      { projectVersionId: fixture.projectVersionId, dryRun: false },
+      { projectId: fixture.workspaceProjectId, signal: controller.signal },
+    );
+    expect(toolFailed(interrupted)).toBe(true);
+
+    const partial = fixture.ctx
+      .db()
+      .prepare<
+        [],
+        {
+          run_id: string;
+          status: string;
+          written: number;
+          held: number;
+          skipped_existing: number;
+          errors: number;
+        }
+      >(
+        `SELECT run_id, status, written, held, skipped_existing, errors
+           FROM triage_runs
+          WHERE source = 'policy'`,
+      )
+      .get();
+    expect(partial).toMatchObject({
+      status: "partial",
+      written: 2,
+      held: 0,
+      skipped_existing: 0,
+      errors: 0,
+    });
+
+    const summary = await fixture.host.harness.behavior.callRpc(
+      "triageSummaryGet",
+      {
+        projectId: fixture.platformProjectId,
+        projectVersionId: fixture.projectVersionId,
+        runId: partial?.run_id,
+      },
+    );
+    expect(summary).toMatchObject({
+      status: "partial",
+      written: 2,
+      held: 0,
+      skippedExisting: 0,
+      errors: 0,
+    });
+
+    const rerun = parseTool(
+      await fixture.host.harness.behavior.callAgentTool(
+        "fs_triage_apply_policy",
+        { projectVersionId: fixture.projectVersionId, dryRun: false },
+        { projectId: fixture.workspaceProjectId },
+      ),
+    );
+    expect(rerun).toMatchObject({
+      ok: true,
+      data: { written: 1, skippedExisting: 2, errors: [] },
+    });
+    const authored = await readFile(
+      join(fixture.root, ".fs/triage/platform-1/busybox.yaml"),
+      "utf8",
+    );
+    expect(authored).toContain("CVE-2026-100:");
+    expect(authored).toContain("CVE-2026-200:");
+    expect(authored).toContain("CVE-2026-300:");
+    expect(
+      fixture.ctx
+        .db()
+        .prepare(
+          `SELECT status, written, skipped_existing, errors
+             FROM triage_runs
+            ORDER BY created_at, rowid`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        status: "partial",
+        written: 2,
+        skipped_existing: 0,
+        errors: 0,
+      },
+      {
+        status: "completed",
+        written: 1,
+        skipped_existing: 2,
+        errors: 0,
+      },
+    ]);
   });
 
   it("partial HBOM batch reports rejected cells through applyHbomExtraction", async () => {
