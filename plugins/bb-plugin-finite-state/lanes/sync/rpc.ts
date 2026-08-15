@@ -6,6 +6,7 @@ import { ENTITIES, type EntityKind } from "../../lib/sync/registry.js";
 import { rpcContract } from "../../shared/contract.js";
 import { resolveConflictRpc } from "./conflicts/index.js";
 import { pullIsolated, type EngineDeps } from "./engine/pull.js";
+import { assertRemoteSyncScope } from "./engine/scope.js";
 import { status, syncMetadata } from "./engine/status.js";
 import { plan } from "./plan/index.js";
 import { pushAuthorizationUnavailable } from "./push/index.js";
@@ -57,6 +58,7 @@ export function registerSyncRpc(
 ): void {
   bb.rpc.register(syncContract, {
     async syncAsProjectCandidates(input) {
+      assertRemoteSyncScope(input.projectId);
       if (!assuranceStudio) throw new Error("Assurance Studio is unavailable");
       await bb.sdk.projects.get({ projectId: input.workspaceProjectId });
       const items = await enumerateAssuranceStudioProjectCandidates(
@@ -75,6 +77,7 @@ export function registerSyncRpc(
       };
     },
     async syncAsProjectSelect(input) {
+      assertRemoteSyncScope(input.projectId);
       if (!assuranceStudio) throw new Error("Assurance Studio is unavailable");
       await bb.sdk.projects.get({ projectId: input.workspaceProjectId });
       return await selectAssuranceStudioProject(deps, assuranceStudio, {

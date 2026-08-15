@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
   copyFile,
   mkdtemp,
@@ -12,6 +13,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import {
@@ -1067,6 +1069,40 @@ describe("repository contract loader", () => {
       expect(networkGuard).not.toHaveBeenCalled();
     }
 
+    const bindingCount = () =>
+      hostStore.db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM workspace_platform_project_binding WHERE platform_project_id = ?",
+        )
+        .get(scope.projectId);
+
+    await expect(
+      host.harness.behavior.callRpc("syncAsProjectCandidates", {
+        workspaceProjectId: "bb-project-offline",
+        projectId: scope.projectId,
+        projectVersionId: null,
+      }),
+    ).rejects.toMatchObject({
+      code: "handler_error",
+      message: repoLocalError,
+    });
+    expect(networkGuard).not.toHaveBeenCalled();
+    expect(bindingCount()).toEqual({ count: 0 });
+
+    await expect(
+      host.harness.behavior.callRpc("syncAsProjectSelect", {
+        workspaceProjectId: "bb-project-offline",
+        projectId: scope.projectId,
+        projectVersionId: null,
+        assuranceStudioProjectId: "as-project-should-not-bind",
+      }),
+    ).rejects.toMatchObject({
+      code: "handler_error",
+      message: repoLocalError,
+    });
+    expect(networkGuard).not.toHaveBeenCalled();
+    expect(bindingCount()).toEqual({ count: 0 });
+
     const ordinaryScope = {
       projectId: "platform-project-ordinary",
       projectVersionId: "platform-version-ordinary",
@@ -1081,6 +1117,44 @@ describe("repository contract loader", () => {
       staleness: { degraded: true },
     });
     expect(networkGuard).toHaveBeenCalledTimes(1);
+
+    networkGuard.mockClear();
+    await expect(
+      host.harness.behavior.callRpc("syncAsProjectCandidates", {
+        workspaceProjectId: "bb-project-offline",
+        projectId: ordinaryScope.projectId,
+        projectVersionId: null,
+      }),
+    ).rejects.toMatchObject({
+      code: "handler_error",
+      message: expect.not.stringContaining("REPO_LOCAL_SCOPE_NOT_SYNCABLE"),
+    });
+    expect(networkGuard.mock.calls.length).toBeGreaterThan(0);
+
+    // Delete-the-guard mutation control: both AS project RPC handlers must call
+    // the shared scope assert before any Assurance Studio contact.
+    const rpcSource = readFileSync(
+      fileURLToPath(new URL("../../lanes/sync/rpc.ts", import.meta.url)),
+      "utf8",
+    );
+    const candidatesHandler = rpcSource.match(
+      /async syncAsProjectCandidates\(input\) \{([\s\S]*?)\n    \},/,
+    )?.[1];
+    const selectHandler = rpcSource.match(
+      /async syncAsProjectSelect\(input\) \{([\s\S]*?)\n    \},/,
+    )?.[1];
+    expect(candidatesHandler).toMatch(
+      /^\s*assertRemoteSyncScope\(input\.projectId\);/,
+    );
+    expect(selectHandler).toMatch(
+      /^\s*assertRemoteSyncScope\(input\.projectId\);/,
+    );
+    expect(candidatesHandler).toMatch(
+      /assertRemoteSyncScope\(input\.projectId\);[\s\S]*enumerateAssuranceStudioProjectCandidates/,
+    );
+    expect(selectHandler).toMatch(
+      /assertRemoteSyncScope\(input\.projectId\);[\s\S]*selectAssuranceStudioProject/,
+    );
 
     // Push is globally frozen today; this records that cover without pretending
     // it distinguishes scopes. Any unfreeze must use the guarded engine entries.
