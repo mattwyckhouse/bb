@@ -16,7 +16,8 @@ export type BeatNumber =
   | 11
   | 12
   | 13
-  | 14;
+  | 14
+  | 15;
 
 export interface GoldenLoopAssertion {
   name: string;
@@ -118,6 +119,11 @@ export const GOLDEN_LOOP_BEATS = [
   { number: 12, name: "Demo cards rendered state", maxMs: 60_000 },
   { number: 13, name: "Reviewable git commit", maxMs: 60_000 },
   { number: 14, name: "Human review and push boundary", maxMs: 60_000 },
+  {
+    number: 15,
+    name: "FS-232 human edit and reject review",
+    maxMs: 60_000,
+  },
 ] as const satisfies readonly {
   number: BeatNumber;
   name: string;
@@ -140,7 +146,9 @@ export function validateGoldenLoopScenario(
       ({ number }) => number === beat.number,
     );
     if (!contract || !ALL_BEATS.has(beat.number)) {
-      throw new Error(`Golden Loop beat ${beat.number} is outside 1..14`);
+      throw new Error(
+        `Golden Loop beat ${beat.number} is outside 1..${GOLDEN_LOOP_BEATS.length}`,
+      );
     }
     if (beat.name !== contract.name || beat.maxMs !== contract.maxMs) {
       throw new Error(

@@ -327,7 +327,7 @@ describe.sequential("Golden Loop harness", () => {
       expect(semanticReport(first.report!)).toEqual(
         semanticReport(second.report!),
       );
-      expect(first.report?.results).toHaveLength(14);
+      expect(first.report?.results).toHaveLength(15);
       expect(first.report?.ohMoments).toEqual(
         expect.objectContaining({
           "5": expect.any(Array),
