@@ -51,6 +51,7 @@ export function RequirementCard({
   positionInSet,
   projectId: selectedProjectId,
   projectVersionId = null,
+  readOnly = false,
   setSize,
 }: {
   id: string;
@@ -58,6 +59,8 @@ export function RequirementCard({
   positionInSet?: number;
   projectId?: string | null;
   projectVersionId?: string | null;
+  /** When true, expand stays available but local YAML edit controls are hidden. */
+  readOnly?: boolean;
   setSize?: number;
 }): React.JSX.Element {
   const { projectId: routeProjectId } = useBbContext();
@@ -207,7 +210,7 @@ export function RequirementCard({
         >
           {expanded ? "Collapse" : "Expand requirement"}
         </button>
-        {expanded ? (
+        {expanded && !readOnly ? (
           <button
             aria-pressed={editing}
             className="inline-flex h-8 items-center justify-center rounded-md border border-input px-3 text-xs font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -262,7 +265,7 @@ export function RequirementCard({
               </ul>
             )}
           </div>
-          {editing ? (
+          {!readOnly && editing ? (
             <>
               {conflictMessage ? (
                 <p
