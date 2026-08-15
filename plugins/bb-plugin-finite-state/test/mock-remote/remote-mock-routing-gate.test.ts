@@ -333,6 +333,11 @@ describe("remote-mock-routing-gate", () => {
       },
     );
     expect(platformResponse.status).toBe(200);
+    const origin = first.platformBaseUrl.replace(/\/api$/u, "");
+    const bareMount = await fetch(`${origin}/public/v0/projects`, {
+      headers: { "X-Authorization": "platform-secret-value" },
+    });
+    expect(bareMount.status).toBe(200);
 
     const secondAsUrl = await harness.assuranceStudio.listen();
     await harness.platform.close();

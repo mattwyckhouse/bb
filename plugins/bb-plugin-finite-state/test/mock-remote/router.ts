@@ -73,14 +73,30 @@ function paramsFor(
   return params;
 }
 
+/**
+ * Platform tenant profiles configure `platformBaseUrl` ending in `/api`, and
+ * PlatformClient appends `/public/v0/...` under that prefix. Accept both the
+ * validator-compliant `/api/public/v0/...` mount and the bare `/public/v0/...`
+ * mount used by in-process fixture tests that inject `fetch` directly.
+ */
+function platformMatchPath(pathname: string): string {
+  return pathname.startsWith("/api/")
+    ? pathname.slice("/api".length)
+    : pathname;
+}
+
 export function createMockRouter(options: MockRouterOptions) {
   const compiledRoutes = options.routes.map(compileRoute).sort(pathSpecificity);
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
+    const pathname =
+      options.service === "platform"
+        ? platformMatchPath(url.pathname)
+        : url.pathname;
     const compiled = compiledRoutes.find(
       (candidate) =>
         candidate.route.method === request.method &&
-        candidate.pattern.test(url.pathname),
+        candidate.pattern.test(pathname),
     );
     if (compiled === undefined) {
       return jsonError(404, "MOCK_ROUTE_NOT_FOUND", "Mock route not found");
@@ -88,7 +104,11 @@ export function createMockRouter(options: MockRouterOptions) {
 
     const authValue = request.headers.get(compiled.route.auth);
     if (authValue !== options.token) {
-      return jsonError(401, "MOCK_UNAUTHORIZED", "Mock service authentication failed");
+      return jsonError(
+        401,
+        "MOCK_UNAUTHORIZED",
+        "Mock service authentication failed",
+      );
     }
 
     if (compiled.route.requestMediaTypes.length > 0) {
@@ -120,7 +140,7 @@ export function createMockRouter(options: MockRouterOptions) {
         "Mock route has no registered handler",
       );
     }
-    const match = compiled.pattern.exec(url.pathname);
+    const match = compiled.pattern.exec(pathname);
     if (match === null) {
       return jsonError(404, "MOCK_ROUTE_NOT_FOUND", "Mock route not found");
     }
