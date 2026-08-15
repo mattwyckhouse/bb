@@ -14,8 +14,8 @@ import {
 /**
  * Attribute schemas for every canonical directive id (SPEC 06 / WP-61).
  *
- * PR 1 registers the six card-backed ids; PR 2 (FS-229) wires the remainder.
- * Schemas stay complete so CLI/SDK consumers validate the full surface now.
+ * PR 1 shipped the six card-backed ids; PR 2 wires the FS-229 owner cards and
+ * canvas/matrix directive modes. Schemas stay complete for CLI/SDK consumers.
  *
  * `fs-hbom-summary` keeps an empty attribute object by contract. The wrapper
  * takes `projectId` from `PluginMessageDirectiveProps.message.projectId`
@@ -100,7 +100,7 @@ export const PR1_DIRECTIVE_IDS = [
 
 export type Pr1DirectiveId = (typeof PR1_DIRECTIVE_IDS)[number];
 
-/** Deferred to FS-229 / WP-61 PR 2. */
+/** FS-229 owner cards / canvas+matrix modes — WP-61 PR 2. */
 export const PR2_DIRECTIVE_IDS = [
   "fs-plan",
   "fs-triage-summary",
@@ -108,6 +108,14 @@ export const PR2_DIRECTIVE_IDS = [
   "fs-canvas",
   "fs-matrix",
   "fs-doc",
+] as const satisfies readonly DirectiveId[];
+
+export type Pr2DirectiveId = (typeof PR2_DIRECTIVE_IDS)[number];
+
+/** All twelve registered directive ids (PR1 ∪ PR2). */
+export const REGISTERED_DIRECTIVE_IDS = [
+  ...PR1_DIRECTIVE_IDS,
+  ...PR2_DIRECTIVE_IDS,
 ] as const satisfies readonly DirectiveId[];
 
 export type AttributeParseResult<Id extends DirectiveId> =
@@ -181,6 +189,42 @@ export function benchRunDirectiveSubPath(runId: string): string {
 export function verdictDirectiveSubPath(pvId: string): string {
   return `verdict/${encodeURIComponent(pvId)}`;
 }
+
+export function planDirectiveSubPath(planId: string): string {
+  return `plan/${encodeURIComponent(planId)}`;
+}
+
+export function triageSummaryDirectiveSubPath(): string {
+  return "triage";
+}
+
+export function threatDirectiveSubPath(slug: string): string {
+  return `tara/threats/${encodeURIComponent(slug)}`;
+}
+
+export function docDirectiveSubPath(documentId: string): string {
+  return encodeURIComponent(documentId);
+}
+
+export function canvasDirectiveSubPath(attrs: {
+  focus?: string;
+  highlight?: string;
+}): string {
+  if (attrs.highlight) {
+    return `tara/threats/${encodeURIComponent(attrs.highlight)}`;
+  }
+  if (attrs.focus) {
+    return `tara/nodes/${encodeURIComponent(attrs.focus)}`;
+  }
+  return "tara";
+}
+
+export function matrixDirectiveSubPath(): string {
+  return "verifications";
+}
+
+/** WP-61 in-message matrix slice cap. */
+export const MATRIX_DIRECTIVE_MAX_ROWS = 15 as const;
 
 /**
  * Workspace-relative paths only: no absolute roots, no `.` / `..` segments.

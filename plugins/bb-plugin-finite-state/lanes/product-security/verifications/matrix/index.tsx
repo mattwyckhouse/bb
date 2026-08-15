@@ -99,11 +99,17 @@ export interface VerificationMatrixProps {
    * panel behavior (200 + pagination) is unchanged when omitted.
    */
   maxRows?: number;
+  /**
+   * Optional seed for the matrix text filter (WP-61 `::fs-matrix{filter}`).
+   * Panel call sites omit this; directive mode may pass the validated attribute.
+   */
+  filterText?: string;
 }
 
 export function VerificationMatrix({
   projectId,
   maxRows,
+  filterText,
 }: VerificationMatrixProps): React.JSX.Element {
   const rpc = useRpc<
     typeof rpcContract & typeof verificationMatrixPreferenceRpcContract
@@ -117,7 +123,10 @@ export function VerificationMatrix({
   const [total, setTotal] = useState(0);
   const [next, setNext] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [filters, setFilters] = useState(initialFilters);
+  const [filters, setFilters] = useState(() => {
+    const base = initialFilters();
+    return filterText ? { ...base, text: filterText } : base;
+  });
   const [revision, setRevision] = useState(0);
   const requestEpoch = useRef(0);
   const projectVersionId = useRef<string | null>(null);
