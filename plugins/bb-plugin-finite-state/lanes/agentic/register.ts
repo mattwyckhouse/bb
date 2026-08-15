@@ -1,18 +1,16 @@
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import type { PluginContext } from "../../lib/context.js";
+import { registerMentions as registerOwnedMentions } from "./mentions/register.js";
 import { registerActionTools as registerOwnedActionTools } from "./tools/actions.js";
 
-export type AgenticRegistrar = (
-  bb: BbPluginApi,
-  ctx: PluginContext,
-) => void;
+export type AgenticRegistrar = (bb: BbPluginApi, ctx: PluginContext) => void;
 
 // Composition seams for WP-58–WP-60, WP-62, and WP-64. Each owner replaces
 // its no-op with a thin import; domain handlers remain in their owner modules.
 export const registerReadTools: AgenticRegistrar = () => {};
 export const registerWriteTools: AgenticRegistrar = () => {};
 export const registerActionTools: AgenticRegistrar = registerOwnedActionTools;
-export const registerMentions: AgenticRegistrar = () => {};
+export const registerMentions: AgenticRegistrar = registerOwnedMentions;
 export const registerFiniteStateCli: AgenticRegistrar = () => {};
 
 const REGISTRARS = [
