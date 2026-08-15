@@ -2,7 +2,13 @@
 
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  readFile,
+  readdir,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -23,6 +29,10 @@ import {
 import { createElement } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import {
+  parseOverlayText,
+  serializeOverlay,
+} from "../../../lanes/findings/overlay/reader.js";
 import { assertion, fileAssertion } from "./assertions.js";
 import { createGoldenLoopHarness, type GoldenLoopHarness } from "./harness.js";
 import { semanticReport } from "./reporter.js";
@@ -31,6 +41,33 @@ import { GOLDEN_LOOP_BEATS, type GoldenLoopBeat } from "./scenario.js";
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../../../..");
 const FIXTURE_ROOT = resolve(import.meta.dirname, "../../mock-remote/fixtures");
 const WORKSPACE_PROJECT_ID = "workspace-golden-loop";
+const GOLDEN_SEED_WORKSPACE_PROJECT_ID = "workspace-golden-loop-seed";
+const GOLDEN_SEED_PROJECT_ID = "project-ax3000-demo";
+const GOLDEN_SEED_VERSION_ID = "pv-ax3000-2.4";
+const GOLDEN_SEED_ROOT = join(
+  "plugins",
+  "bb-plugin-finite-state",
+  "test",
+  "e2e",
+  "golden-loop",
+  "seed",
+  "worktree",
+);
+const GOLDEN_SEED_WARM_DATABASE = join(
+  "plugins",
+  "bb-plugin-finite-state",
+  "test",
+  "e2e",
+  "golden-loop",
+  "seed",
+  "warm-cache",
+  "data.db",
+);
+const REVIEWED_REASON =
+  "WAN HTTP parser reaches the vulnerable allocation path before bounds validation.";
+const REVIEWED_BY = "human:golden-loop-reviewer";
+const EDITED_CVE = "CVE-2026-106002";
+const DELETED_CVE = "CVE-2026-106003";
 const BENCH_VERSION = "pv-a481df87dadf";
 const execFileAsync = promisify(execFile);
 
@@ -56,7 +93,9 @@ interface Runtime {
   panelPlan: Record<string, unknown> | null;
   humanPushApproved: boolean;
   executeHumanPush(input: unknown): Promise<unknown>;
-  refreshOverlayIndex(): Promise<void>;
+  refreshOverlayIndex(root?: string): Promise<void>;
+  overlayIndexVexCount(projectId: string, cve?: string): number;
+  overlayIndexVexStableKeys(projectId: string): string[];
   human: GoldenLoopHarness["human"] | null;
 }
 
@@ -194,6 +233,38 @@ function successfulCli(value: unknown): boolean {
 
 function cliContext() {
   return { projectId: WORKSPACE_PROJECT_ID, threadId: "thread-golden-loop" };
+}
+
+function seedCliContext() {
+  return {
+    projectId: GOLDEN_SEED_WORKSPACE_PROJECT_ID,
+    threadId: "thread-golden-loop-seed",
+  };
+}
+
+async function durableSeedVexPlan(runtime: Runtime) {
+  const result = await runtime.host.harness.behavior.runCli(
+    [
+      "finite-state",
+      "plan",
+      "vexDecision",
+      "--project",
+      GOLDEN_SEED_PROJECT_ID,
+      "--version",
+      GOLDEN_SEED_VERSION_ID,
+      "--json",
+    ],
+    seedCliContext(),
+  );
+  if (!successfulCli(result)) {
+    throw new Error(
+      `Golden seed VEX plan failed: ${String(object(result, "plan result")["stderr"])}`,
+    );
+  }
+  return object(
+    JSON.parse(string(object(result, "plan result")["stdout"], "plan JSON")),
+    "golden seed VEX plan",
+  );
 }
 
 async function ensureFindingPull(runtime: Runtime): Promise<void> {
@@ -2173,6 +2244,202 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
         ),
       ],
     },
+    {
+      ...metadata(15),
+      action: async ({ artifacts, clock, git, worktree }) => {
+        const seedRoot = join(worktree, GOLDEN_SEED_ROOT);
+        const overlayPath = join(
+          seedRoot,
+          ".fs",
+          "triage",
+          GOLDEN_SEED_PROJECT_ID,
+          "httpd-1.yaml",
+        );
+        const relativeOverlayPath = join(
+          GOLDEN_SEED_ROOT,
+          ".fs",
+          "triage",
+          GOLDEN_SEED_PROJECT_ID,
+          "httpd-1.yaml",
+        );
+        const mainIndexBefore = runtime.overlayIndexVexStableKeys(
+          runtime.projectId,
+        );
+        await runtime.refreshOverlayIndex(seedRoot);
+        const beforePlan = await durableSeedVexPlan(runtime);
+        const beforeItems = array(beforePlan["items"], "pre-review plan items");
+        const story = object(
+          JSON.parse(
+            await readFile(
+              join(seedRoot, ".fs", "golden-loop", "story.json"),
+              "utf8",
+            ),
+          ),
+          "golden seed story",
+        );
+        const policy = object(story["policy"], "golden seed policy story");
+        const policyWritten = new Set(
+          array(policy["written"], "policy-written stable keys").map((key) =>
+            string(key, "policy-written stable key"),
+          ),
+        );
+        const beforeReviewedCount = beforeItems.filter((item) =>
+          policyWritten.has(
+            string(object(item, "plan item")["key"], "plan key"),
+          ),
+        ).length;
+        const overlay = parseOverlayText(
+          await readFile(overlayPath, "utf8"),
+          relativeOverlayPath,
+        );
+        const beforeDecisionCount = Object.keys(overlay.decisions).length;
+        const edited = overlay.decisions[EDITED_CVE];
+        if (!edited || !overlay.decisions[DELETED_CVE]) {
+          throw new Error("Golden seed review fixtures are missing");
+        }
+        edited.reason = REVIEWED_REASON;
+        edited.provenance = {
+          by: REVIEWED_BY,
+          at: clock.now().toISOString(),
+          evidence: "Human review of the tracked Golden Loop policy diff",
+        };
+        delete overlay.decisions[DELETED_CVE];
+        await writeFile(overlayPath, serializeOverlay(overlay), "utf8");
+        await git.run(["add", relativeOverlayPath]);
+        const stagedDiff = await git.run([
+          "diff",
+          "--cached",
+          "--",
+          relativeOverlayPath,
+        ]);
+        await human(runtime).reviewDiff({
+          beat: 15,
+          source: relativeOverlayPath,
+          proposedBeforeReview: beforeItems.length,
+          diff: stagedDiff.stdout,
+        });
+        await runtime.refreshOverlayIndex(seedRoot);
+        const deletedIndexCount = runtime.overlayIndexVexCount(
+          GOLDEN_SEED_PROJECT_ID,
+          DELETED_CVE,
+        );
+        const afterPlan = await durableSeedVexPlan(runtime);
+        const afterReviewedCount = array(
+          afterPlan["items"],
+          "reviewed plan items",
+        ).filter((item) =>
+          policyWritten.has(
+            string(object(item, "plan item")["key"], "plan key"),
+          ),
+        ).length;
+        const durableOverlay = parseOverlayText(
+          await readFile(overlayPath, "utf8"),
+          relativeOverlayPath,
+        );
+        const commit = await git.run([
+          "commit",
+          "-m",
+          "Golden Loop human review",
+        ]);
+        await runtime.refreshOverlayIndex();
+        const mainIndexAfter = runtime.overlayIndexVexStableKeys(
+          runtime.projectId,
+        );
+        runtime.evidence.set("human-edit-reject", {
+          beforeDecisionCount,
+          beforeReviewedCount,
+          afterReviewedCount,
+          beforePlan,
+          afterPlan,
+          deletedIndexCount,
+          mainIndexBefore,
+          mainIndexAfter,
+          durableOverlay,
+          stagedDiff: stagedDiff.stdout,
+          commit: commit.stdout,
+        });
+        await artifacts.writeJson("reviewed-plan.json", afterPlan);
+        await artifacts.writeText("reviewed-triage.diff", stagedDiff.stdout);
+        await artifacts.writeText("reviewed-commit.txt", commit.stdout);
+      },
+      assert: async () => {
+        const evidence = object(
+          runtime.evidence.get("human-edit-reject"),
+          "human edit/reject evidence",
+        );
+        const beforePlan = object(evidence["beforePlan"], "pre-review plan");
+        const afterPlan = object(evidence["afterPlan"], "reviewed plan");
+        const beforeItems = array(beforePlan["items"], "pre-review plan items");
+        const afterItems = array(afterPlan["items"], "reviewed plan items");
+        const overlay = evidence["durableOverlay"];
+        if (
+          overlay === null ||
+          typeof overlay !== "object" ||
+          !("decisions" in overlay)
+        ) {
+          throw new Error("Reviewed durable overlay is unavailable");
+        }
+        const decisions = object(overlay.decisions, "reviewed decisions");
+        const edited = object(decisions[EDITED_CVE], "edited decision");
+        const provenance = object(
+          edited["provenance"],
+          "edited decision provenance",
+        );
+        const stagedDiff = string(evidence["stagedDiff"], "reviewed diff");
+        const mainIndexBefore = array(
+          evidence["mainIndexBefore"],
+          "pre-review main overlay index",
+        ).map((key) => string(key, "pre-review main overlay key"));
+        const mainIndexAfter = array(
+          evidence["mainIndexAfter"],
+          "restored main overlay index",
+        ).map((key) => string(key, "restored main overlay key"));
+        return [
+          assertion(
+            "committed post-policy seed starts with 305 proposed decisions",
+            evidence["beforeDecisionCount"] === 305 &&
+              evidence["beforeReviewedCount"] === 305,
+            `durable=${String(evidence["beforeDecisionCount"])} reviewedPlan=${String(evidence["beforeReviewedCount"])} totalPlan=${beforeItems.length}`,
+          ),
+          assertion(
+            "human edit keeps truthful durable provenance",
+            edited["reason"] === REVIEWED_REASON &&
+              provenance["by"] === REVIEWED_BY &&
+              provenance["evidence"] ===
+                "Human review of the tracked Golden Loop policy diff",
+          ),
+          assertion(
+            "human deletion leaves 304 durable reviewed decisions",
+            Object.keys(decisions).length === 304 &&
+              !Object.hasOwn(decisions, DELETED_CVE) &&
+              evidence["afterReviewedCount"] === 304,
+            `durable=${Object.keys(decisions).length} reviewedPlan=${String(evidence["afterReviewedCount"])} totalPlan=${afterItems.length}`,
+          ),
+          assertion(
+            "reviewed plan has no hidden cache residue",
+            evidence["deletedIndexCount"] === 0,
+            `overlayIndexRows=${String(evidence["deletedIndexCount"])}`,
+          ),
+          assertion(
+            "human review restores the main worktree overlay index",
+            mainIndexBefore.length > 0 &&
+              mainIndexBefore.every((key) => mainIndexAfter.includes(key)),
+            `before=${mainIndexBefore.length} after=${mainIndexAfter.length}`,
+          ),
+          assertion(
+            "review changed tracked YAML without mutating upstream base state",
+            stagedDiff.includes(`-  ${DELETED_CVE}:`) &&
+              beforePlan["baseStateSha256"] === afterPlan["baseStateSha256"],
+          ),
+          assertion(
+            "human review was committed in the disposable repository",
+            string(evidence["commit"], "review commit").includes(
+              "Golden Loop human review",
+            ),
+          ),
+        ];
+      },
+    },
   ];
   return list;
 }
@@ -2228,7 +2495,10 @@ async function createRun(
                 projectId,
                 type: "local_path" as const,
                 hostId: "golden-host",
-                path: worktree,
+                path:
+                  projectId === GOLDEN_SEED_WORKSPACE_PROJECT_ID
+                    ? join(worktree, GOLDEN_SEED_ROOT)
+                    : worktree,
                 isDefault: true,
                 createdAt: 1,
                 updatedAt: 1,
@@ -2239,11 +2509,16 @@ async function createRun(
         threads: {
           get: async ({ threadId }) => ({
             id: threadId,
-            projectId: WORKSPACE_PROJECT_ID,
+            projectId:
+              threadId === "thread-golden-loop-seed"
+                ? GOLDEN_SEED_WORKSPACE_PROJECT_ID
+                : WORKSPACE_PROJECT_ID,
             environmentId:
-              threadId === "thread-firmware-golden"
-                ? "environment-firmware-golden"
-                : "environment-golden-loop",
+              threadId === "thread-golden-loop-seed"
+                ? "environment-golden-loop-seed"
+                : threadId === "thread-firmware-golden"
+                  ? "environment-firmware-golden"
+                  : "environment-golden-loop",
             title: "Golden Loop",
             status: "active" as const,
             agentStatus: null,
@@ -2278,8 +2553,14 @@ async function createRun(
         environments: {
           get: async ({ environmentId }) => ({
             id: environmentId,
-            projectId: WORKSPACE_PROJECT_ID,
-            path: worktree,
+            projectId:
+              environmentId === "environment-golden-loop-seed"
+                ? GOLDEN_SEED_WORKSPACE_PROJECT_ID
+                : WORKSPACE_PROJECT_ID,
+            path:
+              environmentId === "environment-golden-loop-seed"
+                ? join(worktree, GOLDEN_SEED_ROOT)
+                : worktree,
             hostId: "golden-host",
           }),
         },
@@ -2339,6 +2620,12 @@ async function createRun(
     },
     configure: async ({ bb, host, worktree: configuredWorktree }) => {
       worktree = configuredWorktree;
+      // The warm seed is scoped to project-ax3000-demo/pv-ax3000-*; beats 1-14
+      // use project-4a752600a07a/pv-a481df87dadf, so their rows stay disjoint.
+      await copyFile(
+        join(worktree, GOLDEN_SEED_WARM_DATABASE),
+        join(host.harness.storageRoot, "data.db"),
+      );
       const gitignorePath = join(worktree, ".gitignore");
       const gitignore = await readFile(gitignorePath, "utf8").catch(() => "");
       if (!gitignore.split("\n").includes(".fs-firmware/")) {
@@ -2587,7 +2874,7 @@ async function createRun(
             },
           );
         },
-        refreshOverlayIndex: async () => {
+        refreshOverlayIndex: async (root = worktree) => {
           await ctx
             .service<{ rebuild(root: string): Promise<void> }>(
               "findings.overlay",
@@ -2595,8 +2882,48 @@ async function createRun(
                 throw new Error("Findings overlay owner is unavailable");
               },
             )
-            .rebuild(worktree);
+            .rebuild(root);
         },
+        overlayIndexVexCount: (overlayProjectId, cve) => {
+          const statement = cve
+            ? ctx.db().prepare(
+                `SELECT COUNT(*) AS count
+                   FROM overlay_index
+                  WHERE project_id = ?
+                    AND entity_kind = 'vexDecision'
+                    AND cve = ?`,
+              )
+            : ctx.db().prepare(
+                `SELECT COUNT(*) AS count
+                   FROM overlay_index
+                  WHERE project_id = ?
+                    AND entity_kind = 'vexDecision'`,
+              );
+          const row = object(
+            cve
+              ? statement.get(overlayProjectId, cve)
+              : statement.get(overlayProjectId),
+            "overlay index VEX count",
+          );
+          return number(row["count"], "overlay index VEX count");
+        },
+        overlayIndexVexStableKeys: (overlayProjectId) =>
+          ctx
+            .db()
+            .prepare(
+              `SELECT DISTINCT stable_key
+                 FROM overlay_index
+                WHERE project_id = ?
+                  AND entity_kind = 'vexDecision'
+                ORDER BY stable_key`,
+            )
+            .all(overlayProjectId)
+            .map((row) =>
+              string(
+                object(row, "overlay index VEX row")["stable_key"],
+                "overlay index VEX stable key",
+              ),
+            ),
         human: null,
       };
     },
@@ -2619,12 +2946,12 @@ afterEach(() => cleanup());
 
 describe.sequential("Golden Loop incremental acceptance", () => {
   it(
-    "runs all fourteen ordered beats twice with the same semantic result",
+    "runs all fifteen ordered beats twice with the same semantic result",
     async () => {
       const first = await createRun("run-1");
       try {
         const firstResults = await first.harness.runAll();
-        expect(firstResults).toHaveLength(14);
+        expect(firstResults).toHaveLength(15);
         expect(firstResults.map(({ beat }) => beat)).toEqual(
           GOLDEN_LOOP_BEATS.map(({ number }) => number),
         );
@@ -2644,7 +2971,7 @@ describe.sequential("Golden Loop incremental acceptance", () => {
         const second = await createRun("run-2");
         try {
           const secondResults = await second.harness.runAll();
-          expect(secondResults).toHaveLength(14);
+          expect(secondResults).toHaveLength(15);
           second.harness.assertNoExternalNetwork();
           expect(semanticReport(second.harness.report!)).toEqual(firstSemantic);
           expect(second.harness.report?.durationMs).toBeLessThan(
@@ -2664,7 +2991,7 @@ describe.sequential("Golden Loop incremental acceptance", () => {
     const complete = new Map(
       GOLDEN_LOOP_BEATS.map((beat) => [beat.number, beat]),
     );
-    expect(complete.size).toBe(14);
+    expect(complete.size).toBe(15);
     expect(GOLDEN_LOOP_BEATS.map(({ number }) => number)).toEqual([
       ...complete.keys(),
     ]);
