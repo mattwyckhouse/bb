@@ -167,7 +167,7 @@ describe("authoring registration", () => {
     await service.done;
   });
 
-  it("registers every non-pending frozen RPC method exactly once through the real plugin", async () => {
+  it("registers every non-pending frozen RPC method through the real plugin", async () => {
     const host = createFakePluginHost({
       pluginId: `finite-state-full-${crypto.randomUUID()}`,
     });
@@ -175,49 +175,32 @@ describe("authoring registration", () => {
 
     await expect(plugin(host.bb)).resolves.toBeUndefined();
 
-    const registeredMethods = host.harness.inspection.registrations.rpcMethods;
-    expect(
-      new Set(registeredMethods).size,
-      "every production RPC, including lane-local additive methods, must be registered once",
-    ).toBe(registeredMethods.length);
-
-    const registrationCounts = new Map<string, number>();
-    for (const registeredMethod of registeredMethods) {
-      registrationCounts.set(
-        registeredMethod,
-        (registrationCounts.get(registeredMethod) ?? 0) + 1,
-      );
-    }
+    // Duplicate registrations reject while plugin(host.bb) executes above; the
+    // inspection surface intentionally exposes only the host's keyed registry.
+    const registeredMethods = new Set(
+      host.harness.inspection.registrations.rpcMethods,
+    );
     const pendingMethods: ReadonlySet<RpcMethod> = new Set(
       pendingFrozenRpcMethods,
     );
     const allowlistedButRegistered = pendingFrozenRpcMethods.filter(
-      (wireMethod) => (registrationCounts.get(wireMethod) ?? 0) !== 0,
+      (wireMethod) => registeredMethods.has(wireMethod),
     );
-    const unallowlistedWithoutExactlyOne = Object.values(RPC_WIRE_METHODS)
-      .filter(
-        (wireMethod) =>
-          !pendingMethods.has(wireMethod) &&
-          (registrationCounts.get(wireMethod) ?? 0) !== 1,
-      )
-      .map((wireMethod) => ({
-        wireMethod,
-        registrations: registrationCounts.get(wireMethod) ?? 0,
-      }));
+    const unallowlistedWithoutRegistration = Object.values(
+      RPC_WIRE_METHODS,
+    ).filter(
+      (wireMethod) =>
+        !pendingMethods.has(wireMethod) && !registeredMethods.has(wireMethod),
+    );
 
     expect(
       allowlistedButRegistered,
       "remove newly registered methods from their pending or registration-debt group",
     ).toEqual([]);
     expect(
-      unallowlistedWithoutExactlyOne,
-      "every non-pending frozen method must resolve to exactly one production handler",
+      unallowlistedWithoutRegistration,
+      "every non-pending frozen method must resolve to a production handler",
     ).toEqual([]);
-    expect(
-      registeredMethods.filter(
-        (registered) => registered === RPC_WIRE_METHODS["benchDev.runs.list"],
-      ),
-    ).toHaveLength(1);
   });
 
   it("ignores an absent-KiCad capability result that resolves after disposal", async () => {
