@@ -11,10 +11,10 @@ import type { JsonValue } from "../../shared/contract.js";
 import { rpcContract } from "../../shared/contract.js";
 import { resolveProjectWorktreeRoot } from "../documents/store.js";
 import { registerCachePuller } from "../sync/engine/adapter.js";
-import { applyHbomExtraction } from "./hbom/extract.js";
+import { applyHbomExtractionRpc, type ExtractionDeps } from "./hbom/extract.js";
 import {
-  handleHbomCycloneDxExport,
-  handleHbomXlsxExport,
+  createHbomCycloneDxHttpHandler,
+  createHbomXlsxHttpHandler,
 } from "./hbom/export/http.js";
 import {
   getHbomComponent,
@@ -466,8 +466,15 @@ export function registerBom(bb: BbPluginApi, ctx: PluginContext): void {
       const deps: ReviewDeps = { db, root };
       return resolveHbomReview(deps, input);
     },
-    hbomExtractionApply() {
-      return applyHbomExtraction();
+    async hbomExtractionApply(input) {
+      const root = await resolveProjectWorktreeRoot(bb, input.projectId);
+      const deps: ExtractionDeps = {
+        db,
+        root,
+        projectId: input.projectId,
+        projectVersionId: input.projectVersionId,
+      };
+      return applyHbomExtractionRpc(deps, input);
     },
   });
 
@@ -482,6 +489,14 @@ export function registerBom(bb: BbPluginApi, ctx: PluginContext): void {
       },
     }),
   );
-  bb.http.route("GET", "/hbom/export.xlsx", handleHbomXlsxExport);
-  bb.http.route("GET", "/hbom/export.cdx.json", handleHbomCycloneDxExport);
+  bb.http.route(
+    "GET",
+    "/hbom/export.xlsx",
+    createHbomXlsxHttpHandler({ db, bb }),
+  );
+  bb.http.route(
+    "GET",
+    "/hbom/export.cdx.json",
+    createHbomCycloneDxHttpHandler({ db, bb }),
+  );
 }

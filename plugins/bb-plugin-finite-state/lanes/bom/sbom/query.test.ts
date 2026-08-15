@@ -559,11 +559,11 @@ describe("cached SBOM query", () => {
     expect(
       (await host.harness.behavior.fetchHttp("GET", "/hbom/export.xlsx"))
         .status,
-    ).toBe(501);
+    ).toBe(400);
     expect(
       (await host.harness.behavior.fetchHttp("GET", "/hbom/export.cdx.json"))
         .status,
-    ).toBe(501);
+    ).toBe(400);
 
     const replacement = await host.harness.lifecycle.reload((bb) => {
       registerBom(bb, createPluginContext(bb));
