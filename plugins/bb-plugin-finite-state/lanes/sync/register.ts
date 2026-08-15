@@ -9,6 +9,7 @@ import {
   withContributedSubtrees,
   type AgenticCliSlot,
 } from "../agentic/cli/metadata.js";
+import { FINDINGS_DRIFT_CHANGED_CHANNEL } from "../findings/drift/report.js";
 import { registerSyncCli } from "./cli.js";
 import type { NamespacedCliRunner } from "./cli.js";
 import { registerAdapter, registerResolver } from "./engine/adapter.js";
@@ -88,6 +89,9 @@ export function registerSync(bb: BbPluginApi, ctx: PluginContext): void {
       }
       if (kinds.includes("finding")) {
         ctx.bb.realtime.publish("findings:changed", payload);
+        ctx.bb.realtime.publish(FINDINGS_DRIFT_CHANGED_CHANNEL, {
+          pvId: scope.projectVersionId,
+        });
       }
       if (kinds.includes("requirement")) {
         ctx.bb.realtime.publish("requirements:changed", payload);

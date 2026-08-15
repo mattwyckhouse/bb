@@ -1517,8 +1517,13 @@ decisions:
           signal.channel === "requirements:changed" ||
           signal.channel === "tara:changed",
       );
+    const driftSignals = () =>
+      host.harness.realtimeSignals.filter(
+        (signal) => signal.channel === "fs-findings-drift-changed",
+      );
     try {
       const beforeRemoteFailure = changedSignals().length;
+      const beforeRemoteDrift = driftSignals().length;
       selectAssuranceStudioProjectBinding(
         context.db(),
         "bb-project-sync",
@@ -1558,6 +1563,11 @@ decisions:
           .slice(beforeRemoteFailure)
           .map((signal) => signal.channel),
       ).toEqual(["findings:changed"]);
+      expect(
+        driftSignals()
+          .slice(beforeRemoteDrift)
+          .map((signal) => signal.payload),
+      ).toEqual([{ pvId: scope.projectVersionId }]);
 
       remoteRequirementError = null;
       context
@@ -1578,6 +1588,7 @@ decisions:
         });
       }
       const beforeQuarantine = changedSignals().length;
+      const beforeQuarantineDrift = driftSignals().length;
       const quarantineFailure = await host.harness.behavior.runCli(
         argv,
         cliContext,
@@ -1599,10 +1610,12 @@ decisions:
         status: "published",
       });
       expect(changedSignals()).toHaveLength(beforeQuarantine);
+      expect(driftSignals()).toHaveLength(beforeQuarantineDrift);
 
       state.findings.clear();
       for (const [id, row] of originalFindings) state.findings.set(id, row);
       const beforeUnselected = changedSignals().length;
+      const beforeUnselectedDrift = driftSignals().length;
       const unselected = await host.harness.behavior.runCli(argv, cliContext);
       expect(unselected).toMatchObject({ exitCode: 1, stderr: "" });
       const unselectedReport = JSON.parse(
@@ -1627,6 +1640,11 @@ decisions:
       expect(emitted.map((signal) => signal.channel)).toEqual([
         "findings:changed",
       ]);
+      expect(
+        driftSignals()
+          .slice(beforeUnselectedDrift)
+          .map((signal) => signal.payload),
+      ).toEqual([{ pvId: scope.projectVersionId }]);
     } finally {
       remoteRequirementError = null;
       state.findings.clear();
