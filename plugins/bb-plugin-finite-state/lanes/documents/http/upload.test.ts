@@ -287,4 +287,125 @@ describe("documents upload envelope (AMD-0026 R2)", () => {
     })) as { items: unknown[] };
     expect(listed.items).toEqual([]);
   });
+
+  it("keeps one durable blob under concurrent identical uploads", async () => {
+    const { host, root, projectId } = await setup();
+    const pdf = Buffer.from("%PDF-1.4 concurrent-identical");
+    const digest = sha256(pdf);
+    const body = {
+      envelopeVersion: 1,
+      projectId,
+      projectVersionId: "version-a",
+      filename: "shared.pdf",
+      sha256: digest,
+      metadata: {},
+      contentBase64: pdf.toString("base64"),
+    };
+    const [first, second] = await Promise.all([
+      upload(host, body),
+      upload(host, body),
+    ]);
+    expect([first.status, second.status].sort()).toEqual([200, 201]);
+    const firstJson = (await first.json()) as {
+      created: boolean;
+      document: { sha256: string; path: string };
+    };
+    const secondJson = (await second.json()) as {
+      created: boolean;
+      document: { sha256: string; path: string };
+    };
+    expect(firstJson.document.sha256).toBe(digest);
+    expect(secondJson.document.sha256).toBe(digest);
+    expect(firstJson.created !== secondJson.created).toBe(true);
+
+    const listed = (await host.harness.behavior.callRpc("documentsList", {
+      projectId,
+      projectVersionId: "version-a",
+      pageSize: 50,
+      continuation: null,
+      filters: {},
+    })) as { items: unknown[] };
+    expect(listed.items).toHaveLength(1);
+
+    const onDisk = await readFile(
+      join(root, DOCUMENTS_DIRECTORY, `${digest}-shared.pdf`),
+    );
+    expect(sha256(onDisk)).toBe(digest);
+
+    const content = await host.harness.behavior.fetchHttp(
+      "GET",
+      `/documents/content?sha256=${digest}&projectId=${projectId}&projectVersionId=version-a`,
+    );
+    expect(content.status).toBe(200);
+  });
+
+  it("heals a missing blob on idempotent re-upload of the same SHA", async () => {
+    const { host, root, projectId } = await setup();
+    const pdf = Buffer.from("%PDF-1.4 heal-missing-blob");
+    const digest = sha256(pdf);
+    const body = {
+      envelopeVersion: 1,
+      projectId,
+      projectVersionId: "version-a",
+      filename: "heal.pdf",
+      sha256: digest,
+      metadata: {},
+      contentBase64: pdf.toString("base64"),
+    };
+    const created = await upload(host, body);
+    expect(created.status).toBe(201);
+    const relative = `${DOCUMENTS_DIRECTORY}/${digest}-heal.pdf`;
+    await rm(join(root, relative), { force: true });
+
+    const missing = await host.harness.behavior.fetchHttp(
+      "GET",
+      `/documents/content?sha256=${digest}&projectId=${projectId}&projectVersionId=version-a`,
+    );
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toMatchObject({
+      error: { code: "DOCUMENT_CONTENT_MISSING" },
+    });
+
+    const healed = await upload(host, body);
+    expect(healed.status).toBe(200);
+    expect((await healed.json()).created).toBe(false);
+
+    const content = await host.harness.behavior.fetchHttp(
+      "GET",
+      `/documents/content?sha256=${digest}&projectId=${projectId}&projectVersionId=version-a`,
+    );
+    expect(content.status).toBe(200);
+    expect(Buffer.from(await content.arrayBuffer()).equals(pdf)).toBe(true);
+  });
+
+  it("accepts extension-less displayName on documentsMetadataUpdate", async () => {
+    const { host, projectId } = await setup();
+    const pdf = Buffer.from("%PDF-1.4 display-name");
+    const digest = sha256(pdf);
+    const uploaded = await upload(host, {
+      envelopeVersion: 1,
+      projectId,
+      projectVersionId: "version-a",
+      filename: "vendor.pdf",
+      sha256: digest,
+      metadata: {},
+      contentBase64: pdf.toString("base64"),
+    });
+    expect(uploaded.status).toBe(201);
+
+    const updated = (await host.harness.behavior.callRpc(
+      "documentsMetadataUpdate",
+      {
+        projectId,
+        projectVersionId: "version-a",
+        documentId: digest,
+        expectedContentSha256: digest,
+        kind: "datasheet",
+        withdrawn: false,
+        displayName: "Vendor Datasheet",
+      },
+    )) as { label: string; key: string };
+    expect(updated.label).toBe("Vendor Datasheet");
+    expect(updated.key).toBe(digest);
+  });
 });

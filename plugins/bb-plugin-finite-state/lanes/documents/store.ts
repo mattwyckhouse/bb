@@ -3,11 +3,12 @@ import {
   createWriteStream,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
   statSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -165,6 +166,75 @@ export function sanitizeDocumentFilename(filename: string): string {
     );
   }
   return base;
+}
+
+/** Display labels are not filenames — match the frozen contract bounds only. */
+export function sanitizeDisplayName(displayName: string): string {
+  const trimmed = displayName.trim();
+  if (trimmed.length < 1 || trimmed.length > 1000) {
+    throw new DocumentStoreError(
+      "DOCUMENT_DISPLAY_NAME_INVALID",
+      "displayName must be a non-empty string of at most 1000 characters.",
+    );
+  }
+  return trimmed;
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = Reflect.get(error, "code");
+  return (
+    code === "SQLITE_CONSTRAINT_UNIQUE" ||
+    code === "SQLITE_CONSTRAINT" ||
+    /UNIQUE constraint failed/iu.test(error.message)
+  );
+}
+
+function blobExistsAt(worktreeRoot: string, relativePath: string): boolean {
+  try {
+    const absolute = confinedAbsolute(worktreeRoot, relativePath);
+    return existsSync(absolute) && statSync(absolute).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function materializeBlobFromBytes(
+  worktreeRoot: string,
+  relativePath: string,
+  bytes: Buffer,
+  expectedSha256: string,
+): void {
+  const destination = confinedAbsolute(worktreeRoot, relativePath);
+  const documentsDir = confinedAbsolute(worktreeRoot, DOCUMENTS_DIRECTORY);
+  mkdirSync(documentsDir, { recursive: true });
+  const stagingRoot = mkdtempSync(join(tmpdir(), "fs-docs-heal-"));
+  const stagingFile = join(stagingRoot, `${expectedSha256}.bin`);
+  try {
+    writeFileSync(stagingFile, bytes);
+    const stagedHash = createHash("sha256")
+      .update(readFileSync(stagingFile))
+      .digest("hex");
+    if (stagedHash !== expectedSha256) {
+      throw new DocumentStoreError(
+        "DOCUMENT_SHA256_MISMATCH",
+        "Healed blob digest drifted before promote.",
+      );
+    }
+    try {
+      renameSync(stagingFile, destination);
+    } catch {
+      if (!blobExistsAt(worktreeRoot, relativePath)) {
+        throw new DocumentStoreError(
+          "DOCUMENT_PROMOTE_FAILED",
+          "Atomic heal promote into product-security/documents failed.",
+          500,
+        );
+      }
+    }
+  } finally {
+    rmSync(stagingRoot, { recursive: true, force: true });
+  }
 }
 
 function extensionOf(name: string): string {
@@ -513,15 +583,18 @@ export async function uploadDocumentEnvelope(
     );
   }
 
+  const worktreeRoot = await resolveProjectWorktreeRoot(bb, scope.projectId);
   const existing = getDocumentBySha(db, scope, computed);
   if (existing) {
+    if (!blobExistsAt(worktreeRoot, existing.path)) {
+      materializeBlobFromBytes(worktreeRoot, existing.path, decoded, computed);
+    }
     return { record: existing, created: false };
   }
 
   const mimeType = sniffMime(decoded, filename, mimeHint);
   const kind = inferKind(filename, mimeType, kindHint);
   const relativePath = documentRelativePath(computed, filename);
-  const worktreeRoot = await resolveProjectWorktreeRoot(bb, scope.projectId);
   const destination = confinedAbsolute(worktreeRoot, relativePath);
   const documentsDir = confinedAbsolute(worktreeRoot, DOCUMENTS_DIRECTORY);
   mkdirSync(documentsDir, { recursive: true });
@@ -542,11 +615,14 @@ export async function uploadDocumentEnvelope(
     try {
       renameSync(stagingFile, destination);
     } catch {
-      throw new DocumentStoreError(
-        "DOCUMENT_PROMOTE_FAILED",
-        "Atomic promote into product-security/documents failed.",
-        500,
-      );
+      // Another concurrent upload may have already promoted identical bytes.
+      if (!blobExistsAt(worktreeRoot, relativePath)) {
+        throw new DocumentStoreError(
+          "DOCUMENT_PROMOTE_FAILED",
+          "Atomic promote into product-security/documents failed.",
+          500,
+        );
+      }
     }
 
     const uploadedAt = new Date().toISOString();
@@ -565,10 +641,15 @@ export async function uploadDocumentEnvelope(
         needsOcr: false,
       });
     } catch (error) {
-      try {
-        unlinkSync(destination);
-      } catch {
-        // best-effort rollback of the promoted blob
+      // Never unlink the promoted content path: a concurrent winner may own it.
+      // Staging cleanup happens in finally. Idempotent losers return the winner.
+      const winner = getDocumentBySha(db, scope, computed);
+      if (winner) {
+        return { record: winner, created: false };
+      }
+      if (isUniqueConstraintError(error)) {
+        const raced = getDocumentBySha(db, scope, computed);
+        if (raced) return { record: raced, created: false };
       }
       throw error;
     }
@@ -611,7 +692,7 @@ export function updateDocumentMetadata(
       409,
     );
   }
-  const name = sanitizeDocumentFilename(input.displayName);
+  const name = sanitizeDisplayName(input.displayName);
   const stored = storageScope(scope);
   db.prepare(
     `UPDATE document
