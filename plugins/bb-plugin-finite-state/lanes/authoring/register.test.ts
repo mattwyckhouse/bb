@@ -4,38 +4,77 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPluginContext } from "../../lib/context.js";
 import plugin from "../../server.js";
 import { RPC_WIRE_METHODS } from "../../shared/contract.js";
+import type { RpcMethod } from "../../shared/contract.js";
 import type { KicadCapability } from "../hardware/extract/driver.js";
 import { registerHardware } from "../hardware/register.js";
 import { buildLogPath, buildLogRoot } from "./build/logs.js";
-import { createBuildRun, getBuildRun, listBuildRuns } from "./build/runs-store.js";
+import {
+  createBuildRun,
+  getBuildRun,
+  listBuildRuns,
+} from "./build/runs-store.js";
 import { registerAuthoring } from "./register.js";
 
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
+const PENDING_UNSTARTED_WP = [
+  "documentsList", // WP-56 / FS-70: Documents store and viewer.
+  "documentsGet", // WP-56 / FS-70: Documents store and viewer.
+  "documentsSearch", // WP-56 / FS-70: Documents store and viewer.
+  "documentsMetadataUpdate", // WP-56 / FS-70: Documents store and viewer.
+  "documentsExtractionsList", // WP-56 / FS-70: Documents store and viewer.
+  "groundingSourcesList", // WP-82 / FS-117: Grounding store and document index.
+  "groundingQuery", // WP-82 / FS-117: Grounding store and document index.
+  "groundingCoverageGet", // WP-82 / FS-117: Grounding store and document index.
+] as const satisfies readonly RpcMethod[];
+
+const SHIPPED_WP_REGISTRATION_DEBT = [
+  "workspaceSummary", // FS-220: register or retire the WP-03 / FS-17 leftover.
+  "triageRunGet", // FS-220: register or retire the WP-28 / FS-42 leftover.
+  "triageDecisionWrite", // FS-220: register or retire the WP-26 / FS-40 leftover.
+  "triageDecisionBulkWrite", // FS-220: register or retire the WP-26 / FS-40 leftover.
+  "triagePolicyPreview", // FS-220: register or retire the WP-28 / FS-42 leftover.
+  "triagePolicyApply", // FS-220: register or retire the WP-28 / FS-42 leftover.
+  "taraGet", // FS-220: register or retire the WP-32 / FS-46 leftover.
+  "reviewTransition", // FS-220: register or retire the WP-40 / FS-54 leftover.
+] as const satisfies readonly RpcMethod[];
+
+const pendingFrozenRpcMethods: readonly RpcMethod[] = [
+  ...PENDING_UNSTARTED_WP,
+  ...SHIPPED_WP_REGISTRATION_DEBT,
+];
+
 afterEach(async () => {
-  await Promise.all(hosts.splice(0).map((host) => host.harness.lifecycle.dispose()));
+  await Promise.all(
+    hosts.splice(0).map((host) => host.harness.lifecycle.dispose()),
+  );
 });
 
 describe("authoring registration", () => {
   it("narrows probe history to zero, wires local-auth logs, and recovers queued rows", async () => {
-    const host = createFakePluginHost({ pluginId: `fs-authoring-register-${crypto.randomUUID()}` });
+    const host = createFakePluginHost({
+      pluginId: `fs-authoring-register-${crypto.randomUUID()}`,
+    });
     hosts.push(host);
     const ctx = createPluginContext(host.bb);
     const db = ctx.db();
     const logPath = await buildLogPath(db, "build-queued");
     await writeFile(logPath, "prior evidence\n", "utf8");
-    await createBuildRun({ db, publish: () => undefined }, {
-      projectId: "project-a",
-      projectVersionId: "version-a",
-      runId: "build-queued",
-      kind: "build",
-      target: null,
-      toolchain: "fixture",
-      artifact: null,
-      digest: null,
-      logPath,
-      startedAt: "2026-08-13T12:00:00.000Z",
-    });
+    await createBuildRun(
+      { db, publish: () => undefined },
+      {
+        projectId: "project-a",
+        projectVersionId: "version-a",
+        runId: "build-queued",
+        kind: "build",
+        target: null,
+        toolchain: "fixture",
+        artifact: null,
+        digest: null,
+        logPath,
+        startedAt: "2026-08-13T12:00:00.000Z",
+      },
+    );
 
     const registration = registerAuthoring(host.bb, ctx, {
       toolchains: {
@@ -59,7 +98,9 @@ describe("authoring registration", () => {
         probeTimeoutMs: 50,
       },
     });
-    const service = host.harness.behavior.runService("authoring-build-supervisor");
+    const service = host.harness.behavior.runService(
+      "authoring-build-supervisor",
+    );
     await registration.ready;
 
     expect(host.harness.inspection.registrations.httpRoutes).toContainEqual(
@@ -103,17 +144,19 @@ describe("authoring registration", () => {
     expect(host.harness.inspection.needsConfigurationMessages).toEqual([]);
     await expect(
       host.harness.behavior.callRpc("authoringToolchainStatus", null),
-    ).resolves.toEqual(expect.objectContaining({
-      state: "unavailable",
-      configured: false,
-      missing: [
-        { id: "fixture-missing-compiler", unlocks: "build" },
-        { id: "fixture-missing-west", unlocks: "zephyr-workspace" },
-      ],
-      message: expect.stringContaining(
-        "build missing fixture-missing-compiler; zephyr-workspace missing fixture-missing-west",
-      ),
-    }));
+    ).resolves.toEqual(
+      expect.objectContaining({
+        state: "unavailable",
+        configured: false,
+        missing: [
+          { id: "fixture-missing-compiler", unlocks: "build" },
+          { id: "fixture-missing-west", unlocks: "zephyr-workspace" },
+        ],
+        message: expect.stringContaining(
+          "build missing fixture-missing-compiler; zephyr-workspace missing fixture-missing-west",
+        ),
+      }),
+    );
     expect(host.harness.inspection.logEntries).toContainEqual({
       level: "warn",
       message: expect.stringContaining(
@@ -124,8 +167,10 @@ describe("authoring registration", () => {
     await service.done;
   });
 
-  it("completes real full-lane registration without duplicate frozen RPC methods", async () => {
-    const host = createFakePluginHost({ pluginId: `finite-state-full-${crypto.randomUUID()}` });
+  it("registers every non-pending frozen RPC method exactly once through the real plugin", async () => {
+    const host = createFakePluginHost({
+      pluginId: `finite-state-full-${crypto.randomUUID()}`,
+    });
     hosts.push(host);
 
     await expect(plugin(host.bb)).resolves.toBeUndefined();
@@ -135,12 +180,39 @@ describe("authoring registration", () => {
       new Set(registeredMethods).size,
       "every production RPC, including lane-local additive methods, must be registered once",
     ).toBe(registeredMethods.length);
-    for (const wireMethod of Object.values(RPC_WIRE_METHODS)) {
-      expect(
-        registeredMethods.filter((registered) => registered === wireMethod).length,
-        `${wireMethod} must not have duplicate production handlers`,
-      ).toBeLessThanOrEqual(1);
+
+    const registrationCounts = new Map<string, number>();
+    for (const registeredMethod of registeredMethods) {
+      registrationCounts.set(
+        registeredMethod,
+        (registrationCounts.get(registeredMethod) ?? 0) + 1,
+      );
     }
+    const pendingMethods: ReadonlySet<RpcMethod> = new Set(
+      pendingFrozenRpcMethods,
+    );
+    const allowlistedButRegistered = pendingFrozenRpcMethods.filter(
+      (wireMethod) => (registrationCounts.get(wireMethod) ?? 0) !== 0,
+    );
+    const unallowlistedWithoutExactlyOne = Object.values(RPC_WIRE_METHODS)
+      .filter(
+        (wireMethod) =>
+          !pendingMethods.has(wireMethod) &&
+          (registrationCounts.get(wireMethod) ?? 0) !== 1,
+      )
+      .map((wireMethod) => ({
+        wireMethod,
+        registrations: registrationCounts.get(wireMethod) ?? 0,
+      }));
+
+    expect(
+      allowlistedButRegistered,
+      "remove newly registered methods from their pending or registration-debt group",
+    ).toEqual([]);
+    expect(
+      unallowlistedWithoutExactlyOne,
+      "every non-pending frozen method must resolve to exactly one production handler",
+    ).toEqual([]);
     expect(
       registeredMethods.filter(
         (registered) => registered === RPC_WIRE_METHODS["benchDev.runs.list"],
@@ -150,7 +222,9 @@ describe("authoring registration", () => {
 
   it("ignores an absent-KiCad capability result that resolves after disposal", async () => {
     let resolveCapability: ((value: KicadCapability) => void) | undefined;
-    const host = createFakePluginHost({ pluginId: `finite-state-disposed-${crypto.randomUUID()}` });
+    const host = createFakePluginHost({
+      pluginId: `finite-state-disposed-${crypto.randomUUID()}`,
+    });
     hosts.push(host);
     const ctx = createPluginContext(host.bb);
     ctx.service(
