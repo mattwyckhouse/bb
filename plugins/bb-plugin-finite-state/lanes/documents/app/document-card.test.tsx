@@ -100,6 +100,26 @@ describe("DocumentCard", () => {
     );
     expect(await missing.findByText("Document not found")).toBeTruthy();
 
+    let attempts = 0;
+    const failing = renderSlot(
+      { component: () => <DocumentCard id={DOC_ID} /> },
+      {},
+      {
+        context: { projectId: "project-1" },
+        rpc: {
+          documentsGet: () => {
+            attempts += 1;
+            return Promise.reject(new Error("Injected document RPC failure"));
+          },
+        },
+      },
+    );
+    expect(
+      await failing.findByText("Injected document RPC failure"),
+    ).toBeTruthy();
+    fireEvent.click(failing.getByRole("button", { name: "Retry" }));
+    expect(attempts).toBeGreaterThanOrEqual(2);
+
     const ready = renderSlot(
       { component: () => <DocumentCard id={DOC_ID} /> },
       {},

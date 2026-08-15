@@ -124,4 +124,21 @@ describe("PlanCard", () => {
       }),
     );
   });
+
+  it("renders an empty card for PLAN_NOT_FOUND without treating it as retryable success", async () => {
+    const { PlanCard } = await import("./PlanCard.js");
+    const slot = renderSlot(
+      { component: () => <PlanCard id={PLAN_ID} /> },
+      {},
+      {
+        context: { projectId: "project-1" },
+        rpc: {
+          syncPlan: () =>
+            Promise.reject(new Error("PLAN_NOT_FOUND: sidecar missing")),
+        },
+      },
+    );
+    expect(await slot.findByText("Sync plan not found")).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
 });

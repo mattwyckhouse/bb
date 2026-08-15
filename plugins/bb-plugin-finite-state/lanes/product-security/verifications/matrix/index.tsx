@@ -288,7 +288,12 @@ export function VerificationMatrix({
       hasNextPage={sliceCap === undefined && next !== null}
       message={message}
       onFiltersChange={(nextFilters) => {
-        if (nextFilters.showManual !== filters.showManual) {
+        // Directive/in-message mode (maxRows): localize Manual evidence only —
+        // never mutate durable preference KV from a message surface.
+        if (
+          sliceCap === undefined &&
+          nextFilters.showManual !== filters.showManual
+        ) {
           void rpc
             .call("verificationMatrixPreferenceSet", {
               projectId,

@@ -87,6 +87,26 @@ describe("ThreatCard", () => {
     );
     expect(await missing.findByText("Threat not found")).toBeTruthy();
 
+    let attempts = 0;
+    const failing = renderSlot(
+      { component: () => <ThreatCard id="THREAT-22" /> },
+      {},
+      {
+        context: { projectId: "project-1" },
+        rpc: {
+          taraGet: () => {
+            attempts += 1;
+            return Promise.reject(new Error("Injected threat RPC failure"));
+          },
+        },
+      },
+    );
+    expect(
+      await failing.findByText("Injected threat RPC failure"),
+    ).toBeTruthy();
+    fireEvent.click(failing.getByRole("button", { name: "Retry" }));
+    expect(attempts).toBeGreaterThanOrEqual(2);
+
     const ready = renderSlot(
       { component: () => <ThreatCard id="THREAT-22" /> },
       {},

@@ -954,4 +954,83 @@ describe("verification matrix UI", () => {
     ).toBeNull();
     slot.lifecycle.unmount();
   });
+
+  it("never writes Manual preference KV when maxRows is set (directive attack)", async () => {
+    const { VerificationMatrix } = await import("./index.js");
+    const preferenceSet = vi.fn((input: unknown) => input);
+    const matrixPage = (rawInput: unknown) => {
+      rpcContract.verificationsMatrix.input.parse(rawInput);
+      const row = matrixRow(0);
+      return {
+        items: [
+          {
+            projectId: PROJECT_ID,
+            projectVersionId: VERSION_ID,
+            kind: "verification-matrix-row",
+            key: row.requirementId,
+            label: row.title,
+            fields: {
+              row,
+              rollup: {
+                requirements: 1,
+                verified: 0,
+                failed: 0,
+                error: 0,
+                inconclusive: 0,
+                running: 0,
+                pending: 1,
+                skipped: 0,
+              },
+            },
+            links: [],
+            cache: {
+              state: "fresh",
+              asOf: NOW,
+              message: null,
+              acceptedGenerationId: GENERATION_ID,
+              baseRevision: 1,
+            },
+          },
+        ],
+        total: 1,
+        next: null,
+        cache: {
+          state: "fresh",
+          asOf: NOW,
+          message: null,
+          acceptedGenerationId: GENERATION_ID,
+          baseRevision: 1,
+        },
+      };
+    };
+    const slot = renderSlot(
+      {
+        component: () => (
+          <VerificationMatrix maxRows={15} projectId={PROJECT_ID} />
+        ),
+      },
+      {},
+      {
+        context: { projectId: PROJECT_ID, threadId: null },
+        rpc: {
+          verificationMatrixPreferenceGet: () => ({ showManual: false }),
+          verificationMatrixPreferenceSet: preferenceSet,
+          verificationsMatrix: matrixPage,
+        },
+      },
+    );
+    const manual = (await slot.findByRole("checkbox", {
+      name: /Manual evidence/i,
+    })) as HTMLInputElement;
+    expect(manual.checked).toBe(false);
+    fireEvent.click(manual);
+    await waitFor(() => expect(manual.checked).toBe(true));
+    expect(preferenceSet).not.toHaveBeenCalled();
+    expect(
+      slot.inspection.rpcCalls.filter(
+        (call) => call.method === "verificationMatrixPreferenceSet",
+      ),
+    ).toHaveLength(0);
+    slot.lifecycle.unmount();
+  });
 });
