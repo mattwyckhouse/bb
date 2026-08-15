@@ -68,6 +68,7 @@ export function RemoteSettingsDiagnostics(): React.JSX.Element {
   const rpc = useRpc<typeof remoteDiagnosticsRpcContract>();
   const realtimeConnection = useRealtimeConnectionState();
   const connectedOnce = useRef(false);
+  const requestGeneration = useRef(0);
   const [diagnosis, setDiagnosis] = useState<{
     platform: RemoteSelfDiagnosisView;
     assuranceStudio: RemoteSelfDiagnosisView;
@@ -75,10 +76,14 @@ export function RemoteSettingsDiagnostics(): React.JSX.Element {
   const [failed, setFailed] = useState(false);
 
   const refresh = useCallback(async () => {
+    const generation = ++requestGeneration.current;
     try {
-      setDiagnosis(await rpc.call("remoteConnectionSelfDiagnosis", null));
+      const next = await rpc.call("remoteConnectionSelfDiagnosis", null);
+      if (generation !== requestGeneration.current) return;
+      setDiagnosis(next);
       setFailed(false);
     } catch {
+      if (generation !== requestGeneration.current) return;
       setFailed(true);
     }
   }, [rpc]);
