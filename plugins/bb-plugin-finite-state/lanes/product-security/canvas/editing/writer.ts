@@ -92,7 +92,7 @@ export type CanvasRemoveOutcome =
 export interface CanvasFileStore {
   read(file: string): Promise<StoredCanvasEntity | null>;
   list(kind: CanvasEntityKind): Promise<StoredCanvasEntity[]>;
-  listWithDiagnostics?(kind: CanvasEntityKind): Promise<CanvasFileListing>;
+  listWithDiagnostics(kind: CanvasEntityKind): Promise<CanvasFileListing>;
   write(
     file: string,
     content: string,
@@ -135,6 +135,18 @@ export function canvasDeletedMarkerKey(
 ): string {
   return `${canvasDeletedMarkerPrefix(projectId, projectVersionId, kind)}${encodeURIComponent(slug)}`;
 }
+
+export function canvasDeleteSnapshotKey(
+  projectId: string,
+  projectVersionId: string | null,
+  kind: CanvasEntityKind,
+  slug: string,
+): string {
+  return `canvas-editing:delete-snapshot:${encodeURIComponent(projectId)}:${encodeURIComponent(projectVersionId ?? "__project__")}:${kind}:${encodeURIComponent(slug)}`;
+}
+
+/** Bound for process-local used-slug / restore-snapshot mirrors. */
+export const CANVAS_EDITING_MEMORY_MIRROR_LIMIT = 500;
 
 const TOMBSTONE_MARKER = ".fs-cas-remove.";
 const STALE_TOMBSTONE_MS = 30_000;
@@ -661,6 +673,11 @@ export class CanvasSlugReuseError extends Error {
     this.name = "CanvasSlugReuseError";
   }
 }
+
+export {
+  isRejectedBeforeWrite,
+  REJECTED_BEFORE_WRITE_PREFIX,
+} from "./reject-before-write.js";
 
 function semanticChangedFields(
   before: Record<string, unknown> | null,

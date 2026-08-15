@@ -405,9 +405,7 @@ export async function listTara(
       const files = createSdkCanvasFileStore(bb, source, {
         reclaimTombstones: false,
       });
-      const listing = files.listWithDiagnostics
-        ? await files.listWithDiagnostics(kind)
-        : { entities: await files.list(kind), diagnostics: [] };
+      const listing = await files.listWithDiagnostics(kind);
       working = listing.entities;
       diagnostics = listing.diagnostics;
     } catch (error) {
@@ -438,11 +436,25 @@ export async function listTara(
   const visibleWorking = working.filter(
     (stored) => !deleted.has(stored.entity.slug),
   );
-  const excludedJson = JSON.stringify([...excluded]);
+  // Materialize exclusions once into a temp table instead of re-parsing
+  // json_each(?) per candidate row in both the page and count queries (FS-142 N2).
+  db.exec(`
+    CREATE TEMP TABLE IF NOT EXISTS fs_tara_list_excluded (
+      entity_key TEXT PRIMARY KEY
+    ) WITHOUT ROWID;
+    DELETE FROM fs_tara_list_excluded;
+  `);
+  const insertExcluded = db.prepare(
+    `INSERT OR IGNORE INTO fs_tara_list_excluded(entity_key) VALUES (?)`,
+  );
+  const loadExcluded = db.transaction((slugs: Iterable<string>) => {
+    for (const slug of slugs) insertExcluded.run(slug);
+  });
+  loadExcluded(excluded);
   const rows = sync?.accepted_generation_id
     ? db
         .prepare<
-          [string, string, string, string, string, string, number],
+          [string, string, string, string, string, number],
           TaraSnapshotRow
         >(
           `SELECT entity_key, payload
@@ -457,10 +469,7 @@ export async function listTara(
                   AND entity_kind = ? AND generation_id = ?
              )
             WHERE entity_key COLLATE BINARY > ?
-              AND NOT EXISTS (
-                SELECT 1 FROM json_each(?) AS excluded
-                 WHERE excluded.value = entity_key
-              )
+              AND entity_key NOT IN (SELECT entity_key FROM fs_tara_list_excluded)
             ORDER BY entity_key COLLATE BINARY
             LIMIT ?`,
         )
@@ -470,13 +479,12 @@ export async function listTara(
           kind,
           sync.accepted_generation_id,
           afterKey,
-          excludedJson,
           pageSize + 1,
         )
     : [];
   const acceptedTotal = sync?.accepted_generation_id
     ? (db
-        .prepare<[string, string, string, string, string], TaraTotalRow>(
+        .prepare<[string, string, string, string], TaraTotalRow>(
           `SELECT COUNT(*) AS total
              FROM (
                SELECT COALESCE(
@@ -487,17 +495,13 @@ export async function listTara(
                 WHERE project_id = ? AND project_version_id = ?
                   AND entity_kind = ? AND generation_id = ?
              )
-            WHERE NOT EXISTS (
-              SELECT 1 FROM json_each(?) AS excluded
-               WHERE excluded.value = entity_key
-            )`,
+            WHERE entity_key NOT IN (SELECT entity_key FROM fs_tara_list_excluded)`,
         )
         .get(
           identities.platformProjectId,
           projectVersionId,
           kind,
           sync.accepted_generation_id,
-          excludedJson,
         )?.total ?? 0)
     : 0;
   const mergedRows: Array<[string, Record<string, JsonValue>]> = [];

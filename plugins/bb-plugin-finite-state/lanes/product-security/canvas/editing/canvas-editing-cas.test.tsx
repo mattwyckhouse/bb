@@ -7,6 +7,8 @@ import { registerCanvasEditingBackend } from "./backend.js";
 import {
   casRemoveCanvasFile,
   canvasDeletedMarkerKey,
+  canvasDeleteSnapshotKey,
+  canvasUsedSlugMarkerKey,
   createSdkCanvasFileStore,
   reclaimCanvasDeleteTombstones,
   serializeCanvasEntity,
@@ -253,12 +255,7 @@ describe("WP-35 lane-local CAS delete", () => {
     expect(files.has(absolute)).toBe(false);
     await expect(
       host.bb.storage.kv.get(
-        canvasDeletedMarkerKey(
-          "project-delete",
-          null,
-          "component",
-          "gateway",
-        ),
+        canvasDeletedMarkerKey("project-delete", null, "component", "gateway"),
       ),
     ).resolves.toBe(true);
 
@@ -278,8 +275,101 @@ describe("WP-35 lane-local CAS delete", () => {
     expect(files.get(absolute)).toBe(content);
     await expect(
       host.bb.storage.kv.get(
-        canvasDeletedMarkerKey(
-          "project-delete",
+        canvasDeletedMarkerKey("project-delete", null, "component", "gateway"),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("restores an exact undo-of-delete from durable KV after process memory is gone (FS-142 F10)", async () => {
+    const entity = parseArchitectureEntity("component", {
+      slug: "gateway",
+      name: "Gateway",
+      component_type: "software",
+      criticality: "high",
+      interfaces: [],
+      technologies: [],
+      is_entry_point: true,
+      stores_data: false,
+    });
+    const content = serializeCanvasEntity(entity);
+    const { host: writer, files: writerFiles } = fakeFiles({
+      [absolute]: content,
+    });
+    registerCanvasEditingBackend(writer.bb, createPluginContext(writer.bb));
+
+    await writer.harness.callRpc("taraCommandApply", {
+      projectId: "project-delete-durable",
+      projectVersionId: null,
+      operation: "delete",
+      kind: "component",
+      stableKey: "gateway",
+      mode: "cascade",
+      expectedContentSha256: hash(content),
+    });
+    expect(writerFiles.has(absolute)).toBe(false);
+    const snapshot = await writer.bb.storage.kv.get<string>(
+      canvasDeleteSnapshotKey(
+        "project-delete-durable",
+        null,
+        "component",
+        "gateway",
+      ),
+    );
+    expect(snapshot).toBe(content);
+
+    // Fresh process: empty file store + empty restore Map, but the durable
+    // used-slug marker and delete snapshot are already present in KV.
+    const { host: restoredHost, files } = fakeFiles({});
+    registerCanvasEditingBackend(
+      restoredHost.bb,
+      createPluginContext(restoredHost.bb),
+    );
+    await restoredHost.bb.storage.kv.set(
+      canvasDeletedMarkerKey(
+        "project-delete-durable",
+        null,
+        "component",
+        "gateway",
+      ),
+      true,
+    );
+    await restoredHost.bb.storage.kv.set(
+      canvasDeleteSnapshotKey(
+        "project-delete-durable",
+        null,
+        "component",
+        "gateway",
+      ),
+      content,
+    );
+    await restoredHost.bb.storage.kv.set(
+      canvasUsedSlugMarkerKey(
+        "project-delete-durable",
+        null,
+        "component",
+        "gateway",
+      ),
+      true,
+    );
+
+    const restored = await restoredHost.harness.callRpc("taraCommandApply", {
+      projectId: "project-delete-durable",
+      projectVersionId: null,
+      operation: "create",
+      kind: "component",
+      fields: architectureEntityPayload(entity),
+      expectedContentSha256: null,
+    });
+    expect(restored).toMatchObject({
+      stableKey: "gateway",
+      beforeSha256: null,
+      afterSha256: hash(content),
+    });
+    expect(files.get(absolute)).toBe(content);
+    await expect(
+      restoredHost.bb.storage.kv.get(
+        canvasDeleteSnapshotKey(
+          "project-delete-durable",
           null,
           "component",
           "gateway",

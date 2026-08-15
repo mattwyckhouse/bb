@@ -1,7 +1,5 @@
-import type {
-  ArchitectureYamlEntity,
-  CanvasEntityKind,
-} from "./schema.js";
+import type { ArchitectureYamlEntity, CanvasEntityKind } from "./schema.js";
+import { isRejectedBeforeWrite } from "./reject-before-write.js";
 
 export interface CanvasHistoryEntry {
   kind: CanvasEntityKind;
@@ -79,7 +77,9 @@ export class CanvasEditHistory {
       !snapshotMatchesIdentity(entry.before, entry) ||
       !snapshotMatchesIdentity(entry.after, entry)
     ) {
-      throw new Error("Canvas history snapshot identity does not match its entry.");
+      throw new Error(
+        "Canvas history snapshot identity does not match its entry.",
+      );
     }
     this.#undo.push({ ...entry });
     if (this.#undo.length > this.limit) this.#undo.shift();
@@ -129,9 +129,12 @@ export class CanvasEditHistory {
       destination.push(entry);
       return result;
     } catch (error) {
-      // The RPC boundary cannot reliably classify every host-side CAS failure.
-      // Conservatively require reload/compare after any failed inverse command.
-      this.invalidate(entry.kind, entry.slug);
+      // Pure pre-write rejections leave disk unchanged; keep undo/redo.
+      // Anything else — including CAS conflicts and unknown transport errors —
+      // may have written, so require reload/compare for that entity.
+      if (!isRejectedBeforeWrite(error)) {
+        this.invalidate(entry.kind, entry.slug);
+      }
       throw error;
     }
   }
