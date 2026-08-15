@@ -4,6 +4,8 @@
 **Depends on:** WP-04, WP-07 · **Blocks:** WP-46, WP-58, WP-59, WP-61
 **Produces a FROZEN artifact:** no — consumes the single frozen document ledger and defines a lane-local source-reference codec shared with BOM
 
+> **Transport revision R2 (AMD-0026, PROPOSED 2026-08-15).** bb core rejects multipart on local-auth plugin mutations and plugin routes match exact paths only, so the original multipart upload and `/<sha256>/content` path routes are unimplementable on today's SDK. The owner approved Option B (2026-08-15 01:28Z): upload via a versioned JSON envelope with base64 content, retrieval via an exact-match route with `sha256` as a query parameter. This doc's transport clauses below reflect R2. The WP remains stopped in the coupling manifest until the AMD-0026 text is owner-ratified; do not dispatch before ratification. Upstream native transport (envelope v2) is tracked as get-bb/bb#1632.
+
 ## Files you own
 
     plugins/bb-plugin-finite-state/lanes/documents/register.ts
@@ -33,10 +35,10 @@ Documents are evidence, not a filing cabinet. A PDF extraction must cite a page 
 ## What to build
 
 1. Replace both Documents lane registration stubs. Register frozen RPC methods, local-auth upload/content HTTP routes, one Documents nav panel, and file openers for PDF, CSV/XLSX, SVD, and recognized register-map/header content. Export document command/search services for WP-64/WP-58; do not register CLI or agent tools here.
-2. Implement multipart upload through bb.http. Allow PDF, CSV, XLSX, SVD/XML, and bounded text/header formats. Default cap is 50 MiB. Validate declared MIME, magic/structure where practical, size, and sanitized filename.
-3. Stream upload to a request-owned staging file while hashing SHA-256. Atomically promote to `product-security/documents/<sha256>-<name>` inside the explicitly selected project/version worktree. Identity is `(projectId, projectVersionId, sha256)`; identical bytes in that scope are idempotent and return the existing ledger row.
+2. Implement envelope upload through bb.http (AMD-0026 R2). The upload route accepts a versioned JSON envelope `{ envelopeVersion: 1, projectId, projectVersionId, filename, sha256, metadata: { kind?, mimeType? }, contentBase64 }` — not multipart, which bb core rejects on local-auth plugin mutations. Reject unknown `envelopeVersion` with a stable code before any decode; version 2 is reserved for native multipart once get-bb/bb#1632 lands. Allow PDF, CSV, XLSX, SVD/XML, and bounded text/header formats. Default cap is 50 MiB of decoded bytes. Validate declared MIME, magic/structure where practical, size, and sanitized filename.
+3. Base64-decode to a request-owned staging file while hashing SHA-256, and verify the computed digest equals the envelope's declared `sha256` before any ledger write; a mismatch rejects with a stable code. Atomically promote to `product-security/documents/<sha256>-<name>` inside the explicitly selected project/version worktree. Identity is `(projectId, projectVersionId, sha256)`; identical bytes in that scope are idempotent and return the existing ledger row.
 4. Insert/update the single frozen document row only after the file is durable. Every query and row carries the explicit D-1 `projectId` plus nullable `projectVersionId` pair; only the store boundary maps null to `PROJECT_LEVEL_VERSION_ID`, and HTTP/RPC reject external `"@project"`. `doc_kind` is datasheet, bom, schematic, spec, regulatory, register_map, or other as permitted by the frozen contract; do not create a second HBOM ledger.
-5. Implement safe local-auth content/download routes with range support for preview. Require the explicit project/version pair and resolve by scoped document SHA from SQLite, never by a caller path or an unscoped digest. Add nosniff and a safe Content-Disposition.
+5. Implement safe local-auth content/download routes with range support for preview (AMD-0026 R2: exact-match route, digest as a required query parameter — plugin routes cannot carry path segments). Require the explicit project/version pair and resolve by scoped document SHA from SQLite, never by a caller path or an unscoped digest. Add nosniff and a safe Content-Disposition.
 6. Define the canonical structured source reference and a reversible string codec. PDF refs include document SHA, 1-based page, and optional normalized bbox. Sheet refs include SHA, exact sheet, and A1 cell/range. Text refs include SHA and 1-based line range.
 7. Populate `document_extraction` from validated proposals. Store the canonical `source_ref` plus its typed PDF page/bbox, sheet/cell, or text-line projection, field/value/confidence, review status, actor/time, and an optional validated target. HBOM/requirements files remain authoritative for target linkage; repository reads reconcile or reverse-join them instead of treating the projection as hidden truth.
 8. Implement paged document list and extracted-structure search with the shared `pageSize`/`continuation` input and opaque `next` output. Search predicates begin with the explicit project/version pair and return document SHA/name/kind plus exact source refs and bounded snippets; they never return full document text or binary.
@@ -90,21 +92,24 @@ Documents are evidence, not a filing cabinet. A PDF extraction must cite a page 
       items: DocumentExtractionInput[],
     ): DocumentExtractionResult;
 
-    POST /api/v1/plugins/finite-state/http/documents/upload
-      multipart scope = strict JSON { projectId, projectVersionId }
-    GET  /api/v1/plugins/finite-state/http/documents/<sha256>/content
-      required query projectId=<id>&projectVersionId=<external-id-or-empty-for-null>
+    POST /api/v1/plugins/finite-state/http/documents/upload        (AMD-0026 R2)
+      JSON body: { envelopeVersion: 1, projectId, projectVersionId,
+                   filename, sha256, metadata: { kind?, mimeType? }, contentBase64 }
+      envelopeVersion 1 = base64 envelope; 2 reserved for native multipart (get-bb/bb#1632)
+    GET  /api/v1/plugins/finite-state/http/documents/content       (AMD-0026 R2)
+      required query sha256=<digest>&projectId=<id>&projectVersionId=<external-id-or-empty-for-null>
 
     bb finite-state doc list [--kind <kind>] [--json]
     bb finite-state doc show <sha256>
     bb finite-state doc search <query> [--kind <kind>] [--json]
 
-RPC handles JSON metadata/search. bb.http handles multipart and bytes.
+RPC handles JSON metadata/search. bb.http handles the versioned upload envelope and content bytes.
 
 ## Acceptance criteria
 
 - [ ] Documents store under the exact content-addressed tracked path and one frozen ledger, isolated by explicit project/version scope.
-- [ ] Multipart/binary never travels through RPC or a generic raw request.
+- [ ] Upload bytes travel only inside the versioned envelope on the dedicated bb.http route; binary never travels through RPC or a generic raw request.
+- [ ] The envelope is versioned: unknown `envelopeVersion` is rejected with a stable code before decode, and a declared-vs-computed `sha256` mismatch is rejected before any ledger write.
 - [ ] Duplicate bytes are idempotent by SHA-256.
 - [ ] Upload validates size/type/name and cannot traverse outside product-security/documents.
 - [ ] PDF extraction refs are page-level and sheet extraction refs are cell/range-level; codecs round-trip.
@@ -117,8 +122,8 @@ RPC handles JSON metadata/search. bb.http handles multipart and bytes.
 
 ## Test plan
 
-- upload.test.ts — PDF/CSV/XLSX acceptance, 50 MiB boundary, MIME mismatch, unsafe filename, traversal, scoped duplicate SHA, cross-project/version collision isolation, sentinel rejection, interrupted upload, and ledger rollback when promote fails.
-- content.test.ts — scoped SHA lookup, local auth, safe headers, byte ranges, missing/foreign-scope file, and caller path ignored/rejected.
+- upload.test.ts — PDF/CSV/XLSX acceptance via envelope, 50 MiB decoded-bytes boundary, MIME mismatch, unsafe filename, traversal, scoped duplicate SHA, cross-project/version collision isolation, sentinel rejection, interrupted upload, ledger rollback when promote fails, invalid base64, declared-vs-computed sha256 mismatch, and unknown envelopeVersion rejected before decode.
+- content.test.ts — scoped SHA lookup via query parameter, missing/malformed sha256 query, local auth, safe headers, byte ranges, missing/foreign-scope file, and caller path ignored/rejected.
 - source-ref.test.ts — PDF page/bbox, sheet name with spaces/quotes and A1 range, text lines, round-trip, zero page, invalid bbox, and unknown digest.
 - search.test.ts — paging, kind/query filters, bounded snippets, reverse HBOM target, requirement target, and malformed extraction row skipped with diagnostic.
 - document-viewer.test.tsx — exact page/cell navigation, overlay labels, unknown/withdrawn source, sandboxed preview, loading/empty/error/unconfigured.

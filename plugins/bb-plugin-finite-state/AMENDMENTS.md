@@ -606,3 +606,18 @@ specs: `docs/Product Specs/SPEC 07` and `SPEC 08`._
 - Affected-lane reviewer: pending independent exact-head audit after implementation.
 - Broadcast and merge commits: pending.
 - Evidence: FS-192 sweep #6; FS-196 draft comment `01M00NANTAS9XDZX9831AZ9QRG`, hash correction `01M00NAZK90EYEFR4E26YGCN6R`, and ratification relay `01M00YQ1C8196WFGTS91YZZ62B`.
+
+### AMD-0026 — WP-56 document transport revision: versioned JSON envelope upload and query-parameter content retrieval
+
+- Status: proposed
+- Owner pre-decision: Option B approved by product owner Matt Wyckhouse 2026-08-15 01:28Z (relayed by supervisor). This entry is the required interface-revision draft; the specific text below still requires owner ratification before WP-56 dispatches.
+- Artifacts:
+  - `docs/Implementation/tasks/WP-56 — Documents store, viewer, extraction overlay & upload.md` (declared interface contract; no frozen code artifact changes — `shared/contract.ts` documents RPC methods are untouched)
+- Reason: at integration `056899c2d`, bb core rejects `multipart/form-data` on local-auth plugin mutation routes before dispatch, and plugin HTTP routes match exact paths only (no `/:sha256` segments). WP-56's declared upload and content routes were therefore unimplementable on today's plugin SDK, stopping the WP and blocking the HBOM chain (WP-44/45/46) and downstream WP-59/WP-62 — flagged as the roadmap's biggest chokepoint.
+- Revised upload interface: `POST /api/v1/plugins/finite-state/http/documents/upload` accepts a versioned JSON envelope instead of multipart: `{ envelopeVersion: 1, projectId, projectVersionId, filename, sha256, metadata: { kind?, mimeType? }, contentBase64 }`. The server base64-decodes to the request-owned staging file while hashing, verifies the computed SHA-256 equals the declared `sha256` before any ledger write, and applies the existing 50 MiB cap to decoded bytes. All other WP-56 validation (declared MIME, magic/structure, sanitized filename, scoped idempotency) is unchanged.
+- Revised content interface: `GET /api/v1/plugins/finite-state/http/documents/content` is an exact-match route; the digest moves from a path segment to a required query parameter: `?sha256=<digest>&projectId=<id>&projectVersionId=<external-id-or-empty-for-null>`. Range support, nosniff, safe Content-Disposition, and scoped-SQLite-only resolution are unchanged.
+- Versioning and v2 path: `envelopeVersion` is a required discriminator. Version 1 is the base64 envelope above. Version 2 is reserved for native transport (multipart upload and parameterized path segments) once upstream capability lands — feature request filed as get-bb/bb#1632 — so native transport can be added without contract churn on the plugin side. Unknown envelope versions are rejected with a stable code before any decode.
+- Accepted costs on record: ~33% upload payload inflation from base64 and no browser-native streaming; the owner accepted both at spec-sheet/PDF/XLSX scale. Firmware transfer stays on its own existing lane and is out of scope.
+- Affected WPs and gates: WP-56 (FS-70); once this revision is ratified and WP-56 dispatches, the HBOM chain WP-44/45/46 and downstream WP-59/WP-62 open per the coupling manifest. Documents-lane tests, mock-route fidelity, and Node 22.19 typecheck/test/lint/build gates apply as declared in the WP doc.
+- Approval provenance: pending owner ratification of this exact drafted text.
+- Evidence: WP-56 stop record in `docs/Implementation/scheduling/wp-coupling-manifest.json` (integration `056899c2d` findings); owner Option B decision relayed 2026-08-15 01:28Z; upstream feature request get-bb/bb#1632.
