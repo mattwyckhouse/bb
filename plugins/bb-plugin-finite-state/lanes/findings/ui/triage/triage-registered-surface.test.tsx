@@ -43,7 +43,7 @@ class RegisteredSurfaceResizeObserver implements ResizeObserver {
   disconnect(): void {}
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   configure({ asyncUtilTimeout: 10_000 });
   vi.stubGlobal("ResizeObserver", RegisteredSurfaceResizeObserver);
   vi.stubGlobal("crypto", {
@@ -72,10 +72,14 @@ beforeAll(() => {
       typeof options === "number" ? (y ?? 0) : (options?.top ?? 0);
     this.dispatchEvent(new Event("scroll"));
   };
-});
+  // Warm the registered app graph so the first case does not pay a cold-import
+  // penalty while full-suite workers are contending for the transform pool.
+  await findingsPanel();
+}, 60_000);
 
 afterEach(async () => {
   cleanup();
+  document.body.replaceChildren();
   await Promise.all(
     hosts.splice(0).map((host) => host.harness.lifecycle.dispose()),
   );
@@ -83,6 +87,39 @@ afterEach(async () => {
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
 });
+
+/** Wait for an async RPC call count to remain stable before asserting a ceiling. */
+async function waitForCallCountQuiet(
+  getCount: () => number,
+  quietMs = 150,
+): Promise<number> {
+  let last = getCount();
+  let quietSince = Date.now();
+  await waitFor(
+    () => {
+      const current = getCount();
+      const now = Date.now();
+      if (current !== last) {
+        last = current;
+        quietSince = now;
+      }
+      expect(now - quietSince).toBeGreaterThanOrEqual(quietMs);
+    },
+    { timeout: 10_000 },
+  );
+  return last;
+}
+
+async function findingsPanel() {
+  const app = await loadPluginApp(() => import("../../../../app.js"));
+  const panels = app.navPanels.filter(
+    (candidate) => candidate.path === "findings",
+  );
+  if (panels.length !== 1 || !panels[0]) {
+    throw new Error("Expected exactly one registered Findings panel");
+  }
+  return panels[0];
+}
 
 async function registeredFixture() {
   const root = await mkdtemp(join(tmpdir(), "fs168-bulk-registered-"));
@@ -143,11 +180,7 @@ async function registeredFixture() {
 describe("bulk triage registered surface", () => {
   it("writes YAML when the registered Findings panel submits the registered bulk RPC", async () => {
     const { host, root } = await registeredFixture();
-    const app = await loadPluginApp(() => import("../../../../app.js"));
-    const panel = app.navPanels.find(
-      (candidate) => candidate.path === "findings",
-    );
-    if (!panel) throw new Error("registered Findings panel missing");
+    const panel = await findingsPanel();
 
     const writtenFiles: string[] = [];
     const slot = renderSlot(
@@ -239,15 +272,12 @@ describe("bulk triage registered surface", () => {
     expect(
       await slot.findByText("2 local YAML decisions written; 0 failed."),
     ).toBeTruthy();
+    slot.lifecycle.unmount();
   });
 
   it("commits a single decision with the target-read scope after the live catalog becomes unresolved", async () => {
     const { host, root } = await registeredFixture();
-    const app = await loadPluginApp(() => import("../../../../app.js"));
-    const panel = app.navPanels.find(
-      (candidate) => candidate.path === "findings",
-    );
-    if (!panel) throw new Error("registered Findings panel missing");
+    const panel = await findingsPanel();
 
     let catalogReads = 0;
     let announceTargetRead: (() => void) | undefined;
@@ -356,9 +386,17 @@ describe("bulk triage registered surface", () => {
       expect(
         slot.inspection.rpcCalls.filter(
           (call) => call.method === "triageDecisionUndo",
-        ),
-      ).toHaveLength(1),
+        ).length,
+      ).toBeGreaterThanOrEqual(1),
     );
+    expect(
+      await waitForCallCountQuiet(
+        () =>
+          slot.inspection.rpcCalls.filter(
+            (call) => call.method === "triageDecisionUndo",
+          ).length,
+      ),
+    ).toBe(1);
     const rpcUndo = slot.inspection.rpcCalls.find(
       (call) => call.method === "triageDecisionUndo",
     );
@@ -372,6 +410,9 @@ describe("bulk triage registered surface", () => {
         "status: EXPLOITABLE",
       ),
     );
-    expect(slot.getByText(/Undid the last local decision/u)).toBeTruthy();
+    expect(
+      await within(slot.container).findByText(/Undid the last local decision/u),
+    ).toBeTruthy();
+    slot.lifecycle.unmount();
   });
 });
