@@ -94,6 +94,8 @@ interface Runtime {
   humanPushApproved: boolean;
   executeHumanPush(input: unknown): Promise<unknown>;
   refreshOverlayIndex(root?: string): Promise<void>;
+  overlayIndexVexCount(projectId: string, cve?: string): number;
+  overlayIndexVexStableKeys(projectId: string): string[];
   human: GoldenLoopHarness["human"] | null;
 }
 
@@ -2260,6 +2262,9 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           GOLDEN_SEED_PROJECT_ID,
           "httpd-1.yaml",
         );
+        const mainIndexBefore = runtime.overlayIndexVexStableKeys(
+          runtime.projectId,
+        );
         await runtime.refreshOverlayIndex(seedRoot);
         const beforePlan = await durableSeedVexPlan(runtime);
         const beforeItems = array(beforePlan["items"], "pre-review plan items");
@@ -2314,6 +2319,10 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           diff: stagedDiff.stdout,
         });
         await runtime.refreshOverlayIndex(seedRoot);
+        const deletedIndexCount = runtime.overlayIndexVexCount(
+          GOLDEN_SEED_PROJECT_ID,
+          DELETED_CVE,
+        );
         const afterPlan = await durableSeedVexPlan(runtime);
         const afterReviewedCount = array(
           afterPlan["items"],
@@ -2332,12 +2341,19 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           "-m",
           "Golden Loop human review",
         ]);
+        await runtime.refreshOverlayIndex();
+        const mainIndexAfter = runtime.overlayIndexVexStableKeys(
+          runtime.projectId,
+        );
         runtime.evidence.set("human-edit-reject", {
           beforeDecisionCount,
           beforeReviewedCount,
           afterReviewedCount,
           beforePlan,
           afterPlan,
+          deletedIndexCount,
+          mainIndexBefore,
+          mainIndexAfter,
           durableOverlay,
           stagedDiff: stagedDiff.stdout,
           commit: commit.stdout,
@@ -2370,6 +2386,14 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           "edited decision provenance",
         );
         const stagedDiff = string(evidence["stagedDiff"], "reviewed diff");
+        const mainIndexBefore = array(
+          evidence["mainIndexBefore"],
+          "pre-review main overlay index",
+        ).map((key) => string(key, "pre-review main overlay key"));
+        const mainIndexAfter = array(
+          evidence["mainIndexAfter"],
+          "restored main overlay index",
+        ).map((key) => string(key, "restored main overlay key"));
         return [
           assertion(
             "committed post-policy seed starts with 305 proposed decisions",
@@ -2393,9 +2417,14 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           ),
           assertion(
             "reviewed plan has no hidden cache residue",
-            !afterItems.some((item) =>
-              JSON.stringify(item).includes(DELETED_CVE),
-            ),
+            evidence["deletedIndexCount"] === 0,
+            `overlayIndexRows=${String(evidence["deletedIndexCount"])}`,
+          ),
+          assertion(
+            "human review restores the main worktree overlay index",
+            mainIndexBefore.length > 0 &&
+              mainIndexBefore.every((key) => mainIndexAfter.includes(key)),
+            `before=${mainIndexBefore.length} after=${mainIndexAfter.length}`,
           ),
           assertion(
             "review changed tracked YAML without mutating upstream base state",
@@ -2591,6 +2620,8 @@ async function createRun(
     },
     configure: async ({ bb, host, worktree: configuredWorktree }) => {
       worktree = configuredWorktree;
+      // The warm seed is scoped to project-ax3000-demo/pv-ax3000-*; beats 1-14
+      // use project-4a752600a07a/pv-a481df87dadf, so their rows stay disjoint.
       await copyFile(
         join(worktree, GOLDEN_SEED_WARM_DATABASE),
         join(host.harness.storageRoot, "data.db"),
@@ -2853,6 +2884,46 @@ async function createRun(
             )
             .rebuild(root);
         },
+        overlayIndexVexCount: (overlayProjectId, cve) => {
+          const statement = cve
+            ? ctx.db().prepare(
+                `SELECT COUNT(*) AS count
+                   FROM overlay_index
+                  WHERE project_id = ?
+                    AND entity_kind = 'vexDecision'
+                    AND cve = ?`,
+              )
+            : ctx.db().prepare(
+                `SELECT COUNT(*) AS count
+                   FROM overlay_index
+                  WHERE project_id = ?
+                    AND entity_kind = 'vexDecision'`,
+              );
+          const row = object(
+            cve
+              ? statement.get(overlayProjectId, cve)
+              : statement.get(overlayProjectId),
+            "overlay index VEX count",
+          );
+          return number(row["count"], "overlay index VEX count");
+        },
+        overlayIndexVexStableKeys: (overlayProjectId) =>
+          ctx
+            .db()
+            .prepare(
+              `SELECT DISTINCT stable_key
+                 FROM overlay_index
+                WHERE project_id = ?
+                  AND entity_kind = 'vexDecision'
+                ORDER BY stable_key`,
+            )
+            .all(overlayProjectId)
+            .map((row) =>
+              string(
+                object(row, "overlay index VEX row")["stable_key"],
+                "overlay index VEX stable key",
+              ),
+            ),
         human: null,
       };
     },
