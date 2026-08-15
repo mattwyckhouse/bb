@@ -168,8 +168,9 @@ test("the shipped manifest prohibits WP02", async () => {
 // stopped here between drafting and owner ratification (both 2026-08-14).
 // WP56 was stopped for the transport chokepoint and released when AMD-0026
 // was ratified 2026-08-15. WP74 parked post-spike per the AUTHORITY
-// post-core ruling for L9.
-test("the shipped manifest temporarily stops WP74 with a resume condition", async () => {
+// post-core ruling for L9. WP100 paused on the syncSeedFromAs frozen-contract
+// owner gate hit at first dispatch 2026-08-15.
+test("the shipped manifest temporarily stops WP74 and WP100 with resume conditions", async () => {
   const { readFileSync } = await import("node:fs");
   const shipped = JSON.parse(
     readFileSync(
@@ -177,7 +178,10 @@ test("the shipped manifest temporarily stops WP74 with a resume condition", asyn
       "utf8",
     ),
   );
-  assert.deepEqual(shipped.dispatchPolicy.stoppedWorkPackages, ["WP74"]);
+  assert.deepEqual(shipped.dispatchPolicy.stoppedWorkPackages, [
+    "WP74",
+    "WP100",
+  ]);
   for (const wp of shipped.dispatchPolicy.stoppedWorkPackages) {
     const detail = shipped.dispatchPolicy.stoppedWorkPackageReasons[wp];
     assert.ok(detail.reason.length > 0, `${wp} needs a reason`);
