@@ -25,7 +25,7 @@ The Golden Loop is a product acceptance test, not a narrated video script. The h
 
 ## What to build
 
-1. Define a typed fourteen-beat scenario with setup, action, assertions, artifact capture, and timing per beat. A failure reports the beat and preserves the disposable run directory.
+1. Define a typed scenario for all registered beats (16 at time of writing), with setup, action, assertions, artifact capture, and timing per beat. A failure reports the beat and preserves the disposable run directory.
 2. Build on `createFakePluginHost({pluginId:"finite-state"})`, app test runtime, and owner-service injection points. Use public RPC/tool/CLI/UI surfaces; do not reach into private implementation merely to make tests pass.
 3. Create an isolated temporary git worktree per run from the WP-66 seed. Configure a deterministic test identity and never touch the developer's checkout or global git config.
 4. Add a strict network guard in offline mode: unexpected DNS/socket/HTTP calls fail with the caller/beat. Allow only in-process mock transport and loopback resources explicitly owned by the harness.
@@ -88,7 +88,7 @@ export const GOLDEN_LOOP_BEATS: readonly {
 
 ## Acceptance criteria
 
-- [ ] Fourteen ordered beats execute independently and as one scenario in a disposable worktree.
+- [ ] All registered beats (16 at time of writing) execute independently and as one ordered scenario in a disposable worktree.
 - [ ] Offline mode fails on any undeclared external network request and is the default CI mode.
 - [ ] Human-only capabilities cannot be invoked through the agent-tool registry.
 - [ ] Assertions use public surfaces and durable state, not test-only truth flags.

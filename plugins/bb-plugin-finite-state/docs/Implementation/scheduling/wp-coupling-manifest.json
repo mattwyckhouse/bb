@@ -230,11 +230,22 @@
     "prohibitedWorkPackageReasons": {
       "WP02": "ADR — bb Is Not Modified: builtin registration is a BB release decision; dispatch is prohibited and FS-16 stays in backlog until the ADR is superseded."
     },
-    "stoppedWorkPackages": ["WP67", "WP74", "WP78", "WP82", "WP100"],
+    "stoppedWorkPackages": ["WP67", "WP68", "WP69", "WP74", "WP78", "WP82"],
     "stoppedWorkPackageReasons": {
       "WP67": {
-        "reason": "FS-81 first dispatch (2026-08-15 07:1xZ) verified the WP doc is superseded by shipped reality: the harness GOLDEN_LOOP_BEATS registry runs all fourteen beats green with no vacant slots (validateGoldenLoopScenario rejects WP-67's act-one beat names), the committed seed is post-policy (policyWritten: 305), and the interruption criterion needs production policy-run checkpointing (apply.ts aborts before persistReport) — all outside WP-67 ownership. No code was written. WP-68/69/70 chain behind this and inherit the same reconciliation.",
-        "resumeCondition": "Supervisor/owner reconciliation of WP-67/68/69/70 against the shipped 14-beat harness: either declare them superseded where covered and commission narrow replacement WPs for the genuinely missing journey semantics (pre-policy seed variant + policy dry-run-to-write beat, durable partial policy-run persistence, human edit/reject diff journey), or ratify revised WP docs. Escalated 2026-08-15 07:2xZ; also queued in the morning digest."
+        "permanentlySuperseded": true,
+        "reason": "Permanently superseded by owner confirmation on 2026-08-15 at 11:09Z. The shipped Golden Loop registry contains all registered beats (16 at confirmation); residual value was delivered by FS-230 (pre-policy seed + policy beat 16, https://github.com/mattwyckhouse/bb/pull/217), FS-231 plus FS-233 follow-ups (durable partial policy-run persistence, https://github.com/mattwyckhouse/bb/pull/215 and https://github.com/mattwyckhouse/bb/pull/218), and FS-232 (human edit/reject diff journey, beat 15, https://github.com/mattwyckhouse/bb/pull/216).",
+        "resumeCondition": "None — this work package is permanently superseded and must not be dispatched."
+      },
+      "WP68": {
+        "permanentlySuperseded": true,
+        "reason": "Permanently superseded by owner confirmation on 2026-08-15 at 11:09Z. The shipped Golden Loop registry contains all registered beats (16 at confirmation); residual value was delivered by FS-230 (pre-policy seed + policy beat 16, https://github.com/mattwyckhouse/bb/pull/217), FS-231 plus FS-233 follow-ups (durable partial policy-run persistence, https://github.com/mattwyckhouse/bb/pull/215 and https://github.com/mattwyckhouse/bb/pull/218), and FS-232 (human edit/reject diff journey, beat 15, https://github.com/mattwyckhouse/bb/pull/216).",
+        "resumeCondition": "None — this work package is permanently superseded and must not be dispatched."
+      },
+      "WP69": {
+        "permanentlySuperseded": true,
+        "reason": "Permanently superseded by owner confirmation on 2026-08-15 at 11:09Z. The shipped Golden Loop registry contains all registered beats (16 at confirmation); residual value was delivered by FS-230 (pre-policy seed + policy beat 16, https://github.com/mattwyckhouse/bb/pull/217), FS-231 plus FS-233 follow-ups (durable partial policy-run persistence, https://github.com/mattwyckhouse/bb/pull/215 and https://github.com/mattwyckhouse/bb/pull/218), and FS-232 (human edit/reject diff journey, beat 15, https://github.com/mattwyckhouse/bb/pull/216).",
+        "resumeCondition": "None — this work package is permanently superseded and must not be dispatched."
       },
       "WP78": {
         "reason": "L9 is post-core per the AUTHORITY ruling (2026-08-14) and the overnight operating directive (2026-08-15) forbids opening L9/L10. WP78 became dependency-ready when WP44 shipped, so without this stop the ready-queue watchdog re-flags FS-113 every cycle.",
@@ -243,10 +254,6 @@
       "WP82": {
         "reason": "L10 is post-core per the AUTHORITY ruling (2026-08-14) and the overnight operating directive (2026-08-15) explicitly forbids opening L9/L10. WP82 became dependency-ready when WP56 shipped, so without this stop the ready-queue watchdog re-flags FS-117 every cycle.",
         "resumeCondition": "Core complete (G4 beats and the AUTHORITY near-term set WP99-WP102 landed) or explicit owner reprioritization of L10 - same gate as WP74."
-      },
-      "WP100": {
-        "reason": "FS-216 implementer hit a genuine frozen-interface conflict on first dispatch (2026-08-15 02:3xZ): WP-100 requires a human-only Sync-panel seed RPC but shared/contract.ts v11 has no seed method, and the seed write-root (.fs/** vs product-security/** vs both) is ambiguous against the frozen path registry. Paused per the overnight owner-gates-never-idle-capacity directive; no code was written.",
-        "resumeCondition": "Owner answers both morning-digest items: (1) ratify a syncSeedFromAs human-only amendment or defer the panel RPC out of WP-100 v1 (CLI-only needs no contract change), and (2) clarify the seed write roots. Re-dispatch is a fresh worktree."
       },
       "WP74": {
         "reason": "L9 is post-core per the AUTHORITY ruling (2026-08-14). The KiCanvas go/no-go spike completed with a NO-GO verdict (FS-109, PR #174 parked partial); the remaining lane build-out is parked so L9 does not creep open while core (G4 beats, AUTHORITY near-term set) is still building. FS-219 (missing GET /hw/artifact route) is parked under the same gate.",
@@ -1217,8 +1224,8 @@
       "sequence": 6,
       "riskTier": "standard",
       "preset": "fs-standard",
-      "dependencies": ["WP64", "WP69"],
-      "reason": "Offline recovery and the demo runbook must describe and verify the final harness behavior."
+      "dependencies": ["WP64"],
+      "reason": "Offline recovery and the demo runbook must describe and verify the final harness behavior. WP69 was removed as a dependency after its permanent supersession was owner-confirmed on 2026-08-15 at 11:09Z."
     },
     {
       "wp": "WP71",

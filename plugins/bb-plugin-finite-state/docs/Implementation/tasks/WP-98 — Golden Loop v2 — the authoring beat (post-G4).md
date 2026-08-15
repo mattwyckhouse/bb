@@ -20,7 +20,7 @@ Production source, composition roots, frozen interfaces, fixture corpus, `test/e
 
 ## Context
 
-Golden Loop v1 hand-waves the source fix: the agent uses native Edit and the beat lands quietly. SPEC 08 makes that beat real — "implement the fix in firmware source" becomes a grounded, citation-gated, gate-pipelined authoring pass. This WP scripts and rehearses that v2 beat **post-G4**: G4's bar (fourteen v1 beats, offline, warm cache, twice, under fifteen minutes) is **unchanged**, and nothing here may alter it. The v2 beat is additive demo material with its own runbook section and failure-recovery notes, following WP-70's discipline — offline, warm cache, deterministic fixtures, no silent fallbacks.
+Golden Loop v1 hand-waves the source fix: the agent uses native Edit and the beat lands quietly. SPEC 08 makes that beat real — "implement the fix in firmware source" becomes a grounded, citation-gated, gate-pipelined authoring pass. This WP scripts and rehearses that v2 beat **post-G4**: G4's bar (all registered beats — 16 at time of writing — offline, warm cache, twice, under fifteen minutes) is **unchanged**, and nothing here may alter it. The v2 beat is additive demo material with its own runbook section and failure-recovery notes, following WP-70's discipline — offline, warm cache, deterministic fixtures, no silent fallbacks.
 
 The scripted arc: the EARS requirement from beat 8 (REQ-118) → `fs_ground_query` returns a **cited** plan → citation-gated code, with one constant left uncited **on purpose, once**, so the audience watches the quarantine fire → the citation is found and the value re-enters → the authoring gate pipeline (`.fs/workflows/authoring-gate.yaml`, WP-95) runs its gates → `fs_build` (WP-96) produces a digest-bound `build_run` → the existing downstream beats — bench run, verdict card, requirement flips, one commit — proceed unchanged. If the L10 surfaces are unavailable, the beat **degrades to the v1 stub** (native Edit), labeled, never silently.
 
@@ -59,7 +59,7 @@ The scripted arc: the EARS requirement from beat 8 (REQ-118) → `fs_ground_quer
 
 ## Acceptance criteria
 
-- [ ] The v1 fourteen-beat pass is byte-for-byte unaffected: G4 suites run green with this WP's files present and the v2 beat never invoked.
+- [ ] The registered-beat pass (16 beats at time of writing) is byte-for-byte unaffected: G4 suites run green with this WP's files present and the v2 beat never invoked.
 - [ ] Every value in the authored change is cited or quarantined; the scripted uncited constant is demonstrably blocked before resolution and cited after.
 - [ ] The citations gate fails the pipeline while a quarantined value exists; no gate can be skipped by a fixture flag.
 - [ ] `build_run.digest` equals the attestation subject verified downstream; the requirement flips only after ingested results cover it.

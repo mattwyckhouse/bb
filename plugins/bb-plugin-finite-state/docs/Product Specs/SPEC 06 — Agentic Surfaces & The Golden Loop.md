@@ -638,7 +638,7 @@ Most of this layer ships _inside_ Phases 2–5 — each surface lands its own to
 | 6.3  | **Skills pass** — root skill, final wording of all eight, triggering eval (20 scripted asks route to the right skill/tool), plugin-commands verification                                            | 2–3 d            |
 | 6.4  | **Context injection** — status block via instruction contribution, token budget telemetry on tool responses                                                                                         | 1–2 d            |
 | 6.5  | **Golden Loop fixtures** — AX3000 v2.3/v2.4 pair with seeded carry-forward loss, KEV finding, THREAT-22 gap, pre-warmed rehost image, dev-tenant seed, canned bench run fallback                    | 2–3 d            |
-| 6.6  | **Loop wiring + rehearsal** — script beats 1–14, offline warm-cache pass end-to-end, interruption chaos tests (§7.4), two consecutive clean runs                                                    | 3–4 d            |
+| 6.6  | **Loop wiring + rehearsal** — script all registered beats (16 at time of writing), offline warm-cache pass end-to-end, interruption chaos tests (§7.4), two consecutive clean runs                  | 3–4 d            |
 |      | **Total**                                                                                                                                                                                           | **~2.5–3.5 wks** |
 
 **Definition of done for the layer:**

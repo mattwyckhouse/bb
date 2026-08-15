@@ -1,7 +1,7 @@
 # WP-70 — Offline mode, demo runbook & failure recovery
 
 **Lane:** L8 Demo & E2E · **Spec:** SPEC 00 §10–12 · SPEC 06 §7–9 · Master Plan G4 · **Effort:** 2 d · **Status:** unassigned
-**Depends on:** WP-69, WP-64 and all Golden Loop production dependencies · **Blocks:** G4 release/demo gate
+**Depends on:** WP-64 and all Golden Loop production dependencies · **Blocks:** G4 release/demo gate
 **Produces a FROZEN artifact:** no
 
 ## Files you own
@@ -28,7 +28,7 @@ G4 requires the Golden Loop to run unattended and offline from a warm cache, twi
 ## What to build
 
 1. Harden the network guard across fetch/HTTP/MCP/socket paths used by the plugin. Log and fail the originating beat on any undeclared external destination.
-2. Run all fourteen beats twice from independently copied warm seeds. Assert semantic reports/commits/evidence match and total duration stays below fifteen minutes per run on the documented reference machine.
+2. Run all registered beats (16 at time of writing) twice from independently copied warm seeds. Assert semantic reports/commits/evidence match and total duration stays below fifteen minutes per run on the documented reference machine.
 3. Define and inject six named failure scenarios with deterministic trigger points and recovery assertions:
    - stale upstream tuple / same-field conflict before push;
    - partial VEX bulk failure plus mid-push disconnect with resumable base advance;
