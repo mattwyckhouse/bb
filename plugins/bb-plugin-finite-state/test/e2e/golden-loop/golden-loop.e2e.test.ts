@@ -71,8 +71,10 @@ const REVIEWED_BY = "human:golden-loop-reviewer";
 const EDITED_CVE = "CVE-2026-106002";
 const DELETED_CVE = "CVE-2026-106003";
 const BENCH_VERSION = "pv-a481df87dadf";
-const POLICY_PROJECT_ID = "project-ax3000-demo";
-const POLICY_VERSION = "pv-ax3000-2.4";
+const POLICY_PROJECT_ID = "project-ax3000-pre-policy";
+const POLICY_VERSION = "pv-ax3000-pre-policy-2.4";
+const POLICY_RACE_PROJECT_ID = "project-ax3000-pre-policy-race";
+const POLICY_RACE_VERSION = "pv-ax3000-pre-policy-2.3";
 const execFileAsync = promisify(execFile);
 
 interface Runtime {
@@ -2486,6 +2488,30 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
     {
       ...metadata(16),
       action: async ({ artifacts }) => {
+        // Install this identity-disjoint corpus only for its owning beat. This
+        // keeps earlier beats isolated and composes with the warm-cache seed
+        // installed by FS-232 without overlapping any durable primary keys.
+        importPrePolicyDatabase(
+          runtime.db,
+          join(PRE_POLICY_SEED_ROOT, "warm-cache", "data.db"),
+        );
+        await mkdir(join(runtime.worktree, ".fs", "triage"), {
+          recursive: true,
+        });
+        await writeFile(
+          join(runtime.worktree, ".fs", "triage", "policy.yaml"),
+          await readFile(
+            join(
+              PRE_POLICY_SEED_ROOT,
+              "worktree",
+              ".fs",
+              "triage",
+              "policy.yaml",
+            ),
+            "utf8",
+          ),
+          "utf8",
+        );
         const humanBefore = runtime.db
           .prepare(
             `SELECT stable_key, vex_status, vex_justification, vex_reason
@@ -2498,9 +2524,12 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           throw new Error("Pre-policy durable human decision is missing");
         }
         const initialRuns = runtime.db
-          .prepare("SELECT COUNT(*) FROM triage_runs")
+          .prepare(
+            `SELECT COUNT(*) FROM triage_runs
+              WHERE project_id = ? AND project_version_id = ?`,
+          )
           .pluck()
-          .get();
+          .get(POLICY_PROJECT_ID, POLICY_VERSION);
         const remoteBefore = remoteSnapshot(runtime);
         const remoteWriteCountBefore = runtime.remoteWriteCalls.length;
         const preview = object(
@@ -2525,9 +2554,12 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           "policy preview digest",
         );
         const runsAfterPreview = runtime.db
-          .prepare("SELECT COUNT(*) FROM triage_runs")
+          .prepare(
+            `SELECT COUNT(*) FROM triage_runs
+              WHERE project_id = ? AND project_version_id = ?`,
+          )
           .pluck()
-          .get();
+          .get(POLICY_PROJECT_ID, POLICY_VERSION);
         const applied = object(
           await runtime.host.harness.behavior.callRpc("triagePolicyApply", {
             projectId: WORKSPACE_PROJECT_ID,
@@ -2567,11 +2599,83 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           )
           .get(POLICY_PROJECT_ID, POLICY_VERSION);
         if (!kev) throw new Error("Pre-policy KEV finding is missing");
+        const raceTarget = runtime.db
+          .prepare<[string, string], { stable_key: string; cve: string }>(
+            `SELECT stable_key, cve
+               FROM findings
+              WHERE project_id = ? AND project_version_id = ?
+                AND severity = 'high' AND in_kev = 0 AND soft_deleted = 0
+                AND vex_status IS NULL AND vex_response IS NULL
+                AND vex_justification IS NULL AND vex_reason IS NULL
+              ORDER BY stable_key COLLATE BINARY
+              LIMIT 1`,
+          )
+          .get(POLICY_RACE_PROJECT_ID, POLICY_RACE_VERSION);
+        if (!raceTarget) {
+          throw new Error("Pre-policy concurrent-decision target is missing");
+        }
+        const racePreview = object(
+          await runtime.host.harness.behavior.callRpc("triagePolicyPreview", {
+            projectId: WORKSPACE_PROJECT_ID,
+            projectVersionId: POLICY_RACE_VERSION,
+            pageSize: 50,
+            continuation: null,
+          }),
+          "concurrent-decision policy preview",
+        );
+        const racePreviewFields = object(
+          object(
+            array(racePreview["items"], "race policy preview items")[0],
+            "race policy preview item",
+          )["fields"],
+          "race policy preview fields",
+        );
+        const concurrentWrite = runtime.db
+          .prepare(
+            `UPDATE findings
+                SET vex_status = 'IN_TRIAGE',
+                    vex_reason = 'Golden Loop concurrent human review'
+              WHERE project_id = ? AND project_version_id = ?
+                AND stable_key = ? AND soft_deleted = 0`,
+          )
+          .run(
+            POLICY_RACE_PROJECT_ID,
+            POLICY_RACE_VERSION,
+            raceTarget.stable_key,
+          );
+        if (concurrentWrite.changes !== 1) {
+          throw new Error("Concurrent durable human decision was not written");
+        }
+        const raceApplied = object(
+          await runtime.host.harness.behavior.callRpc("triagePolicyApply", {
+            projectId: WORKSPACE_PROJECT_ID,
+            projectVersionId: POLICY_RACE_VERSION,
+            pageSize: 50,
+            continuation: null,
+            runId: string(racePreview["runId"], "race preview run id"),
+            expectedPolicySha256: string(
+              racePreviewFields["policySha256"],
+              "race policy preview digest",
+            ),
+          }),
+          "concurrent-decision policy apply",
+        );
+        const raceDurable = object(
+          await runtime.host.harness.behavior.callRpc("triageSummaryGet", {
+            projectId: POLICY_RACE_PROJECT_ID,
+            projectVersionId: POLICY_RACE_VERSION,
+            runId: string(racePreview["runId"], "race policy run id"),
+          }),
+          "concurrent-decision durable policy summary",
+        );
         const overlayModule =
           await import("../../../lanes/findings/overlay/reader.js");
         const overlays = await overlayModule.readOverlayFiles(runtime.worktree);
         const authoredCves = overlays.files
           .filter((file) => file.overlay.project === POLICY_PROJECT_ID)
+          .flatMap((file) => Object.keys(file.overlay.decisions));
+        const raceAuthoredCves = overlays.files
+          .filter((file) => file.overlay.project === POLICY_RACE_PROJECT_ID)
           .flatMap((file) => Object.keys(file.overlay.decisions));
         const evidence = {
           initialRuns,
@@ -2582,6 +2686,12 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           humanBefore,
           humanAfter,
           kev,
+          raceTarget,
+          racePreview,
+          raceApplied,
+          raceDurable,
+          raceAuthoredDecisionCount: raceAuthoredCves.length,
+          raceTargetAuthored: raceAuthoredCves.includes(raceTarget.cve),
           authoredDecisionCount: authoredCves.length,
           kevAuthored: authoredCves.includes(kev.cve),
           overlayErrors: overlays.errors,
@@ -2608,6 +2718,29 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
         const applied = object(evidence["applied"], "policy apply");
         const durable = object(evidence["durable"], "durable policy summary");
         const kev = object(evidence["kev"], "KEV finding");
+        const raceTarget = object(
+          evidence["raceTarget"],
+          "concurrent human decision",
+        );
+        const racePreview = object(
+          evidence["racePreview"],
+          "concurrent-decision policy preview",
+        );
+        const racePreviewFields = object(
+          object(
+            array(racePreview["items"], "race policy preview items")[0],
+            "race policy preview item",
+          )["fields"],
+          "race policy preview fields",
+        );
+        const raceApplied = object(
+          evidence["raceApplied"],
+          "concurrent-decision policy apply",
+        );
+        const raceDurable = object(
+          evidence["raceDurable"],
+          "concurrent-decision durable policy summary",
+        );
         const holdbacks = array(durable["holdbacks"], "durable holdbacks");
         return [
           assertion(
@@ -2619,17 +2752,19 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           ),
           assertion(
             "registered preview and apply write all eligible proposals",
-            previewFields["wouldWrite"] === 305 &&
+            previewFields["wouldWrite"] === 304 &&
+              previewFields["skippedExisting"] === 1 &&
               preview["held"] === 1 &&
-              applied["written"] === 305 &&
+              applied["written"] === 304 &&
               applied["held"] === 1,
           ),
           assertion(
-            "durable policy summary records 305 writes and one KEV holdback",
+            "durable policy summary records 304 writes, one existing decision, and one KEV holdback",
             durable["source"] === "policy" &&
               durable["status"] === "completed" &&
-              durable["written"] === 305 &&
+              durable["written"] === 304 &&
               durable["held"] === 1 &&
+              durable["skippedExisting"] === 1 &&
               holdbacks.some(
                 (item) =>
                   object(item, "durable holdback")["stableKey"] ===
@@ -2637,8 +2772,8 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
               ),
           ),
           assertion(
-            "KEV remains held while 305 local YAML decisions are durable",
-            evidence["authoredDecisionCount"] === 305 &&
+            "KEV remains held while 304 local YAML decisions are durable",
+            evidence["authoredDecisionCount"] === 304 &&
               evidence["kevAuthored"] === false &&
               array(evidence["overlayErrors"], "overlay errors").length === 0,
           ),
@@ -2646,6 +2781,17 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
             "existing human decision is byte-for-byte unchanged",
             JSON.stringify(evidence["humanAfter"]) ===
               JSON.stringify(evidence["humanBefore"]),
+          ),
+          assertion(
+            "apply preserves a durable human decision created after preview",
+            racePreviewFields["wouldWrite"] === 23 &&
+              racePreviewFields["skippedExisting"] === 0 &&
+              raceApplied["written"] === 22 &&
+              raceDurable["written"] === 22 &&
+              raceDurable["skippedExisting"] === 1 &&
+              evidence["raceAuthoredDecisionCount"] === 22 &&
+              evidence["raceTargetAuthored"] === false &&
+              typeof raceTarget["stable_key"] === "string",
           ),
           assertion(
             "policy apply performs no remote write",
@@ -3020,25 +3166,6 @@ async function createRun(
         },
       });
       const ctx = contextModule.createPluginContext(bb);
-      importPrePolicyDatabase(
-        ctx.db(),
-        join(PRE_POLICY_SEED_ROOT, "warm-cache", "data.db"),
-      );
-      await mkdir(join(worktree, ".fs", "triage"), { recursive: true });
-      await writeFile(
-        join(worktree, ".fs", "triage", "policy.yaml"),
-        await readFile(
-          join(
-            PRE_POLICY_SEED_ROOT,
-            "worktree",
-            ".fs",
-            "triage",
-            "policy.yaml",
-          ),
-          "utf8",
-        ),
-        "utf8",
-      );
       ctx.service("remote-services", () => ({
         platform,
         assuranceStudio,

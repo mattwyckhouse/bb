@@ -54,6 +54,10 @@ const PROJECT_ID = "project-ax3000-demo";
 const WORKSPACE_PROJECT_ID = "workspace-golden-loop";
 const V23_ID = "pv-ax3000-2.3";
 const V24_ID = "pv-ax3000-2.4";
+const PRE_POLICY_PROJECT_ID = "project-ax3000-pre-policy";
+const PRE_POLICY_RACE_PROJECT_ID = "project-ax3000-pre-policy-race";
+const PRE_POLICY_V23_ID = "pv-ax3000-pre-policy-2.3";
+const PRE_POLICY_V24_ID = "pv-ax3000-pre-policy-2.4";
 const GENERATOR_VERSION = "wp66-v2";
 const PRE_POLICY_VARIANT = "pre-policy";
 const EXPECTED = {
@@ -91,9 +95,19 @@ export type PrePolicyGoldenSeedManifest = {
   variant: typeof PRE_POLICY_VARIANT;
   seed: number;
   generatedAt: string;
+  product: {
+    v23ProjectId: typeof PRE_POLICY_RACE_PROJECT_ID;
+    v24ProjectId: typeof PRE_POLICY_PROJECT_ID;
+    v23Id: typeof PRE_POLICY_V23_ID;
+    v24Id: typeof PRE_POLICY_V24_ID;
+  };
   expected: {
     policyMatches: 306;
     policyWritten: 0;
+    policyWouldWrite: 304;
+    heldKev: 1;
+    skippedExisting: 1;
+    racePolicyMatches: 23;
     humanDecisions: 1;
     triageRuns: 0;
   };
@@ -720,6 +734,161 @@ options:
   overwrite_existing: false
 `;
 
+function rewritePrePolicyIdentity(db: Database.Database): void {
+  type FindingIdentityRow = {
+    project_version_id: string;
+    generation_id: string;
+    finding_id: string;
+    component_name: string;
+    component_group: string | null;
+    component_version: string | null;
+    component_purl: string | null;
+    cve: string | null;
+    raw: string;
+  };
+  const findings = db
+    .prepare(
+      `SELECT project_version_id, generation_id, finding_id,
+              component_name, component_group, component_version,
+              component_purl, cve, raw
+         FROM findings
+        WHERE project_id = ?
+        ORDER BY project_version_id, generation_id, finding_id`,
+    )
+    .all(PROJECT_ID) as FindingIdentityRow[];
+  const updateFinding = db.prepare(
+    `UPDATE findings
+        SET stable_key = ?, raw = ?
+      WHERE project_id = ? AND project_version_id = ?
+        AND generation_id = ? AND finding_id = ?`,
+  );
+  const tables = db
+    .prepare(
+      `SELECT name
+         FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+          AND name != '_bb_migrations'
+        ORDER BY name`,
+    )
+    .pluck()
+    .all() as string[];
+
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      for (const row of findings) {
+        if (row.cve === null) {
+          throw new Error("pre-policy finding CVE is missing");
+        }
+        const component = {
+          purl: row.component_purl,
+          name: row.component_name,
+          group: row.component_group,
+          version: row.component_version,
+        };
+        const raw = JSON.parse(row.raw) as Record<string, Json>;
+        const rawProject = raw["project"];
+        const rawVersion = raw["projectVersion"];
+        if (
+          typeof rawProject !== "object" ||
+          rawProject === null ||
+          Array.isArray(rawProject) ||
+          typeof rawVersion !== "object" ||
+          rawVersion === null ||
+          Array.isArray(rawVersion)
+        ) {
+          throw new Error("pre-policy finding identity payload is malformed");
+        }
+        const prePolicyVersion =
+          row.project_version_id === V23_ID
+            ? PRE_POLICY_V23_ID
+            : row.project_version_id === V24_ID
+              ? PRE_POLICY_V24_ID
+              : null;
+        const prePolicyProject =
+          row.project_version_id === V23_ID
+            ? PRE_POLICY_RACE_PROJECT_ID
+            : PRE_POLICY_PROJECT_ID;
+        if (prePolicyVersion === null) {
+          throw new Error(
+            `unexpected pre-policy source version ${row.project_version_id}`,
+          );
+        }
+        raw["project"] = { ...rawProject, id: prePolicyProject };
+        raw["projectVersion"] = { ...rawVersion, id: prePolicyVersion };
+        updateFinding.run(
+          stableKeyFor(prePolicyProject, component, row.cve),
+          JSON.stringify(raw),
+          PROJECT_ID,
+          row.project_version_id,
+          row.generation_id,
+          row.finding_id,
+        );
+      }
+
+      for (const table of tables) {
+        if (!/^[A-Za-z0-9_]+$/u.test(table)) {
+          throw new Error(`unsafe pre-policy table name: ${table}`);
+        }
+        const columns = new Set(
+          (
+            db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+              name: string;
+            }>
+          ).map(({ name }) => name),
+        );
+        if (columns.has("project_id") && columns.has("project_version_id")) {
+          db.prepare(
+            `UPDATE ${table}
+              SET project_id = CASE project_version_id
+                WHEN ? THEN ?
+                WHEN ? THEN ?
+                ELSE project_id
+              END
+            WHERE project_id = ? AND project_version_id IN (?, ?)`,
+          ).run(
+            V23_ID,
+            PRE_POLICY_RACE_PROJECT_ID,
+            V24_ID,
+            PRE_POLICY_PROJECT_ID,
+            PROJECT_ID,
+            V23_ID,
+            V24_ID,
+          );
+        } else if (columns.has("project_id")) {
+          db.prepare(
+            `UPDATE ${table} SET project_id = ? WHERE project_id = ?`,
+          ).run(PRE_POLICY_PROJECT_ID, PROJECT_ID);
+        }
+        if (columns.has("project_version_id")) {
+          db.prepare(
+            `UPDATE ${table}
+              SET project_version_id = CASE project_version_id
+                WHEN ? THEN ?
+                WHEN ? THEN ?
+                ELSE project_version_id
+              END
+            WHERE project_version_id IN (?, ?)`,
+          ).run(
+            V23_ID,
+            PRE_POLICY_V23_ID,
+            V24_ID,
+            PRE_POLICY_V24_ID,
+            V23_ID,
+            V24_ID,
+          );
+        }
+      }
+    })();
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
+  const foreignKeyViolations = db.pragma("foreign_key_check");
+  if (!Array.isArray(foreignKeyViolations) || foreignKeyViolations.length > 0) {
+    throw new Error("pre-policy identity rewrite broke foreign keys");
+  }
+}
+
 async function generatePrePolicyVariant(
   root: string,
   seed: number,
@@ -742,21 +911,27 @@ async function generatePrePolicyVariant(
 
   const db = new Database(join(variantRoot, "warm-cache", "data.db"));
   try {
+    rewritePrePolicyIdentity(db);
     db.prepare(
       `INSERT INTO workspace_platform_project_binding
         (workspace_project_id, platform_project_id, assurance_studio_project_id)
-       VALUES (?, ?, NULL)`,
-    ).run(WORKSPACE_PROJECT_ID, PROJECT_ID);
+       VALUES (?, ?, NULL), (?, ?, NULL)`,
+    ).run(
+      WORKSPACE_PROJECT_ID,
+      PRE_POLICY_PROJECT_ID,
+      WORKSPACE_PROJECT_ID,
+      PRE_POLICY_RACE_PROJECT_ID,
+    );
     const human = db
       .prepare<[string, string], { generation_id: string; finding_id: string }>(
         `SELECT generation_id, finding_id
            FROM findings
           WHERE project_id = ? AND project_version_id = ?
-            AND severity = 'low' AND soft_deleted = 0
+            AND severity = 'high' AND in_kev = 0 AND soft_deleted = 0
           ORDER BY stable_key COLLATE BINARY
           LIMIT 1`,
       )
-      .get(PROJECT_ID, V24_ID);
+      .get(PRE_POLICY_PROJECT_ID, PRE_POLICY_V24_ID);
     if (!human) throw new Error("pre-policy human finding is missing");
     db.prepare(
       `UPDATE findings
@@ -765,7 +940,12 @@ async function generatePrePolicyVariant(
               vex_reason = 'Golden Loop durable human review'
         WHERE project_id = ? AND project_version_id = ?
           AND generation_id = ? AND finding_id = ?`,
-    ).run(PROJECT_ID, V24_ID, human.generation_id, human.finding_id);
+    ).run(
+      PRE_POLICY_PROJECT_ID,
+      PRE_POLICY_V24_ID,
+      human.generation_id,
+      human.finding_id,
+    );
     db.pragma("journal_mode = DELETE");
     db.exec("VACUUM");
   } finally {
@@ -795,9 +975,19 @@ async function generatePrePolicyVariant(
     variant: PRE_POLICY_VARIANT,
     seed,
     generatedAt: GENERATED_AT,
+    product: {
+      v23ProjectId: PRE_POLICY_RACE_PROJECT_ID,
+      v24ProjectId: PRE_POLICY_PROJECT_ID,
+      v23Id: PRE_POLICY_V23_ID,
+      v24Id: PRE_POLICY_V24_ID,
+    },
     expected: {
       policyMatches: 306,
       policyWritten: 0,
+      policyWouldWrite: 304,
+      heldKev: 1,
+      skippedExisting: 1,
+      racePolicyMatches: 23,
       humanDecisions: 1,
       triageRuns: 0,
     },
@@ -1293,8 +1483,16 @@ export async function verifyPrePolicyGoldenSeed(
     manifest.generatorVersion !== GENERATOR_VERSION ||
     manifest.variant !== PRE_POLICY_VARIANT ||
     manifest.generatedAt !== GENERATED_AT ||
+    manifest.product?.v23ProjectId !== PRE_POLICY_RACE_PROJECT_ID ||
+    manifest.product?.v24ProjectId !== PRE_POLICY_PROJECT_ID ||
+    manifest.product.v23Id !== PRE_POLICY_V23_ID ||
+    manifest.product.v24Id !== PRE_POLICY_V24_ID ||
     manifest.expected.policyMatches !== 306 ||
     manifest.expected.policyWritten !== 0 ||
+    manifest.expected.policyWouldWrite !== 304 ||
+    manifest.expected.heldKev !== 1 ||
+    manifest.expected.skippedExisting !== 1 ||
+    manifest.expected.racePolicyMatches !== 23 ||
     manifest.expected.humanDecisions !== 1 ||
     manifest.expected.triageRuns !== 0 ||
     !Array.isArray(manifest.artifacts)
@@ -1331,11 +1529,53 @@ export async function verifyPrePolicyGoldenSeed(
             AND s.entity_kind = 'finding'
             AND s.accepted_generation_id = f.generation_id
           WHERE f.project_id = ? AND f.project_version_id = ?
+            AND f.severity = 'high' AND f.in_kev = 0
             AND f.vex_reason = 'Golden Loop durable human review'`,
       )
       .pluck()
-      .get(PROJECT_ID, V24_ID);
-    if (triageRuns !== 0 || humanDecisions !== 1) {
+      .get(PRE_POLICY_PROJECT_ID, PRE_POLICY_V24_ID);
+    const originalIdentityRows = db
+      .prepare(
+        `SELECT COUNT(*)
+           FROM findings
+          WHERE project_id = ? OR project_version_id IN (?, ?)`,
+      )
+      .pluck()
+      .get(PROJECT_ID, V23_ID, V24_ID);
+    const racePolicyMatches = db
+      .prepare(
+        `SELECT COUNT(*)
+           FROM findings f
+           JOIN sync_state s
+             ON s.project_id = f.project_id
+            AND s.project_version_id = f.project_version_id
+            AND s.entity_kind = 'finding'
+            AND s.accepted_generation_id = f.generation_id
+          WHERE f.project_id = ? AND f.project_version_id = ?
+            AND f.severity = 'high' AND f.soft_deleted = 0`,
+      )
+      .pluck()
+      .get(PRE_POLICY_RACE_PROJECT_ID, PRE_POLICY_V23_ID);
+    const bindings = db
+      .prepare(
+        `SELECT COUNT(*)
+           FROM workspace_platform_project_binding
+          WHERE workspace_project_id = ?
+            AND platform_project_id IN (?, ?)`,
+      )
+      .pluck()
+      .get(
+        WORKSPACE_PROJECT_ID,
+        PRE_POLICY_PROJECT_ID,
+        PRE_POLICY_RACE_PROJECT_ID,
+      );
+    if (
+      triageRuns !== 0 ||
+      humanDecisions !== 1 ||
+      originalIdentityRows !== 0 ||
+      racePolicyMatches !== 23 ||
+      bindings !== 2
+    ) {
       throw new Error("pre-policy durable state mismatch");
     }
   } finally {

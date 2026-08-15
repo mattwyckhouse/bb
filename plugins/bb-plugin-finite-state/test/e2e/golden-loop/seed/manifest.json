@@ -38,12 +38,12 @@
     },
     {
       "path": "generate.ts",
-      "sha256": "edbe2c4eea20ab6416b739b9f1def32d27a17bd96fcfcc1d37c77a7e2e2524f3",
+      "sha256": "a10d4511508de6662b08c979e7781812518027be5452c404c8a56a9994f3ba0d",
       "purpose": "versioned deterministic Golden Loop generator"
     },
     {
       "path": "seed.test.ts",
-      "sha256": "bbb46597a205c1b763595bc21ac933046943b01ac32269126f7f9aa8c6bb35c4",
+      "sha256": "41eb8b06867d2eedfdc0976600aae5e998d78b82bed9492d53de7f5c803d3c5c",
       "purpose": "seed determinism, integrity, and safety tests"
     },
     {

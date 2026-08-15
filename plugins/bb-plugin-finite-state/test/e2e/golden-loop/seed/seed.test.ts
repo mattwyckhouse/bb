@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -141,6 +142,59 @@ describe("WP-66 Golden Loop seed", () => {
     await expect(verifyPrePolicyGoldenSeed(variant)).resolves.toBeUndefined();
     const dump = semanticDatabaseDump(join(variant, "warm-cache", "data.db"));
     expect(dump["triage_runs"]).toEqual([]);
+    const db = new Database(join(variant, "warm-cache", "data.db"), {
+      readonly: true,
+    });
+    try {
+      expect(
+        db
+          .prepare(
+            `SELECT project_id, project_version_id, severity, in_kev
+               FROM findings
+              WHERE vex_reason = 'Golden Loop durable human review'`,
+          )
+          .get(),
+      ).toEqual({
+        project_id: "project-ax3000-pre-policy",
+        project_version_id: "pv-ax3000-pre-policy-2.4",
+        severity: "high",
+        in_kev: 0,
+      });
+      expect(
+        db
+          .prepare(
+            `SELECT COUNT(*)
+               FROM findings
+              WHERE project_id = 'project-ax3000-demo'
+                 OR project_version_id IN ('pv-ax3000-2.3', 'pv-ax3000-2.4')`,
+          )
+          .pluck()
+          .get(),
+      ).toBe(0);
+      expect(
+        db
+          .prepare(
+            `SELECT project_id, project_version_id, COUNT(*) AS findings
+               FROM findings
+              GROUP BY project_id, project_version_id
+              ORDER BY project_version_id`,
+          )
+          .all(),
+      ).toEqual([
+        {
+          project_id: "project-ax3000-pre-policy-race",
+          project_version_id: "pv-ax3000-pre-policy-2.3",
+          findings: 25,
+        },
+        {
+          project_id: "project-ax3000-pre-policy",
+          project_version_id: "pv-ax3000-pre-policy-2.4",
+          findings: 412,
+        },
+      ]);
+    } finally {
+      db.close();
+    }
     expect(
       await readFile(
         join(variant, "worktree", ".fs", "triage", "policy.yaml"),

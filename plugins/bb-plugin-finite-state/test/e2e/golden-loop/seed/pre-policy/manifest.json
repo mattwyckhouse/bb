@@ -4,16 +4,26 @@
   "variant": "pre-policy",
   "seed": 66,
   "generatedAt": "2026-01-01T00:00:00.000Z",
+  "product": {
+    "v23ProjectId": "project-ax3000-pre-policy-race",
+    "v24ProjectId": "project-ax3000-pre-policy",
+    "v23Id": "pv-ax3000-pre-policy-2.3",
+    "v24Id": "pv-ax3000-pre-policy-2.4"
+  },
   "expected": {
     "policyMatches": 306,
     "policyWritten": 0,
+    "policyWouldWrite": 304,
+    "heldKev": 1,
+    "skippedExisting": 1,
+    "racePolicyMatches": 23,
     "humanDecisions": 1,
     "triageRuns": 0
   },
   "artifacts": [
     {
       "path": "warm-cache/data.db",
-      "sha256": "04ebf3c293f150dfddd6a4a70b5c2f57b94b6495a3dc928c1d0edac70190248a",
+      "sha256": "7eb3b19ab0a0f1c348c1884e4888a063940c2a658736299f3cfcf9d9bbf3c5b9",
       "purpose": "accepted finding cache before policy proposals are written",
       "schemaVersion": 121
     },
