@@ -17,7 +17,8 @@ export type BeatNumber =
   | 12
   | 13
   | 14
-  | 15;
+  | 15
+  | 16;
 
 export interface GoldenLoopAssertion {
   name: string;
@@ -123,6 +124,11 @@ export const GOLDEN_LOOP_BEATS = [
     number: 15,
     name: "FS-232 human edit and reject review",
     maxMs: 60_000,
+  },
+  {
+    number: 16,
+    name: "FS-230 pre-policy preview and local apply",
+    maxMs: 90_000,
   },
 ] as const satisfies readonly {
   number: BeatNumber;

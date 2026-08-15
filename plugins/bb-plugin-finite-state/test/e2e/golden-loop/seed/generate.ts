@@ -51,9 +51,11 @@ import { pull } from "../../../../lanes/sync/engine/pull.js";
 const execFileAsync = promisify(execFile);
 const GENERATED_AT = "2026-01-01T00:00:00.000Z";
 const PROJECT_ID = "project-ax3000-demo";
+const WORKSPACE_PROJECT_ID = "workspace-golden-loop";
 const V23_ID = "pv-ax3000-2.3";
 const V24_ID = "pv-ax3000-2.4";
 const GENERATOR_VERSION = "wp66-v2";
+const PRE_POLICY_VARIANT = "pre-policy";
 const EXPECTED = {
   newUntriaged: 412,
   policyMatches: 306,
@@ -75,6 +77,26 @@ export type GoldenSeedManifest = {
     v24: { pvId: string; firmwareDigest: string; fileCount: number };
   };
   expected: typeof EXPECTED;
+  artifacts: Array<{
+    path: string;
+    sha256: string;
+    purpose: string;
+    schemaVersion?: number;
+  }>;
+};
+
+export type PrePolicyGoldenSeedManifest = {
+  seedVersion: 1;
+  generatorVersion: typeof GENERATOR_VERSION;
+  variant: typeof PRE_POLICY_VARIANT;
+  seed: number;
+  generatedAt: string;
+  expected: {
+    policyMatches: 306;
+    policyWritten: 0;
+    humanDecisions: 1;
+    triageRuns: 0;
+  };
   artifacts: Array<{
     path: string;
     sha256: string;
@@ -681,6 +703,110 @@ function purpose(path: string): string {
   return "deterministic Golden Loop seed artifact";
 }
 
+const PRE_POLICY_YAML = `schema: fs-triage-policy/v1
+rules:
+  - name: broad-high-severity-review
+    when:
+      severity: high
+    set:
+      status: IN_TRIAGE
+      justification: null
+      response: null
+      reason: Golden Loop broad high-severity policy
+      pin: exact_version
+holdback:
+  - kev: true
+options:
+  overwrite_existing: false
+`;
+
+async function generatePrePolicyVariant(
+  root: string,
+  seed: number,
+): Promise<PrePolicyGoldenSeedManifest> {
+  const variantRoot = join(root, PRE_POLICY_VARIANT);
+  await rm(variantRoot, { recursive: true, force: true });
+  await mkdir(join(variantRoot, "warm-cache"), { recursive: true });
+  await mkdir(join(variantRoot, "worktree", ".fs", "triage"), {
+    recursive: true,
+  });
+  await copyFile(
+    join(root, "warm-cache", "data.db"),
+    join(variantRoot, "warm-cache", "data.db"),
+  );
+  await writeFile(
+    join(variantRoot, "worktree", ".fs", "triage", "policy.yaml"),
+    PRE_POLICY_YAML,
+    "utf8",
+  );
+
+  const db = new Database(join(variantRoot, "warm-cache", "data.db"));
+  try {
+    db.prepare(
+      `INSERT INTO workspace_platform_project_binding
+        (workspace_project_id, platform_project_id, assurance_studio_project_id)
+       VALUES (?, ?, NULL)`,
+    ).run(WORKSPACE_PROJECT_ID, PROJECT_ID);
+    const human = db
+      .prepare<[string, string], { generation_id: string; finding_id: string }>(
+        `SELECT generation_id, finding_id
+           FROM findings
+          WHERE project_id = ? AND project_version_id = ?
+            AND severity = 'low' AND soft_deleted = 0
+          ORDER BY stable_key COLLATE BINARY
+          LIMIT 1`,
+      )
+      .get(PROJECT_ID, V24_ID);
+    if (!human) throw new Error("pre-policy human finding is missing");
+    db.prepare(
+      `UPDATE findings
+          SET vex_status = 'NOT_AFFECTED',
+              vex_justification = 'CODE_NOT_REACHABLE',
+              vex_reason = 'Golden Loop durable human review'
+        WHERE project_id = ? AND project_version_id = ?
+          AND generation_id = ? AND finding_id = ?`,
+    ).run(PROJECT_ID, V24_ID, human.generation_id, human.finding_id);
+    db.pragma("journal_mode = DELETE");
+    db.exec("VACUUM");
+  } finally {
+    db.close();
+  }
+
+  const artifactPaths = await filesBelow(variantRoot);
+  const artifacts = await Promise.all(
+    artifactPaths.map(async (path) => {
+      const relativePath = relative(variantRoot, path).split(sep).join("/");
+      const artifact = {
+        path: relativePath,
+        sha256: sha256(await readFile(path)),
+        purpose:
+          relativePath === "worktree/.fs/triage/policy.yaml"
+            ? "tracked pre-policy rules with a broad match and KEV holdback"
+            : "accepted finding cache before policy proposals are written",
+      };
+      return relativePath.endsWith("data.db")
+        ? { ...artifact, schemaVersion: MIGRATIONS.length }
+        : artifact;
+    }),
+  );
+  const manifest: PrePolicyGoldenSeedManifest = {
+    seedVersion: 1,
+    generatorVersion: GENERATOR_VERSION,
+    variant: PRE_POLICY_VARIANT,
+    seed,
+    generatedAt: GENERATED_AT,
+    expected: {
+      policyMatches: 306,
+      policyWritten: 0,
+      humanDecisions: 1,
+      triageRuns: 0,
+    },
+    artifacts,
+  };
+  await writeJson(join(variantRoot, "manifest.json"), manifest);
+  return manifest;
+}
+
 export async function generateGoldenSeed(
   destination: string,
   seed: number,
@@ -689,7 +815,12 @@ export async function generateGoldenSeed(
     throw new Error("seed must be a non-negative integer");
   const root = resolve(destination);
   await mkdir(root, { recursive: true });
-  for (const owned of ["worktree", "warm-cache", "attestations"])
+  for (const owned of [
+    "worktree",
+    "warm-cache",
+    "attestations",
+    PRE_POLICY_VARIANT,
+  ])
     await rm(join(root, owned), { recursive: true, force: true });
   const worktree = join(root, "worktree");
   await initializeNestedWorktree(worktree);
@@ -806,6 +937,7 @@ export async function generateGoldenSeed(
     artifacts,
   };
   await writeJson(join(root, "manifest.json"), manifest);
+  await generatePrePolicyVariant(root, seed);
   return manifest;
 }
 
@@ -861,7 +993,10 @@ export async function verifyGoldenSeed(rootInput: string): Promise<void> {
   );
   const actualPaths = (await filesBelow(root))
     .map((path) => relative(root, path).split(sep).join("/"))
-    .filter((path) => path !== "manifest.json");
+    .filter(
+      (path) =>
+        path !== "manifest.json" && !path.startsWith(`${PRE_POLICY_VARIANT}/`),
+    );
   const declaredPaths = manifest.artifacts.map(({ path }) => path).sort();
   if (JSON.stringify(actualPaths) !== JSON.stringify(declaredPaths))
     throw new Error("artifact inventory mismatch");
@@ -1142,6 +1277,74 @@ export async function verifyGoldenSeed(rootInput: string): Promise<void> {
     )
   )
     throw new Error("attestation signature mismatch");
+
+  await verifyPrePolicyGoldenSeed(join(root, PRE_POLICY_VARIANT));
+}
+
+export async function verifyPrePolicyGoldenSeed(
+  rootInput: string,
+): Promise<void> {
+  const root = resolve(rootInput);
+  const manifest = JSON.parse(
+    await readFile(join(root, "manifest.json"), "utf8"),
+  ) as PrePolicyGoldenSeedManifest;
+  if (
+    manifest.seedVersion !== 1 ||
+    manifest.generatorVersion !== GENERATOR_VERSION ||
+    manifest.variant !== PRE_POLICY_VARIANT ||
+    manifest.generatedAt !== GENERATED_AT ||
+    manifest.expected.policyMatches !== 306 ||
+    manifest.expected.policyWritten !== 0 ||
+    manifest.expected.humanDecisions !== 1 ||
+    manifest.expected.triageRuns !== 0 ||
+    !Array.isArray(manifest.artifacts)
+  ) {
+    throw new Error("pre-policy manifest schema mismatch");
+  }
+  const actualPaths = (await filesBelow(root))
+    .map((path) => relative(root, path).split(sep).join("/"))
+    .filter((path) => path !== "manifest.json");
+  const declaredPaths = manifest.artifacts.map(({ path }) => path).sort();
+  if (JSON.stringify(actualPaths) !== JSON.stringify(declaredPaths)) {
+    throw new Error("pre-policy artifact inventory mismatch");
+  }
+  for (const artifact of manifest.artifacts) {
+    if (sha256(await readFile(join(root, artifact.path))) !== artifact.sha256) {
+      throw new Error(`pre-policy integrity error: ${artifact.path}`);
+    }
+  }
+  const db = new Database(join(root, "warm-cache", "data.db"), {
+    readonly: true,
+  });
+  try {
+    const triageRuns = db
+      .prepare("SELECT COUNT(*) FROM triage_runs")
+      .pluck()
+      .get();
+    const humanDecisions = db
+      .prepare(
+        `SELECT COUNT(*)
+           FROM findings f
+           JOIN sync_state s
+             ON s.project_id = f.project_id
+            AND s.project_version_id = f.project_version_id
+            AND s.entity_kind = 'finding'
+            AND s.accepted_generation_id = f.generation_id
+          WHERE f.project_id = ? AND f.project_version_id = ?
+            AND f.vex_reason = 'Golden Loop durable human review'`,
+      )
+      .pluck()
+      .get(PROJECT_ID, V24_ID);
+    if (triageRuns !== 0 || humanDecisions !== 1) {
+      throw new Error("pre-policy durable state mismatch");
+    }
+  } finally {
+    db.close();
+  }
+  const overlays = await readOverlayFiles(join(root, "worktree"));
+  if (overlays.errors.length > 0 || overlays.files.length !== 0) {
+    throw new Error("pre-policy seed contains authored proposals");
+  }
 }
 
 async function isEntrypoint(): Promise<boolean> {

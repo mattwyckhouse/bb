@@ -1,0 +1,26 @@
+{
+  "seedVersion": 1,
+  "generatorVersion": "wp66-v2",
+  "variant": "pre-policy",
+  "seed": 66,
+  "generatedAt": "2026-01-01T00:00:00.000Z",
+  "expected": {
+    "policyMatches": 306,
+    "policyWritten": 0,
+    "humanDecisions": 1,
+    "triageRuns": 0
+  },
+  "artifacts": [
+    {
+      "path": "warm-cache/data.db",
+      "sha256": "04ebf3c293f150dfddd6a4a70b5c2f57b94b6495a3dc928c1d0edac70190248a",
+      "purpose": "accepted finding cache before policy proposals are written",
+      "schemaVersion": 121
+    },
+    {
+      "path": "worktree/.fs/triage/policy.yaml",
+      "sha256": "35e5af38377762a0da6cf249e4de0bcaf315d6261fb2595e328f98ab8ae21faf",
+      "purpose": "tracked pre-policy rules with a broad match and KEV holdback"
+    }
+  ]
+}

@@ -9,6 +9,7 @@ import {
   generateGoldenSeed,
   semanticDatabaseDump,
   verifyGoldenSeed,
+  verifyPrePolicyGoldenSeed,
   type GoldenSeedManifest,
 } from "./generate.js";
 
@@ -92,6 +93,9 @@ describe("WP-66 Golden Loop seed", () => {
     expect(withoutDataDatabaseHash(firstManifest)).toEqual(
       withoutDataDatabaseHash(secondManifest),
     );
+    expect(await treeHashes(join(first, "pre-policy"))).toEqual(
+      await treeHashes(join(second, "pre-policy")),
+    );
     expect(semanticDatabaseDump(join(first, "warm-cache", "data.db"))).toEqual(
       semanticDatabaseDump(join(second, "warm-cache", "data.db")),
     );
@@ -129,6 +133,21 @@ describe("WP-66 Golden Loop seed", () => {
   it("verifies the committed Golden Loop seed", async () => {
     await expect(verifyGoldenSeed(COMMITTED_SEED)).resolves.toBeUndefined();
   });
+
+  it("generates a pre-policy variant with no proposals or durable runs", async () => {
+    const root = await temporaryRoot("pre-policy");
+    await generateGoldenSeed(root, 66);
+    const variant = join(root, "pre-policy");
+    await expect(verifyPrePolicyGoldenSeed(variant)).resolves.toBeUndefined();
+    const dump = semanticDatabaseDump(join(variant, "warm-cache", "data.db"));
+    expect(dump["triage_runs"]).toEqual([]);
+    expect(
+      await readFile(
+        join(variant, "worktree", ".fs", "triage", "policy.yaml"),
+        "utf8",
+      ),
+    ).toContain("broad-high-severity-review");
+  }, 60_000);
 
   it("expected drift, policy, KEV, threat, and trace counts hold", async () => {
     const root = await temporaryRoot("counts");
