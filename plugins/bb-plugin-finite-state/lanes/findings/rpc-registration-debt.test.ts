@@ -510,8 +510,7 @@ describe("FS-220 findings frozen registrations", () => {
         continuation: null,
       }),
     );
-    const freshPolicySha256 =
-      freshPreview.items[0]?.fields["policySha256"];
+    const freshPolicySha256 = freshPreview.items[0]?.fields["policySha256"];
     if (typeof freshPolicySha256 !== "string") {
       throw new Error("Expected fresh policy preview SHA-256");
     }
