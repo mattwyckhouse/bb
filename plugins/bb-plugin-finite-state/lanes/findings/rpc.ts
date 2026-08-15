@@ -1,6 +1,6 @@
 import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
 import type Database from "better-sqlite3";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
 import type { JsonValue } from "../../shared/contract.js";
@@ -33,6 +33,7 @@ import {
   setDecision,
   stableKeyFor,
   TRIAGE_OVERLAY_SCHEMA,
+  type DecisionInput,
   type ParsedOverlayFile,
   type TriageDecisionV1,
 } from "./overlay/index.js";
@@ -51,6 +52,8 @@ const findingsRpcContract = {
   findingsCommentsUpdate: rpcContract.findingsCommentsUpdate,
   findingsCommentsDelete: rpcContract.findingsCommentsDelete,
   findingsFacets: rpcContract.findingsFacets,
+  triageDecisionWrite: rpcContract.triageDecisionWrite,
+  triageDecisionBulkWrite: rpcContract.triageDecisionBulkWrite,
   triageVendorVexPreview: rpcContract.triageVendorVexPreview,
   triageVendorVexApply: rpcContract.triageVendorVexApply,
   triageOrphansPrune: rpcContract.triageOrphansPrune,
@@ -465,7 +468,10 @@ export const findingsUiRpcContract = defineRpcContract({
 
 const SAVED_VIEWS_PATH = "product-security/findings/views.json";
 
-async function projectSource(bb: BbPluginApi, projectId: string) {
+export async function findingsProjectSource(
+  bb: BbPluginApi,
+  projectId: string,
+) {
   const project = await bb.sdk.projects.get({ projectId });
   const source =
     project.sources.find((candidate) => candidate.isDefault) ??
@@ -542,6 +548,18 @@ interface TriageSnapshot {
 }
 
 type TriageCorpus = Awaited<ReturnType<typeof readOverlayFiles>>;
+
+interface TriageWriteRequest {
+  findingId: string;
+  stableKey: string;
+  status: DecisionInput["status"];
+  justification: DecisionInput["justification"];
+  response: DecisionInput["response"];
+  reason: string;
+  evidence: string;
+  pin: NonNullable<DecisionInput["pin"]>;
+  expectedSha256: string | null;
+}
 
 function sameTriageComponent(
   left: ParsedOverlayFile["overlay"]["component"],
@@ -642,7 +660,7 @@ async function writeTriageDecision(
   root: string,
   corpus: TriageCorpus,
   finding: CachedFinding,
-  item: z.output<typeof triageWriteItemSchema>,
+  item: TriageWriteRequest,
   chainedExpected: string | null | undefined,
 ) {
   if (finding.stableKey !== item.stableKey)
@@ -698,17 +716,103 @@ async function writeTriageDecision(
     });
   }
   return {
-    success: true as const,
     findingId: finding.findingId,
     stableKey: finding.stableKey,
+    file: result.file,
+    beforeSha256: result.beforeSha256,
+    afterSha256: result.afterSha256,
+    changedFields: result.changedFields,
+    state: result.state,
+    prior: snapshot.prior,
+  };
+}
+
+function uiTriageWriteSuccess(
+  result: Awaited<ReturnType<typeof writeTriageDecision>>,
+) {
+  return {
+    success: true as const,
+    findingId: result.findingId,
+    stableKey: result.stableKey,
     file: result.file,
     afterSha256: result.afterSha256,
     undo: {
       file: result.file,
       beforeSha256: result.beforeSha256 ?? EMPTY_SHA256,
       afterSha256: result.afterSha256,
-      prior: snapshot.prior,
+      prior: result.prior,
     },
+  };
+}
+
+function findingForStableKey(
+  db: Database.Database,
+  projectId: string,
+  projectVersionId: string,
+  stableKey: string,
+): CachedFinding {
+  const row = db
+    .prepare<[string, string, string], { finding_id: string }>(
+      `SELECT f.finding_id
+         FROM findings f
+         JOIN sync_state s
+           ON s.project_id = f.project_id
+          AND s.project_version_id = f.project_version_id
+          AND s.entity_kind = 'finding'
+          AND s.accepted_generation_id = f.generation_id
+        WHERE f.project_id = ? AND f.project_version_id = ?
+          AND f.stable_key = ? AND f.soft_deleted = 0
+        ORDER BY f.finding_id COLLATE BINARY
+        LIMIT 1`,
+    )
+    .get(projectId, projectVersionId, stableKey);
+  if (!row) throw new Error(`TRIAGE_STABLE_KEY_NOT_FOUND: ${stableKey}`);
+  return exactFinding(db, projectId, projectVersionId, row.finding_id);
+}
+
+function frozenTriageWriteRequest(
+  input: {
+    stableKey: string;
+    status: DecisionInput["status"];
+    justification: DecisionInput["justification"];
+    response: DecisionInput["response"];
+    reason: string;
+    evidence: string;
+    pin: NonNullable<DecisionInput["pin"]>;
+    expectedContentSha256: string | null;
+  },
+  findingId: string,
+): TriageWriteRequest {
+  return {
+    findingId,
+    stableKey: input.stableKey,
+    status: input.status,
+    justification: input.justification,
+    response: input.response,
+    reason: input.reason,
+    evidence: input.evidence,
+    pin: input.pin,
+    expectedSha256: input.expectedContentSha256,
+  };
+}
+
+function frozenTriageWriteResult(
+  projectId: string,
+  projectVersionId: string,
+  result: Awaited<ReturnType<typeof writeTriageDecision>>,
+) {
+  const changed =
+    result.changedFields.length === 0
+      ? "No local triage fields changed."
+      : `Updated local triage fields: ${result.changedFields.join(", ")}.`;
+  return {
+    projectId,
+    projectVersionId,
+    stableKey: result.stableKey,
+    beforeSha256: result.beforeSha256,
+    afterSha256: result.afterSha256,
+    changedFields: result.changedFields,
+    diffSummary: changed,
   };
 }
 
@@ -724,7 +828,7 @@ function decodeFile(content: string, encoding: "utf8" | "base64"): string {
 }
 
 async function readSavedViews(bb: BbPluginApi, projectId: string) {
-  const source = await projectSource(bb, projectId);
+  const source = await findingsProjectSource(bb, projectId);
   const path = join(source.path, SAVED_VIEWS_PATH);
   try {
     const file = await bb.sdk.files.read({
@@ -788,7 +892,7 @@ async function writeSavedViews(
     views: z.output<typeof savedViewSchema>[];
   },
 ) {
-  const source = await projectSource(bb, input.projectId);
+  const source = await findingsProjectSource(bb, input.projectId);
   const result = await bb.sdk.files.write({
     hostId: source.hostId,
     path: join(source.path, SAVED_VIEWS_PATH),
@@ -1053,7 +1157,7 @@ function findingsListResult(
   };
 }
 
-function acceptedPlatformProjectId(
+export function acceptedPlatformProjectId(
   db: Database.Database,
   workspaceProjectId: string,
   projectVersionId: string,
@@ -1262,6 +1366,111 @@ export function registerFindingsRpc(
         cache: page.cache,
       };
     },
+    async triageDecisionWrite(input) {
+      const projectVersionId = requireVersion(input.projectVersionId);
+      const platformProjectId = acceptedPlatformProjectId(
+        db,
+        input.projectId,
+        projectVersionId,
+      );
+      const finding = findingForStableKey(
+        db,
+        platformProjectId,
+        projectVersionId,
+        input.stableKey,
+      );
+      const source = await findingsProjectSource(bb, input.projectId);
+      const corpus = await readOverlayFiles(source.path);
+      const result = await writeTriageDecision(
+        source.path,
+        corpus,
+        finding,
+        frozenTriageWriteRequest(input, finding.findingId),
+        undefined,
+      );
+      return frozenTriageWriteResult(input.projectId, projectVersionId, result);
+    },
+    async triageDecisionBulkWrite(input) {
+      const projectVersionId = requireVersion(input.projectVersionId);
+      const platformProjectId = acceptedPlatformProjectId(
+        db,
+        input.projectId,
+        projectVersionId,
+      );
+      const source = await findingsProjectSource(bb, input.projectId);
+      const corpus = await readOverlayFiles(source.path);
+      const chainedSha = new Map<string, string>();
+      const initialSha = new Map<string, string | null>();
+      const results: Array<{
+        stableKey: string;
+        success: boolean;
+        error: {
+          code: string;
+          message: string;
+          artifactId: null;
+          line: null;
+        } | null;
+      }> = [];
+      for (const item of input.decisions) {
+        try {
+          const finding = findingForStableKey(
+            db,
+            platformProjectId,
+            projectVersionId,
+            item.stableKey,
+          );
+          const identity = triageIdentity(finding);
+          const chainKey = JSON.stringify(identity.component);
+          const snapshot = triageSnapshot(corpus, finding);
+          if (!initialSha.has(chainKey)) {
+            initialSha.set(chainKey, snapshot.sha256);
+          }
+          const expectedBase = initialSha.get(chainKey) ?? null;
+          if (item.expectedContentSha256 !== expectedBase) {
+            throw new OverlayCasConflictError(
+              snapshot.file ?? `.fs/triage/${finding.projectId}`,
+              item.expectedContentSha256 ?? undefined,
+              expectedBase ?? undefined,
+            );
+          }
+          const result = await writeTriageDecision(
+            source.path,
+            corpus,
+            finding,
+            frozenTriageWriteRequest(item, finding.findingId),
+            chainedSha.get(chainKey),
+          );
+          chainedSha.set(chainKey, result.afterSha256);
+          results.push({
+            stableKey: item.stableKey,
+            success: true,
+            error: null,
+          });
+        } catch (error) {
+          const failure = triageError(error);
+          results.push({
+            stableKey: item.stableKey,
+            success: false,
+            error: {
+              code: failure.code,
+              message: failure.message,
+              artifactId: null,
+              line: null,
+            },
+          });
+        }
+      }
+      const applied = results.filter((result) => result.success).length;
+      return {
+        projectId: input.projectId,
+        projectVersionId,
+        runId: randomUUID(),
+        total: results.length,
+        applied,
+        failed: results.length - applied,
+        results,
+      };
+    },
     async triageVendorVexPreview(input) {
       if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
       const projectVersionId = requireVersion(input.projectVersionId);
@@ -1274,7 +1483,7 @@ export function registerFindingsRpc(
         input.projectId,
         projectVersionId,
       );
-      const source = await projectSource(bb, input.projectId);
+      const source = await findingsProjectSource(bb, input.projectId);
       const result = await deps.drift.previewVendorVex({
         root: source.path,
         projectId: platformProjectId,
@@ -1297,7 +1506,7 @@ export function registerFindingsRpc(
         input.projectId,
         projectVersionId,
       );
-      const source = await projectSource(bb, input.projectId);
+      const source = await findingsProjectSource(bb, input.projectId);
       const result = await deps.drift.applyVendorVex({
         root: source.path,
         projectId: platformProjectId,
@@ -1320,7 +1529,7 @@ export function registerFindingsRpc(
         input.projectId,
         projectVersionId,
       );
-      const source = await projectSource(bb, input.projectId);
+      const source = await findingsProjectSource(bb, input.projectId);
       const result = await deps.drift.pruneOrphans({
         root: source.path,
         projectId: platformProjectId,
@@ -1353,7 +1562,7 @@ export function registerFindingsRpc(
     async findingsDriftRefresh(input) {
       if (!deps.drift) throw new Error("FINDINGS_DRIFT_UNAVAILABLE");
       assertAcceptedFindingsScope(db, input);
-      const source = await projectSource(bb, input.workspaceProjectId);
+      const source = await findingsProjectSource(bb, input.workspaceProjectId);
       return deps.drift.refresh({
         root: source.path,
         projectId: input.platformProjectId,
@@ -1380,7 +1589,7 @@ export function registerFindingsRpc(
       return findingsListResult(db, input);
     },
     async cachedProjectVersions(input) {
-      await projectSource(bb, input.projectId);
+      await findingsProjectSource(bb, input.projectId);
       backfillUnambiguousWorkspaceProjectBinding(db, input.projectId);
       const rows = db
         .prepare(
@@ -1457,7 +1666,7 @@ export function registerFindingsRpc(
       return { hydrated: await deps.hydrateActivity(input) };
     },
     async triageTargetsRead(input) {
-      const source = await projectSource(bb, input.workspaceProjectId);
+      const source = await findingsProjectSource(bb, input.workspaceProjectId);
       const corpus = await readOverlayFiles(source.path);
       if (input.selection.mode === "exact") {
         const findings = input.selection.findingIds.map((findingId) =>
@@ -1498,7 +1707,7 @@ export function registerFindingsRpc(
       };
     },
     async triageDecisionsWrite(input) {
-      const source = await projectSource(bb, input.workspaceProjectId);
+      const source = await findingsProjectSource(bb, input.workspaceProjectId);
       const corpus = await readOverlayFiles(source.path);
       const chainedSha = new Map<string, string>();
       const results: Array<
@@ -1524,7 +1733,7 @@ export function registerFindingsRpc(
             chainedSha.get(chainKey),
           );
           chainedSha.set(chainKey, result.afterSha256);
-          results.push(result);
+          results.push(uiTriageWriteSuccess(result));
         } catch (error) {
           const failure = triageError(error);
           results.push({
@@ -1538,7 +1747,7 @@ export function registerFindingsRpc(
       return { results };
     },
     async triageDecisionUndo(input) {
-      const source = await projectSource(bb, input.workspaceProjectId);
+      const source = await findingsProjectSource(bb, input.workspaceProjectId);
       const finding = exactFinding(
         db,
         input.platformProjectId,

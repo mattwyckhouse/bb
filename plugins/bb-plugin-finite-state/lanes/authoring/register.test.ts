@@ -29,14 +29,8 @@ const PENDING_UNSTARTED_WP = [
 ] as const satisfies readonly RpcMethod[];
 
 const SHIPPED_WP_REGISTRATION_DEBT = [
-  "workspaceSummary", // FS-220: register or retire the WP-03 / FS-17 leftover.
-  "triageRunGet", // FS-220: register or retire the WP-28 / FS-42 leftover.
-  "triageDecisionWrite", // FS-220: register or retire the WP-26 / FS-40 leftover.
-  "triageDecisionBulkWrite", // FS-220: register or retire the WP-26 / FS-40 leftover.
-  "triagePolicyPreview", // FS-220: register or retire the WP-28 / FS-42 leftover.
-  "triagePolicyApply", // FS-220: register or retire the WP-28 / FS-42 leftover.
-  "taraGet", // FS-220: register or retire the WP-32 / FS-46 leftover.
-  "reviewTransition", // FS-220: register or retire the WP-40 / FS-54 leftover.
+  "workspaceSummary", // FS-220 / AMD-0025: retirement awaits owner ratification.
+  "triageRunGet", // FS-220 / AMD-0025: retirement awaits owner ratification.
 ] as const satisfies readonly RpcMethod[];
 
 const pendingFrozenRpcMethods: readonly RpcMethod[] = [
