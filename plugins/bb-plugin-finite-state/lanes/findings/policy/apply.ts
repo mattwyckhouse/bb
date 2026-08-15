@@ -425,8 +425,14 @@ export async function applyPolicy(
       }
     }
   } catch (error) {
-    persistReport(deps.db, scope, report, errorCount, "partial");
-    throw error;
+    // Once mutation starts, aborts and infrastructure failures both attempt
+    // to persist truthful partial counts. A recorded partial consumes the
+    // preview run id so callers cannot retry over a half-applied preview.
+    try {
+      persistReport(deps.db, scope, report, errorCount, "partial");
+    } finally {
+      throw error;
+    }
   }
   persistReport(deps.db, scope, report, errorCount);
   return report;

@@ -568,6 +568,8 @@ options:
     Object.defineProperty(controller.signal, "throwIfAborted", {
       value() {
         abortChecks += 1;
+        // Interrupt at the outer-loop check before the third candidate, after
+        // the first two overlay writes have completed successfully.
         if (abortChecks === 5) {
           controller.abort(
             new DOMException("interrupted after two writes", "AbortError"),
@@ -667,6 +669,78 @@ options:
         errors: 0,
       },
     ]);
+  });
+
+  it("does not fabricate a write error when aborting inside a failed write", async () => {
+    const fixture = await triageFixture();
+    await mkdir(join(fixture.root, ".fs", "triage"), { recursive: true });
+    await writeFile(
+      join(fixture.root, ".fs", "triage", "policy.yaml"),
+      `schema: fs-triage-policy/v1
+rules:
+  - name: unreachable-not-affected
+    when:
+      reachability: unreachable
+      vuln_in_dataset: true
+    set:
+      status: NOT_AFFECTED
+      justification: CODE_NOT_REACHABLE
+      response: null
+      reason: Unreachable in this build
+      pin: exact_version
+holdback: []
+options:
+  overwrite_existing: false
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(fixture.root, ".fs", "triage", fixture.platformProjectId),
+      "blocks the project overlay directory",
+      "utf8",
+    );
+
+    const controller = new AbortController();
+    const nativeThrowIfAborted = controller.signal.throwIfAborted.bind(
+      controller.signal,
+    );
+    let abortChecks = 0;
+    Object.defineProperty(controller.signal, "throwIfAborted", {
+      value() {
+        abortChecks += 1;
+        // The third (odd-numbered) check is the write-error guard: abort here
+        // to model cancellation arriving while the overlay write is failing.
+        if (abortChecks === 3) {
+          controller.abort(
+            new DOMException("interrupted inside overlay write", "AbortError"),
+          );
+        }
+        nativeThrowIfAborted();
+      },
+    });
+
+    const interrupted = await fixture.host.harness.behavior.callAgentTool(
+      "fs_triage_apply_policy",
+      { projectVersionId: fixture.projectVersionId, dryRun: false },
+      { projectId: fixture.workspaceProjectId, signal: controller.signal },
+    );
+    expect(toolFailed(interrupted)).toBe(true);
+    expect(abortChecks).toBe(3);
+    expect(
+      fixture.ctx
+        .db()
+        .prepare(
+          `SELECT status, written, skipped_existing, errors
+             FROM triage_runs
+            WHERE source = 'policy'`,
+        )
+        .get(),
+    ).toEqual({
+      status: "partial",
+      written: 0,
+      skipped_existing: 0,
+      errors: 0,
+    });
   });
 
   it("partial HBOM batch reports rejected cells through applyHbomExtraction", async () => {

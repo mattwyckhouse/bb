@@ -107,6 +107,40 @@ async function testRoot(prefix: string): Promise<string> {
   return root;
 }
 
+async function writeUnreachablePolicy(root: string): Promise<void> {
+  await mkdir(join(root, ".fs", "triage"), { recursive: true });
+  await writeFile(
+    join(root, ".fs", "triage", "policy.yaml"),
+    `schema: fs-triage-policy/v1
+rules:
+  - name: unreachable
+    when:
+      reachability: unreachable
+    set:
+      status: NOT_AFFECTED
+      justification: CODE_NOT_REACHABLE
+      reason: "No callers: {factors}"
+      pin: exact_version
+holdback: []
+options:
+  overwrite_existing: false
+`,
+    "utf8",
+  );
+}
+
+function findingsViewColumns(db: Database.Database): string[] {
+  return db
+    .prepare<[], { name: string }>("PRAGMA table_info(findings)")
+    .all()
+    .map(({ name }) => `"${name.replaceAll('"', '""')}"`);
+}
+
+function restoreFindingsTable(db: Database.Database): void {
+  db.exec(`DROP VIEW findings;
+    ALTER TABLE findings_fs233_source RENAME TO findings;`);
+}
+
 async function worktreeSnapshot(
   root: string,
   directory = root,
@@ -256,25 +290,7 @@ describe("FS-220 findings frozen registrations", () => {
 
   it("registers policy preview/apply and refuses replay before side effects", async () => {
     const root = await testRoot("fs220-policy-");
-    await mkdir(join(root, ".fs", "triage"), { recursive: true });
-    await writeFile(
-      join(root, ".fs", "triage", "policy.yaml"),
-      `schema: fs-triage-policy/v1
-rules:
-  - name: unreachable
-    when:
-      reachability: unreachable
-    set:
-      status: NOT_AFFECTED
-      justification: CODE_NOT_REACHABLE
-      reason: "No callers: {factors}"
-      pin: exact_version
-holdback: []
-options:
-  overwrite_existing: false
-`,
-      "utf8",
-    );
+    await writeUnreachablePolicy(root);
     const host = createFakePluginHost({ pluginId: "fs220-policy-rpcs" });
     hosts.push(host);
     const db = createPluginContext(host.bb).db();
@@ -380,5 +396,197 @@ options:
     expect(host.harness.inspection.registrations.rpcMethods).toEqual(
       expect.arrayContaining(["triagePolicyPreview", "triagePolicyApply"]),
     );
+  });
+
+  it("persists a real partial write, consumes that preview, and accepts a fresh preview", async () => {
+    const root = await testRoot("fs233-policy-partial-");
+    await writeUnreachablePolicy(root);
+    const host = createFakePluginHost({ pluginId: "fs233-policy-partial" });
+    hosts.push(host);
+    const db = createPluginContext(host.bb).db();
+    const platformProjectId = "platform-project";
+    const projectVersionId = "version-1";
+    const stableKeys = [
+      seedAcceptedFinding(db, {
+        platformProjectId,
+        projectVersionId,
+        findingId: "finding-1",
+        componentName: "controller-a",
+        cve: "CVE-2026-2331",
+      }),
+      seedAcceptedFinding(db, {
+        platformProjectId,
+        projectVersionId,
+        findingId: "finding-2",
+        componentName: "controller-b",
+        cve: "CVE-2026-2332",
+      }),
+    ].sort();
+    registerFindingsPolicy(host.bb, db, async () => ({
+      root,
+      platformProjectId,
+      projectVersionId,
+    }));
+
+    const preview = rpcContract.triagePolicyPreview.output.parse(
+      await host.harness.behavior.callRpc("triagePolicyPreview", {
+        projectId: "workspace-project",
+        projectVersionId,
+        pageSize: 50,
+        continuation: null,
+      }),
+    );
+    const policySha256 = preview.items[0]?.fields["policySha256"];
+    if (typeof policySha256 !== "string") {
+      throw new Error("Expected policy preview SHA-256");
+    }
+
+    const columns = findingsViewColumns(db);
+    const failingStableKey = stableKeys[1];
+    db.function(
+      "fs233_vex_status",
+      (stableKey: string, value: string | null) => {
+        if (stableKey === failingStableKey) {
+          throw new Error("FS233_MID_RUN_SQLITE_FAILURE");
+        }
+        return value;
+      },
+    );
+    db.exec(`ALTER TABLE findings RENAME TO findings_fs233_source;
+      CREATE VIEW findings AS SELECT ${columns
+        .map((column) =>
+          column === '"vex_status"'
+            ? `fs233_vex_status("stable_key", "vex_status") AS "vex_status"`
+            : column,
+        )
+        .join(", ")} FROM findings_fs233_source;`);
+
+    await expect(
+      host.harness.behavior.callRpc("triagePolicyApply", {
+        projectId: "workspace-project",
+        projectVersionId,
+        pageSize: 50,
+        continuation: null,
+        runId: preview.runId,
+        expectedPolicySha256: policySha256,
+      }),
+    ).rejects.toMatchObject({ code: "handler_error" });
+    expect(
+      db
+        .prepare(
+          `SELECT run_id, status, written, errors
+             FROM triage_runs
+            WHERE source = 'policy'`,
+        )
+        .get(),
+    ).toEqual({
+      run_id: preview.runId,
+      status: "partial",
+      written: 1,
+      errors: 0,
+    });
+
+    restoreFindingsTable(db);
+    await expect(
+      host.harness.behavior.callRpc("triagePolicyApply", {
+        projectId: "workspace-project",
+        projectVersionId,
+        pageSize: 50,
+        continuation: null,
+        runId: preview.runId,
+        expectedPolicySha256: policySha256,
+      }),
+    ).rejects.toMatchObject({
+      code: "handler_error",
+      message:
+        "POLICY_ALREADY_APPLIED: policy run id is already recorded; preview again before applying",
+    });
+
+    const freshPreview = rpcContract.triagePolicyPreview.output.parse(
+      await host.harness.behavior.callRpc("triagePolicyPreview", {
+        projectId: "workspace-project",
+        projectVersionId,
+        pageSize: 50,
+        continuation: null,
+      }),
+    );
+    const freshPolicySha256 =
+      freshPreview.items[0]?.fields["policySha256"];
+    if (typeof freshPolicySha256 !== "string") {
+      throw new Error("Expected fresh policy preview SHA-256");
+    }
+    const applied = rpcContract.triagePolicyApply.output.parse(
+      await host.harness.behavior.callRpc("triagePolicyApply", {
+        projectId: "workspace-project",
+        projectVersionId,
+        pageSize: 50,
+        continuation: null,
+        runId: freshPreview.runId,
+        expectedPolicySha256: freshPolicySha256,
+      }),
+    );
+    expect(applied).toMatchObject({
+      runId: freshPreview.runId,
+      written: 1,
+      errors: 0,
+    });
+  });
+
+  it("rethrows the original apply failure when partial-report persistence also fails", async () => {
+    const root = await testRoot("fs233-policy-original-error-");
+    await writeUnreachablePolicy(root);
+    const host = createFakePluginHost({
+      pluginId: "fs233-policy-original-error",
+    });
+    hosts.push(host);
+    const db = createPluginContext(host.bb).db();
+    const platformProjectId = "platform-project";
+    const projectVersionId = "version-1";
+    seedAcceptedFinding(db, { platformProjectId, projectVersionId });
+    registerFindingsPolicy(host.bb, db, async () => ({
+      root,
+      platformProjectId,
+      projectVersionId,
+    }));
+
+    const preview = rpcContract.triagePolicyPreview.output.parse(
+      await host.harness.behavior.callRpc("triagePolicyPreview", {
+        projectId: "workspace-project",
+        projectVersionId,
+        pageSize: 50,
+        continuation: null,
+      }),
+    );
+    const policySha256 = preview.items[0]?.fields["policySha256"];
+    if (typeof policySha256 !== "string") {
+      throw new Error("Expected policy preview SHA-256");
+    }
+
+    const columnsWithoutVexStatus = findingsViewColumns(db).filter(
+      (column) => column !== '"vex_status"',
+    );
+    db.exec(`ALTER TABLE findings RENAME TO findings_fs233_source;
+      CREATE VIEW findings AS SELECT ${columnsWithoutVexStatus.join(", ")}
+        FROM findings_fs233_source;
+      CREATE TRIGGER fs233_fail_partial_report
+        BEFORE INSERT ON triage_runs
+        WHEN NEW.source = 'policy'
+      BEGIN
+        SELECT RAISE(ABORT, 'FS233_PERSIST_REPORT_FAILURE');
+      END;`);
+
+    await expect(
+      host.harness.behavior.callRpc("triagePolicyApply", {
+        projectId: "workspace-project",
+        projectVersionId,
+        pageSize: 50,
+        continuation: null,
+        runId: preview.runId,
+        expectedPolicySha256: policySha256,
+      }),
+    ).rejects.toMatchObject({
+      code: "handler_error",
+      message: expect.stringContaining("no such column: f.vex_status"),
+    });
   });
 });
