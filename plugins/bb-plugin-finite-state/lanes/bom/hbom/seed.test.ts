@@ -98,7 +98,12 @@ describe("hbom seed", () => {
       at: "2026-07-28T11:00:00.000Z",
     });
     expect(second.created).toBe(0);
+    expect(second.updated).toBe(0);
     expect(second.markedMissing).toBe(0);
+    expect(second.sha256).toBe(first.sha256);
+    expect(second.document.parts[0]?.description?.at).toBe(
+      "2026-07-28T10:00:00.000Z",
+    );
 
     const third = await seedHbomFromComponents({
       root: projectRoot,

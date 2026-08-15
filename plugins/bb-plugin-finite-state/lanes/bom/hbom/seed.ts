@@ -219,6 +219,41 @@ function buildSeedPart(
   return part;
 }
 
+function seedCellSemanticFingerprint(cell: HbomCell<unknown>): string {
+  return JSON.stringify({
+    value: cell.value,
+    provenance: cell.provenance ?? null,
+    confidence: cell.confidence ?? null,
+    by: cell.by ?? null,
+    sourceRef: cell.sourceRef ?? null,
+    note: cell.note ?? null,
+    accepted: cell.accepted ?? null,
+    candidates: (cell.candidates ?? []).map((candidate) => ({
+      value: candidate.value,
+      provenance: candidate.provenance,
+      confidence: candidate.confidence,
+      by: candidate.by,
+      sourceRef: candidate.sourceRef ?? null,
+    })),
+  });
+}
+
+function replaceAsOwnedCellIfChanged<T>(
+  current: HbomCell<T> | undefined,
+  next: HbomCell<T>,
+  assign: (cell: HbomCell<T>) => void,
+): boolean {
+  if (!ownedByAsComponent(current)) return false;
+  if (
+    current !== undefined &&
+    seedCellSemanticFingerprint(current) === seedCellSemanticFingerprint(next)
+  ) {
+    return false;
+  }
+  assign(next);
+  return true;
+}
+
 function refreshAsOwnedCells(
   part: HbomPart,
   component: HbomSeedComponent,
@@ -227,26 +262,38 @@ function refreshAsOwnedCells(
 ): boolean {
   let changed = false;
   const nextDescription = component.description ?? component.name;
-  if (ownedByAsComponent(part.description)) {
-    const cell = seedCell(nextDescription, at, actor);
-    if (JSON.stringify(part.description) !== JSON.stringify(cell)) {
-      part.description = cell;
-      changed = true;
-    }
+  if (
+    replaceAsOwnedCellIfChanged(
+      part.description,
+      seedCell(nextDescription, at, actor),
+      (cell) => {
+        part.description = cell;
+      },
+    )
+  ) {
+    changed = true;
   }
-  if (ownedByAsComponent(part.category)) {
-    const cell = seedCell(mapCategory(component.componentType), at, actor);
-    if (JSON.stringify(part.category) !== JSON.stringify(cell)) {
-      part.category = cell;
-      changed = true;
-    }
+  if (
+    replaceAsOwnedCellIfChanged(
+      part.category,
+      seedCell(mapCategory(component.componentType), at, actor),
+      (cell) => {
+        part.category = cell;
+      },
+    )
+  ) {
+    changed = true;
   }
-  if (ownedByAsComponent(part.securityRelevance)) {
-    const cell = seedCell(securityRelevance(component), at, actor);
-    if (JSON.stringify(part.securityRelevance) !== JSON.stringify(cell)) {
-      part.securityRelevance = cell;
-      changed = true;
-    }
+  if (
+    replaceAsOwnedCellIfChanged(
+      part.securityRelevance,
+      seedCell(securityRelevance(component), at, actor),
+      (cell) => {
+        part.securityRelevance = cell;
+      },
+    )
+  ) {
+    changed = true;
   }
 
   // Never overwrite human/document MPN; only attach inferred candidates when

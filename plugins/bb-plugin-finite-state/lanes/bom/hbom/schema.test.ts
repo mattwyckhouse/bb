@@ -153,6 +153,40 @@ describe("fs-hbom/v1 schema", () => {
     ).toThrow(/sourceRef failed DocumentSourceRef validation|Invalid/);
   });
 
+  it("rejects text locators for document-backed provenances (adversarial)", () => {
+    let caught: unknown;
+    try {
+      parseHbomDocument(
+        baseDoc([
+          {
+            id: "HBOM-0001",
+            asComponentId: null,
+            mpn: {
+              value: "BCM6755",
+              provenance: "datasheet",
+              sourceRef: {
+                documentSha256: DOC_A,
+                locator: { kind: "text", lineStart: 1, lineEnd: 3 },
+              },
+              confidence: 0.9,
+              by: "bb-agent",
+              at: "2026-07-29T14:02:11.000Z",
+            },
+          },
+        ]),
+        { ledger: () => true },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(HbomValidationError);
+    if (!(caught instanceof HbomValidationError)) {
+      throw new Error("expected HbomValidationError");
+    }
+    expect(caught.code).toBe("HBOM_SOURCE_REF_TEXT_FORBIDDEN");
+    expect(caught.message).toMatch(/pdf page\/region or sheet\/cell/);
+  });
+
   it("validates PDF page/bbox and sheet/cell; rejects unknown digests and path traversal", () => {
     const ok = parseHbomDocument(
       baseDoc([

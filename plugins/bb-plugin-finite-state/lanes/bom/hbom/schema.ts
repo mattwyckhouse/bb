@@ -76,16 +76,28 @@ function assertNoUnknownKeys(
   }
 }
 
+/** Document-backed cells must cite a PDF page/region or spreadsheet sheet/cell. */
+export const HBOM_SOURCE_REF_TEXT_FORBIDDEN =
+  "HBOM_SOURCE_REF_TEXT_FORBIDDEN" as const;
+
 function validateSourceRef(
   ref: DocumentSourceRef,
   path: string,
   issues: string[],
   ledger: DocumentLedgerLookup | undefined,
+  options: { requirePageOrSheet: boolean },
 ): void {
   const parsed = documentSourceRefSchema.safeParse(ref);
   if (!parsed.success) {
     issues.push(`${path}: sourceRef failed DocumentSourceRef validation`);
     return;
+  }
+  if (options.requirePageOrSheet && parsed.data.locator.kind === "text") {
+    throw new HbomValidationError(
+      HBOM_SOURCE_REF_TEXT_FORBIDDEN,
+      `${path}: document-backed provenance requires a pdf page/region or sheet/cell citation; text locators are not accepted`,
+      [`${path}: text locator forbidden for document-backed provenance`],
+    );
   }
   try {
     encodeSourceRef(parsed.data);
@@ -256,6 +268,7 @@ function refineCell(
               `${candidatePath}.sourceRef`,
               issues,
               ledger,
+              { requirePageOrSheet: true },
             );
           }
         } else if (candidate.sourceRef !== undefined) {
@@ -264,6 +277,7 @@ function refineCell(
             `${candidatePath}.sourceRef`,
             issues,
             ledger,
+            { requirePageOrSheet: false },
           );
         }
       }
@@ -297,10 +311,14 @@ function refineCell(
         `${path}: provenance "${provenance}" requires sourceRef with page/region or sheet/cell`,
       );
     } else {
-      validateSourceRef(cell.sourceRef, `${path}.sourceRef`, issues, ledger);
+      validateSourceRef(cell.sourceRef, `${path}.sourceRef`, issues, ledger, {
+        requirePageOrSheet: true,
+      });
     }
   } else if (cell.sourceRef !== undefined) {
-    validateSourceRef(cell.sourceRef, `${path}.sourceRef`, issues, ledger);
+    validateSourceRef(cell.sourceRef, `${path}.sourceRef`, issues, ledger, {
+      requirePageOrSheet: false,
+    });
   }
 
   if (cell.by !== undefined && cell.at === undefined) {
@@ -328,6 +346,7 @@ function refineCell(
             `${candidatePath}.sourceRef`,
             issues,
             ledger,
+            { requirePageOrSheet: true },
           );
         }
       } else if (candidate.sourceRef !== undefined) {
@@ -336,6 +355,7 @@ function refineCell(
           `${candidatePath}.sourceRef`,
           issues,
           ledger,
+          { requirePageOrSheet: false },
         );
       }
     }
