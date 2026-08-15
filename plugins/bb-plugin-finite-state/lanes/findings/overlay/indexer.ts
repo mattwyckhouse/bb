@@ -255,7 +255,10 @@ function indexFile(
         parsed.overlay.project,
         projectVersionId,
         stableKey,
-        null,
+        // Canonical SBOM join key (same codec as vendorProposal rows and
+        // sbom_components.component_key). NULL here permanently deadens the
+        // SBOM localChange filter and VEX badge (FS-146 / FS-44 HIGH-2).
+        componentKeyFromIdentity(parsed.overlay.component),
         cve,
         parsed.file,
         parsed.sha256,

@@ -99,6 +99,13 @@ Entry format — one section per defect:
 - **Broke because**: `persistVendorDocument` base64-staged up to ~6.7 MiB per distinct sha into `triage_runs` with no DELETE path, so preview-only sessions permanently grew `data.db`
 - **Beat asserts**: error-free apply removes the spent import and (when unshared) `vendor-document-*` staging row; write-failed / partial applies keep staging for retry; a later vendor-VEX operation ages out unreferenced `vendor_import` rows older than the staging TTL; preview refreshes the document TTL clock so a day-6.9 preview still applies; re-upload of the same document after prune re-stages under the same sha key
 
+### FS-146 — SBOM localChange filter and VEX badge permanently dead (FS-44/WP-30 HIGH-2)
+
+- **Source**: FS-146 / FS-44 review HIGH-2 (probe P3)
+- **Journey**: triage writes a dirty VEX decision for a component → overlay index rebuilds → SBOM panel → filter Local change = Yes → row appears with VEX badge; clear filter and confirm the same row still projects `localChange: true`
+- **Broke because**: overlay indexer hardcodes `component_key` NULL on `vexDecision` rows, so every `oi.component_key = c.component_key` predicate is NULL→false
+- **Beat asserts**: registered `bomSoftwareList` with `filters.localChange: true` returns the component; the unfiltered row's `fields.localChange` is true (VEX badge input); indexer decision rows store the canonical `componentKeyFromIdentity` join key
+
 ### FS-135 — UX sweep #1 residual defects
 
 - **Source**: FS-135 / UX sweep 2026-08-13 (F2 canvas fit, F3 verification jargon, F4 silent invalid cache drop, F5 CLI remote detail)

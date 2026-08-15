@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createPluginContext } from "../../../lib/context.js";
 import { findingStableKey } from "../../../lib/sync/registry.js";
+import { componentKeyFromIdentity } from "../../bom/sbom/rollup.js";
 import { rebuildOverlayIndex } from "../overlay/indexer.js";
 import { readOverlayFiles, serializeOverlay } from "../overlay/reader.js";
 import {
@@ -196,7 +197,14 @@ describe("re-scan drift classification", () => {
           "SELECT component_key FROM overlay_index WHERE entity_kind = 'vexDecision'",
         )
         .get(),
-    ).toEqual({ component_key: null });
+    ).toEqual({
+      component_key: componentKeyFromIdentity({
+        purl: identity.purl,
+        name: identity.name,
+        group: identity.group,
+        version: identity.version,
+      }),
+    });
   });
 
   it("classifies a resolved identity with missed carry-forward as reapply", async () => {

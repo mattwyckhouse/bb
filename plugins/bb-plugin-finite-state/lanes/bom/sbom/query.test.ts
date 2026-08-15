@@ -1,8 +1,14 @@
 import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import Database from "better-sqlite3";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPluginContext } from "../../../lib/context.js";
 import { MIGRATIONS } from "../../../lib/store/schema.js";
+import { rebuildOverlayIndex } from "../../findings/overlay/indexer.js";
+import { stableKeyFor } from "../../findings/overlay/schema.js";
+import { setDecision } from "../../findings/overlay/writer.js";
 import { registerBom } from "../register.js";
 import {
   queryComponentFindings,
@@ -88,13 +94,143 @@ function insert(
 }
 
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
+const overlayRoots: string[] = [];
 afterEach(async () => {
+  await Promise.all(
+    overlayRoots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true })),
+  );
   await Promise.all(
     hosts.splice(0).map((host) => host.harness.lifecycle.dispose()),
   );
 });
 
 describe("cached SBOM query", () => {
+  it("FS-146: indexer-populated component_key drives localChange filter and VEX projection through bomSoftwareList", async () => {
+    // Regression for FS-44 HIGH-2 / FS-146: when overlay decision rows leave
+    // component_key NULL, oi.component_key = c.component_key is always false,
+    // so the localChange filter and projected local_change (VEX badge) stay
+    // permanently off. This test goes through rebuildOverlayIndex (production
+    // writer) rather than hand-inserting a matching overlay_index row.
+    const host = createFakePluginHost({
+      pluginId: "finite-state-fs146-localchange",
+    });
+    hosts.push(host);
+    const ctx = createPluginContext(host.bb);
+    registerBom(host.bb, ctx);
+    const db = ctx.db();
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), "fs-146-localchange-")),
+    );
+    overlayRoots.push(root);
+
+    const component = {
+      purl: "pkg:generic/gateway@1.0.0" as string | null,
+      name: "Gateway",
+      group: "acme" as string | null,
+      version: "1.0.0" as string | null,
+    };
+    const componentKey = componentKeyFromIdentity(component);
+    const at = "2026-08-14T20:00:00.000Z";
+    db.exec(`
+      INSERT INTO pull_generation
+        (project_id, project_version_id, generation_id, status,
+         requested_kinds_json, started_at, completed_at, accepted_at)
+      VALUES ('p', 'v', 'g', 'accepted', '["sbomComponent","finding"]',
+              '${at}', '${at}', '${at}');
+      INSERT INTO sync_state
+        (project_id, project_version_id, entity_kind, accepted_generation_id,
+         base_revision, last_pull)
+      VALUES ('p', 'v', 'sbomComponent', 'g', 1, '${at}'),
+             ('p', 'v', 'finding', 'g', 1, '${at}');
+      INSERT INTO sbom_components
+        (project_id, project_version_id, generation_id, component_id, component_key,
+         purl, name, component_group, version, raw, pulled_at)
+      VALUES ('p', 'v', 'g', 'gateway', '${componentKey}',
+              '${component.purl}', '${component.name}', '${component.group}',
+              '${component.version}', '{}', '${at}');
+    `);
+
+    const cve = "CVE-2026-146";
+    await setDecision(root, {
+      project: "p",
+      component,
+      cve,
+      stableKey: stableKeyFor("p", component, cve),
+      status: "IN_TRIAGE",
+      justification: null,
+      response: null,
+      reason: "local triage",
+      pin: "exact_version",
+      provenance: { by: "engineer", at, evidence: "FS-146" },
+      sync: {
+        base: {
+          status: null,
+          justification: null,
+          response: null,
+          reason: null,
+        },
+        pushed_at: null,
+      },
+    });
+    await rebuildOverlayIndex(db, root);
+
+    const indexed = db
+      .prepare(
+        `SELECT component_key, local_state FROM overlay_index
+          WHERE entity_kind = 'vexDecision'`,
+      )
+      .get() as { component_key: string | null; local_state: string };
+    expect(indexed).toEqual({
+      component_key: componentKey,
+      local_state: "orphaned",
+    });
+    expect(indexed.local_state).not.toBe("pushed");
+
+    const filtered = await host.harness.behavior.callRpc("bomSoftwareList", {
+      projectId: "p",
+      projectVersionId: "v",
+      pageSize: 20,
+      continuation: null,
+      filters: { localChange: true },
+    });
+    expect(filtered).toMatchObject({
+      total: 1,
+      items: [
+        expect.objectContaining({
+          key: componentKey,
+          fields: expect.objectContaining({ localChange: true }),
+        }),
+      ],
+    });
+
+    expect(
+      await host.harness.behavior.callRpc("bomSoftwareList", {
+        projectId: "p",
+        projectVersionId: "v",
+        pageSize: 20,
+        continuation: null,
+      }),
+    ).toMatchObject({
+      items: [
+        expect.objectContaining({
+          fields: expect.objectContaining({ localChange: true }),
+        }),
+      ],
+    });
+
+    expect(
+      await host.harness.behavior.callRpc("bomSoftwareList", {
+        projectId: "p",
+        projectVersionId: "v",
+        pageSize: 20,
+        continuation: null,
+        filters: { localChange: false },
+      }),
+    ).toMatchObject({ total: 0, items: [] });
+  });
+
   it("filters every supported predicate and returns stable cursor pages", () => {
     const db = createDb();
     insert(db, {
