@@ -168,11 +168,14 @@ test("the shipped manifest prohibits WP02", async () => {
 // stopped here between drafting and owner ratification (both 2026-08-14).
 // WP56 was stopped for the transport chokepoint and released when AMD-0026
 // was ratified 2026-08-15. WP74 parked post-spike per the AUTHORITY
-// post-core ruling for L9. WP100 paused on the syncSeedFromAs frozen-contract
-// owner gate hit at first dispatch 2026-08-15. WP82 stopped under the same
-// post-core gate as WP74 once WP56 shipped and made it dependency-ready;
-// WP78 likewise once WP44 shipped.
-test("the shipped manifest temporarily stops WP67, WP74, WP78, WP82, and WP100 with resume conditions", async () => {
+// post-core ruling for L9. WP100's owner gate was resolved 2026-08-15 by
+// deferring syncSeedFromAs from v1 and retaining the frozen two-root split,
+// so it is dispatchable again. WP82 stopped under the same post-core gate as
+// WP74 once WP56 shipped and made it dependency-ready; WP78 likewise once
+// WP44 shipped. WP67/WP68/WP69 were permanently
+// superseded by owner confirmation on 2026-08-15 after the shipped registry
+// and replacement tasks delivered their remaining value.
+test("the shipped manifest stops superseded WP67–WP69 plus WP74, WP78, and WP82 with recorded conditions", async () => {
   const { readFileSync } = await import("node:fs");
   const shipped = JSON.parse(
     readFileSync(
@@ -182,10 +185,11 @@ test("the shipped manifest temporarily stops WP67, WP74, WP78, WP82, and WP100 w
   );
   assert.deepEqual(shipped.dispatchPolicy.stoppedWorkPackages, [
     "WP67",
+    "WP68",
+    "WP69",
     "WP74",
     "WP78",
     "WP82",
-    "WP100",
   ]);
   for (const wp of shipped.dispatchPolicy.stoppedWorkPackages) {
     const detail = shipped.dispatchPolicy.stoppedWorkPackageReasons[wp];

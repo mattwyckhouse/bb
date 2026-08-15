@@ -281,7 +281,7 @@ Nine lanes cannot share live customer services, and full Forge requires PostgreS
 
 ## 8. Phase gates
 
-Demo-complete-first: a thin vertical slice of all fourteen Golden Loop beats before any surface gets its depth pass.
+Demo-complete-first: a thin vertical slice of all registered Golden Loop beats (16 at time of writing) before any surface gets its depth pass.
 
 | Gate   | Bar                                                                                                                                                                                                                                                                    | Proves                                                                                                     |
 | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |

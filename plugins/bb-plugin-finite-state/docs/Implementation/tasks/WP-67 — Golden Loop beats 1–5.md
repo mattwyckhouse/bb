@@ -1,5 +1,8 @@
 # WP-67 — Golden Loop beats 1–5
 
+> [!IMPORTANT]
+> **SUPERSEDED — owner-confirmed 2026-08-15 11:09Z.** Do not dispatch this work package. The shipped Golden Loop registry now contains all registered beats (16 at confirmation). Its residual value was delivered by [FS-230](https://github.com/mattwyckhouse/bb/pull/217) (pre-policy seed + policy beat 16), [FS-231](https://github.com/mattwyckhouse/bb/pull/215) with [FS-233 follow-ups](https://github.com/mattwyckhouse/bb/pull/218) (durable partial policy-run persistence), and [FS-232](https://github.com/mattwyckhouse/bb/pull/216) (human edit/reject diff journey, beat 15). The historical content below is retained for traceability.
+
 **Lane:** L8 Demo & E2E · **Spec:** SPEC 06 §6 beats 1–5 · **Effort:** 2 d · **Status:** unassigned
 **Depends on:** WP-61, WP-62, WP-63, WP-64, WP-65, WP-66 and all L2/L3 prerequisites · **Blocks:** WP-68
 **Produces a FROZEN artifact:** no

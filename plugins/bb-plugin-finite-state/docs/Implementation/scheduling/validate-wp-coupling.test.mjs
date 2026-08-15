@@ -63,6 +63,23 @@ test("a sequential cluster cannot expose two concurrently-ready members", () => 
   );
 });
 
+test("a permanently superseded predecessor may be removed as a dependency", () => {
+  const errors = errorsFor((manifest) => {
+    const wp19 = manifest.workPackages.find((entry) => entry.wp === "WP19");
+    manifest.dispatchPolicy.stoppedWorkPackages.push("WP19");
+    manifest.dispatchPolicy.stoppedWorkPackageReasons.WP19 = {
+      permanentlySuperseded: true,
+      reason: "Superseded for this contract test.",
+      resumeCondition: "None — permanently superseded.",
+    };
+    const wp20 = manifest.workPackages.find((entry) => entry.wp === "WP20");
+    wp20.dependencies = wp20.dependencies.filter(
+      (dependency) => dependency !== wp19.wp,
+    );
+  });
+  assert.deepEqual(errors, []);
+});
+
 test("missing dependency targets and dependency cycles are rejected", () => {
   const missingTarget = errorsFor((manifest) => {
     manifest.workPackages

@@ -165,6 +165,14 @@ function validateStoppedWorkPackages(dispatchPolicy, knownSet, errors) {
       errors.push(`${wp} cannot be both prohibited and temporarily stopped`);
     const detail = reasons[wp];
     if (!requireObject(detail, `stopped reason for ${wp}`, errors)) continue;
+    if (
+      "permanentlySuperseded" in detail &&
+      typeof detail.permanentlySuperseded !== "boolean"
+    ) {
+      errors.push(
+        `stopped reason for ${wp}.permanentlySuperseded must be a boolean`,
+      );
+    }
     if (typeof detail.reason !== "string" || detail.reason.trim() === "")
       errors.push(`stopped reason for ${wp} must include a non-empty reason`);
     if (
@@ -373,6 +381,11 @@ export function validateManifest(manifest) {
   const taskSet = new Set();
   const clusters = new Map();
   const dependencyMap = new Map();
+  const permanentlySuperseded = new Set(
+    Object.entries(manifest.dispatchPolicy.stoppedWorkPackageReasons ?? {})
+      .filter(([, detail]) => detail?.permanentlySuperseded === true)
+      .map(([wp]) => wp),
+  );
   const requiredFields = [
     "wp",
     "task",
@@ -464,7 +477,10 @@ export function validateManifest(manifest) {
       }
       if (index > 0) {
         const predecessor = ordered[index - 1];
-        if (!entry.dependencies.includes(predecessor.wp)) {
+        if (
+          !permanentlySuperseded.has(predecessor.wp) &&
+          !entry.dependencies.includes(predecessor.wp)
+        ) {
           errors.push(
             `${clusterId} could make ${predecessor.wp} and ${entry.wp} concurrently ready; ${entry.wp} must depend on ${predecessor.wp}`,
           );
