@@ -11,7 +11,7 @@ import { createPluginContext } from "../../../lib/context.js";
 import { registerActionTools } from "../../../lanes/agentic/tools/actions.js";
 import { assertion } from "./assertions.js";
 import { createGoldenLoopHarness, type GoldenLoopHarness } from "./harness.js";
-import { semanticReport } from "./reporter.js";
+import { assertDeterministicRuns, semanticReport } from "./reporter.js";
 import {
   GOLDEN_LOOP_BEATS,
   type BeatNumber,
@@ -327,7 +327,13 @@ describe.sequential("Golden Loop harness", () => {
       expect(semanticReport(first.report!)).toEqual(
         semanticReport(second.report!),
       );
+      assertDeterministicRuns(first.report!, second.report!);
       expect(first.report?.results).toHaveLength(16);
+      expect(first.report?.provenance).toMatchObject({
+        executionLabel: "OFFLINE FIXTURE",
+        cannedRun: { label: "CANNED RUN", active: false },
+        publicLog: { label: "PUBLIC LOG UNAVAILABLE", available: false },
+      });
       expect(first.report?.ohMoments).toEqual(
         expect.objectContaining({
           "5": expect.any(Array),
@@ -336,6 +342,47 @@ describe.sequential("Golden Loop harness", () => {
           "12": expect.any(Array),
         }),
       );
+    } finally {
+      await first.dispose();
+      await second.dispose();
+      await repository.cleanup();
+    }
+  });
+
+  it("rejects nondeterministic bytes emitted through a beat's capture wiring", async () => {
+    const repository = await temporaryRepository();
+    const first = await createGoldenLoopHarness({
+      repositoryRoot: repository.root,
+      scenario: scenario({
+        1: {
+          capture: async ({ artifacts }) => [
+            await artifacts.writeJson("captured-evidence.json", {
+              capturedAt: Date.now(),
+              nonce: crypto.randomUUID(),
+            }),
+          ],
+        },
+      }),
+    });
+    const second = await createGoldenLoopHarness({
+      repositoryRoot: repository.root,
+      scenario: scenario({
+        1: {
+          capture: async ({ artifacts }) => [
+            await artifacts.writeJson("captured-evidence.json", {
+              capturedAt: Date.now(),
+              nonce: crypto.randomUUID(),
+            }),
+          ],
+        },
+      }),
+    });
+    try {
+      await first.runAll();
+      await second.runAll();
+      expect(() =>
+        assertDeterministicRuns(first.report!, second.report!),
+      ).toThrow("GOLDEN_LOOP_EVIDENCE_MISMATCH");
     } finally {
       await first.dispose();
       await second.dispose();
@@ -357,6 +404,11 @@ describe.sequential("Golden Loop harness", () => {
         /CONNECTED_MODE_UNAVAILABLE.*tenant.*bench.*reset/isu,
       );
       expect(harness.report?.status).toBe("failed");
+      expect(harness.report?.provenance).toMatchObject({
+        executionLabel: "CONNECTED DEV TENANT",
+        cannedRun: { label: "CANNED RUN", active: false },
+        publicLog: { label: "PUBLIC LOG UNAVAILABLE", available: false },
+      });
     } finally {
       await harness.dispose();
       await repository.cleanup();

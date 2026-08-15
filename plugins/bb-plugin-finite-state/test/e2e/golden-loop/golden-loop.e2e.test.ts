@@ -7,6 +7,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  rm,
   writeFile,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -30,13 +31,193 @@ import { createElement } from "react";
 import type Database from "better-sqlite3";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+const deterministicEntropy = vi.hoisted(() => ({
+  next: null as null | ((namespace: string) => string),
+  now: null as null | (() => number),
+  advance: null as null | (() => void),
+}));
+const realDate = Date;
+
+async function withDeterministicDate<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  deterministicEntropy.advance?.();
+  return operation();
+}
+
+function installDeterministicBehaviorClock(
+  host: ReturnType<typeof createFakePluginHost>,
+): void {
+  const behavior = host.harness.behavior;
+  const callAgentTool = behavior.callAgentTool.bind(behavior);
+  Object.defineProperty(behavior, "callAgentTool", {
+    configurable: true,
+    value: (...args: Parameters<typeof behavior.callAgentTool>) =>
+      withDeterministicDate(() => callAgentTool(...args)),
+  });
+  const runCli = behavior.runCli.bind(behavior);
+  Object.defineProperty(behavior, "runCli", {
+    configurable: true,
+    value: (...args: Parameters<typeof behavior.runCli>) =>
+      withDeterministicDate(() => runCli(...args)),
+  });
+}
+
+function deterministicNow(): Date {
+  return new realDate(deterministicEntropy.now?.() ?? realDate.now());
+}
+
+function installDeterministicModuleAdapters(): void {
+  vi.doMock("../../../lanes/sync/engine/pull.js", async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("../../../lanes/sync/engine/pull.js")
+      >();
+    const deps = (value: Parameters<typeof actual.pull>[0]) => ({
+      ...value,
+      now: deterministicNow,
+      createGenerationId: () =>
+        deterministicEntropy.next?.("pull-generation") ??
+        "pull-generation-0000",
+    });
+    return {
+      ...actual,
+      pull: (
+        value: Parameters<typeof actual.pull>[0],
+        ...args: Tail<Parameters<typeof actual.pull>>
+      ) => actual.pull(deps(value), ...args),
+      pullIsolated: (
+        value: Parameters<typeof actual.pullIsolated>[0],
+        ...args: Tail<Parameters<typeof actual.pullIsolated>>
+      ) => actual.pullIsolated(deps(value), ...args),
+    };
+  });
+
+  vi.doMock("../../../lanes/bench/execute/run.js", async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("../../../lanes/bench/execute/run.js")
+      >();
+    return {
+      ...actual,
+      createDefaultBenchExecutionDeps: (
+        ...args: Parameters<typeof actual.createDefaultBenchExecutionDeps>
+      ) => ({
+        ...actual.createDefaultBenchExecutionDeps(...args),
+        createRunId: () =>
+          `bench-${deterministicEntropy.next?.("bench-run") ?? "bench-run-0000"}`,
+        createEvidenceGenerationId: () =>
+          deterministicEntropy.next?.("bench-evidence") ??
+          "bench-evidence-0000",
+        now: deterministicNow,
+      }),
+    };
+  });
+
+  vi.doMock(
+    "../../../lanes/findings/policy/evaluate.js",
+    async (importOriginal) => {
+      const actual =
+        await importOriginal<
+          typeof import("../../../lanes/findings/policy/evaluate.js")
+        >();
+      return {
+        ...actual,
+        evaluatePolicy: (...args: Parameters<typeof actual.evaluatePolicy>) => {
+          const report = actual.evaluatePolicy(...args);
+          report.runId =
+            deterministicEntropy.next?.("policy-run") ?? "policy-run-0000";
+          return report;
+        },
+      };
+    },
+  );
+
+  vi.doMock("../../../lanes/sync/plan/index.js", async (importOriginal) => {
+    const [actual, canonical] = await Promise.all([
+      importOriginal<typeof import("../../../lanes/sync/plan/index.js")>(),
+      import("../../../lanes/sync/serialize/canonical.js"),
+    ]);
+    type EngineDeps = Parameters<typeof actual.computePlan>[0];
+    type Plan = Awaited<ReturnType<typeof actual.computePlan>>;
+    const deterministicDeps = (value: EngineDeps): EngineDeps => ({
+      ...value,
+      now: deterministicNow,
+    });
+    const rootFor = (deps: EngineDeps) =>
+      deps.worktreeRoot ?? dirname(resolve(deps.db.name));
+    const replacePersistedPlan = async (
+      deps: EngineDeps,
+      plan: Plan,
+    ): Promise<Plan> => {
+      const sequence =
+        deterministicEntropy.next?.("plan-id").match(/\d+$/u)?.[0] ?? "0";
+      const planId = `01M0029CG2${sequence.padStart(16, "0")}`;
+      const { planSha256: _ignored, ...withoutSha } = { ...plan, planId };
+      const deterministic = {
+        ...withoutSha,
+        planSha256: canonical.contentHash(withoutSha),
+      } satisfies Plan;
+      const root = rootFor(deps);
+      const directory = join(root, ".fs-sync");
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        join(directory, `plan-${planId}.json`),
+        `${JSON.stringify(deterministic, null, 2)}\n`,
+        "utf8",
+      );
+      await rm(join(directory, `plan-${plan.planId}.json`), { force: true });
+      return deterministic;
+    };
+    return {
+      ...actual,
+      computePlan: async (
+        deps: EngineDeps,
+        ...args: Tail<Parameters<typeof actual.computePlan>>
+      ) =>
+        replacePersistedPlan(
+          deps,
+          await actual.computePlan(deterministicDeps(deps), ...args),
+        ),
+      plan: async (
+        deps: Parameters<typeof actual.plan>[0],
+        input: Parameters<typeof actual.plan>[1],
+      ) => {
+        if (input.continuation !== null && input.continuation !== undefined) {
+          return actual.plan(deterministicDeps(deps), input);
+        }
+        const page = await actual.plan(deterministicDeps(deps), input);
+        const full = actual.loadPlanForDeps(deps, page.planId);
+        if (full === null) throw new Error("Golden Loop plan sidecar missing");
+        const deterministic = await replacePersistedPlan(deps, full);
+        return {
+          ...page,
+          planId: deterministic.planId,
+          planSha256: deterministic.planSha256,
+          next:
+            page.next === null
+              ? null
+              : page.next.replace(page.planId, deterministic.planId),
+        };
+      },
+    };
+  });
+}
+
+type Tail<T extends readonly unknown[]> = T extends readonly [
+  unknown,
+  ...infer R,
+]
+  ? R
+  : never;
+
 import {
   parseOverlayText,
   serializeOverlay,
 } from "../../../lanes/findings/overlay/reader.js";
 import { assertion, fileAssertion } from "./assertions.js";
 import { createGoldenLoopHarness, type GoldenLoopHarness } from "./harness.js";
-import { semanticReport } from "./reporter.js";
+import { assertDeterministicRuns, semanticReport } from "./reporter.js";
 import { GOLDEN_LOOP_BEATS, type GoldenLoopBeat } from "./scenario.js";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../../../..");
@@ -76,6 +257,10 @@ const POLICY_VERSION = "pv-ax3000-pre-policy-2.4";
 const POLICY_RACE_PROJECT_ID = "project-ax3000-pre-policy-race";
 const POLICY_RACE_VERSION = "pv-ax3000-pre-policy-2.3";
 const execFileAsync = promisify(execFile);
+
+function stableDomEvidence(html: string): string {
+  return html.replaceAll(/radix-_r_[a-z0-9]+_/gu, "radix-stable-id");
+}
 
 interface Runtime {
   host: ReturnType<typeof createFakePluginHost>;
@@ -522,6 +707,11 @@ function registeredRpc(
               }),
             };
           }
+          if (property === "benchRunAttemptStart") {
+            return withDeterministicDate(() =>
+              runtime.host.harness.behavior.callRpc(property, input),
+            );
+          }
           return runtime.host.harness.behavior.callRpc(property, input);
         };
       },
@@ -742,7 +932,14 @@ async function authorFs167Decisions(runtime: Runtime): Promise<unknown> {
       "-m",
       "test: seed FS-167 clean triage baseline",
     ],
-    { cwd: runtime.worktree },
+    {
+      cwd: runtime.worktree,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_DATE: "2026-08-14T12:00:00Z",
+        GIT_COMMITTER_DATE: "2026-08-14T12:00:00Z",
+      },
+    },
   );
   const guardedPull = await runtime.host.harness.behavior.runCli(
     [
@@ -928,7 +1125,7 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
         });
         await artifacts.writeText(
           "sync-review.dom.html",
-          slot.container.innerHTML,
+          stableDomEvidence(slot.container.innerHTML),
         );
         slot.unmount();
       },
@@ -1686,12 +1883,14 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
             "FS-201 pull succeeded but its version is absent from the bench selector",
           );
         const attempt = object(
-          await runtime.host.harness.behavior.callRpc("benchRunAttemptStart", {
-            projectId: runtime.projectId,
-            projectVersionId: selected,
-            tier: "tier0",
-            hostId: "golden-host",
-          }),
+          await withDeterministicDate(() =>
+            runtime.host.harness.behavior.callRpc("benchRunAttemptStart", {
+              projectId: runtime.projectId,
+              projectVersionId: selected,
+              tier: "tier0",
+              hostId: "golden-host",
+            }),
+          ),
           "bench run attempt",
         );
         if (attempt["success"] !== true) {
@@ -2533,12 +2732,14 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
         const remoteBefore = remoteSnapshot(runtime);
         const remoteWriteCountBefore = runtime.remoteWriteCalls.length;
         const preview = object(
-          await runtime.host.harness.behavior.callRpc("triagePolicyPreview", {
-            projectId: WORKSPACE_PROJECT_ID,
-            projectVersionId: POLICY_VERSION,
-            pageSize: 50,
-            continuation: null,
-          }),
+          await withDeterministicDate(() =>
+            runtime.host.harness.behavior.callRpc("triagePolicyPreview", {
+              projectId: WORKSPACE_PROJECT_ID,
+              projectVersionId: POLICY_VERSION,
+              pageSize: 50,
+              continuation: null,
+            }),
+          ),
           "policy preview",
         );
         const previewItem = object(
@@ -2561,14 +2762,16 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           .pluck()
           .get(POLICY_PROJECT_ID, POLICY_VERSION);
         const applied = object(
-          await runtime.host.harness.behavior.callRpc("triagePolicyApply", {
-            projectId: WORKSPACE_PROJECT_ID,
-            projectVersionId: POLICY_VERSION,
-            pageSize: 50,
-            continuation: null,
-            runId: string(preview["runId"], "policy preview run id"),
-            expectedPolicySha256: policySha256,
-          }),
+          await withDeterministicDate(() =>
+            runtime.host.harness.behavior.callRpc("triagePolicyApply", {
+              projectId: WORKSPACE_PROJECT_ID,
+              projectVersionId: POLICY_VERSION,
+              pageSize: 50,
+              continuation: null,
+              runId: string(preview["runId"], "policy preview run id"),
+              expectedPolicySha256: policySha256,
+            }),
+          ),
           "policy apply",
         );
         const durable = object(
@@ -2615,12 +2818,14 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           throw new Error("Pre-policy concurrent-decision target is missing");
         }
         const racePreview = object(
-          await runtime.host.harness.behavior.callRpc("triagePolicyPreview", {
-            projectId: WORKSPACE_PROJECT_ID,
-            projectVersionId: POLICY_RACE_VERSION,
-            pageSize: 50,
-            continuation: null,
-          }),
+          await withDeterministicDate(() =>
+            runtime.host.harness.behavior.callRpc("triagePolicyPreview", {
+              projectId: WORKSPACE_PROJECT_ID,
+              projectVersionId: POLICY_RACE_VERSION,
+              pageSize: 50,
+              continuation: null,
+            }),
+          ),
           "concurrent-decision policy preview",
         );
         const racePreviewFields = object(
@@ -2647,17 +2852,19 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
           throw new Error("Concurrent durable human decision was not written");
         }
         const raceApplied = object(
-          await runtime.host.harness.behavior.callRpc("triagePolicyApply", {
-            projectId: WORKSPACE_PROJECT_ID,
-            projectVersionId: POLICY_RACE_VERSION,
-            pageSize: 50,
-            continuation: null,
-            runId: string(racePreview["runId"], "race preview run id"),
-            expectedPolicySha256: string(
-              racePreviewFields["policySha256"],
-              "race policy preview digest",
-            ),
-          }),
+          await withDeterministicDate(() =>
+            runtime.host.harness.behavior.callRpc("triagePolicyApply", {
+              projectId: WORKSPACE_PROJECT_ID,
+              projectVersionId: POLICY_RACE_VERSION,
+              pageSize: 50,
+              continuation: null,
+              runId: string(racePreview["runId"], "race preview run id"),
+              expectedPolicySha256: string(
+                racePreviewFields["policySha256"],
+                "race policy preview digest",
+              ),
+            }),
+          ),
           "concurrent-decision policy apply",
         );
         const raceDurable = object(
@@ -2808,7 +3015,10 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
 async function createRun(
   runLabel: "run-1" | "run-2",
 ): Promise<Readonly<{ harness: GoldenLoopHarness; runtime: Runtime }>> {
+  if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new realDate("2026-08-14T12:00:00.000Z"));
   vi.resetModules();
+  installDeterministicModuleAdapters();
   installTestPluginRuntime();
   let worktree = "";
   let runtime: Runtime | undefined;
@@ -2979,8 +3189,23 @@ async function createRun(
         },
       },
     },
-    configure: async ({ bb, host, worktree: configuredWorktree }) => {
+    configure: async ({
+      bb,
+      host,
+      worktree: configuredWorktree,
+      clock,
+      ids,
+    }) => {
       worktree = configuredWorktree;
+      let deterministicTime = clock.now().getTime();
+      deterministicEntropy.next = (namespace) => ids.next(namespace);
+      deterministicEntropy.now = () => deterministicTime;
+      deterministicEntropy.advance = () => {
+        clock.advance(1);
+        deterministicTime += 1;
+        vi.setSystemTime(new realDate(deterministicTime));
+      };
+      installDeterministicBehaviorClock(host);
       // The warm seed is scoped to project-ax3000-demo/pv-ax3000-*; beats 1-14
       // use project-4a752600a07a/pv-a481df87dadf, so their rows stay disjoint.
       await copyFile(
@@ -3317,13 +3542,20 @@ async function createRun(
   return { harness, runtime };
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  deterministicEntropy.next = null;
+  deterministicEntropy.now = null;
+  deterministicEntropy.advance = null;
+  vi.useRealTimers();
+});
 
 describe.sequential("Golden Loop incremental acceptance", () => {
   it(
     "runs all sixteen ordered beats twice with the same semantic result",
     async () => {
       const first = await createRun("run-1");
+      let firstReport: NonNullable<GoldenLoopHarness["report"]>;
       try {
         const firstResults = await first.harness.runAll();
         expect(firstResults).toHaveLength(16);
@@ -3341,16 +3573,19 @@ describe.sequential("Golden Loop incremental acceptance", () => {
         );
         expect(unexpected, JSON.stringify(unexpected, null, 2)).toEqual([]);
         first.harness.assertNoExternalNetwork();
-        const firstSemantic = semanticReport(first.harness.report!);
-
+        expect(first.harness.report?.durationMs).toBeLessThan(15 * 60 * 1_000);
+        firstReport = structuredClone(first.harness.report!);
         const second = await createRun("run-2");
         try {
           const secondResults = await second.harness.runAll();
           expect(secondResults).toHaveLength(16);
           second.harness.assertNoExternalNetwork();
-          expect(semanticReport(second.harness.report!)).toEqual(firstSemantic);
+          expect(semanticReport(second.harness.report!)).toEqual(
+            semanticReport(firstReport),
+          );
+          assertDeterministicRuns(firstReport, second.harness.report!);
           expect(second.harness.report?.durationMs).toBeLessThan(
-            16 * 60 * 1_000,
+            15 * 60 * 1_000,
           );
         } finally {
           await second.harness.dispose();

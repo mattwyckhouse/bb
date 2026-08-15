@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import dns from "node:dns";
-import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
@@ -22,6 +23,7 @@ import {
   type GoldenLoopMachineReport,
   type OfflineViolationReport,
   writeGoldenLoopReports,
+  type GoldenLoopDeterminismProof,
 } from "./reporter.js";
 import {
   GOLDEN_LOOP_BEATS,
@@ -61,6 +63,8 @@ export interface GoldenLoopHarnessOptions {
       bb: BbPluginApi;
       host: FakePluginHost;
       worktree: string;
+      clock: DeterministicClock;
+      ids: GoldenLoopBeatContext["ids"];
     }>,
   ) => Promise<void> | void;
   readonly human?: Partial<{
@@ -110,6 +114,21 @@ function deterministicClock(): DeterministicClock {
       return new Date(milliseconds);
     },
   };
+}
+
+export async function deterministicEvidenceDigest(
+  root: string,
+  files: readonly string[],
+): Promise<string> {
+  const digest = createHash("sha256");
+  for (const file of [...new Set(files)].sort()) {
+    const relativePath = relative(root, file);
+    digest.update(relativePath);
+    digest.update("\0");
+    digest.update(await readFile(file));
+    digest.update("\0");
+  }
+  return digest.digest("hex");
 }
 
 async function run(
@@ -360,11 +379,26 @@ export async function createGoldenLoopHarness(
       options.connected.optIn !== true ||
       options.connected.tenant.trim() === "" ||
       options.connected.bench.trim() === "");
+  const clock = deterministicClock();
+  const idCounters = new Map<string, number>();
+  const deterministicIds: GoldenLoopBeatContext["ids"] = {
+    next(namespace) {
+      const next = (idCounters.get(namespace) ?? 0) + 1;
+      idCounters.set(namespace, next);
+      return `${namespace}-${String(next).padStart(4, "0")}`;
+    },
+  };
   try {
     if (mode === "offline") guard.install();
     if (!connectedUnavailable) {
       if (mode === "connected") await options.connected!.reset();
-      await options.configure?.({ bb: host.bb, host, worktree });
+      await options.configure?.({
+        bb: host.bb,
+        host,
+        worktree,
+        clock,
+        ids: deterministicIds,
+      });
     }
   } catch (error) {
     try {
@@ -384,8 +418,6 @@ export async function createGoldenLoopHarness(
   } finally {
     guard.restore();
   }
-  const clock = deterministicClock();
-  const ids = new Map<string, number>();
   const jobs = new Map<string, number>();
   const hints: Array<
     Readonly<{ channel: string; payload: Readonly<Record<string, unknown>> }>
@@ -394,6 +426,7 @@ export async function createGoldenLoopHarness(
   let preserved = false;
   let disposed = false;
   let report: GoldenLoopMachineReport | null = null;
+  const evidenceFiles = new Set<string>();
   const startedAt = clock.now().toISOString();
   const startedPerformance = performance.now();
   const gitEnvironment: NodeJS.ProcessEnv = {
@@ -405,7 +438,7 @@ export async function createGoldenLoopHarness(
     GIT_COMMITTER_DATE: "2026-08-14T12:00:00Z",
   };
 
-  const relativeArtifact = (path: string) => relative(runDirectory, path);
+  const relativeArtifact = (path: string) => relative(artifactRoot, path);
   const tree = async () => {
     const [tracked, status] = await Promise.all([
       run("git", ["ls-files", "--stage"], worktree, gitEnvironment),
@@ -417,6 +450,25 @@ export async function createGoldenLoopHarness(
       ),
     ]);
     return { tracked: tracked.stdout, status: status.stdout };
+  };
+  const settledTree = async () => {
+    let previous = await tree();
+    let stableSamples = 0;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      const current = await tree();
+      if (
+        current.tracked === previous.tracked &&
+        current.status === previous.status
+      ) {
+        stableSamples += 1;
+        if (stableSamples === 3) return current;
+      } else {
+        stableSamples = 0;
+      }
+      previous = current;
+    }
+    throw new Error("GOLDEN_LOOP_TREE_DID_NOT_SETTLE");
   };
 
   const humanAction = async (
@@ -466,13 +518,7 @@ export async function createGoldenLoopHarness(
         beat: number,
         worktree,
         clock,
-        ids: {
-          next(namespace) {
-            const next = (ids.get(namespace) ?? 0) + 1;
-            ids.set(namespace, next);
-            return `${namespace}-${String(next).padStart(4, "0")}`;
-          },
-        },
+        ids: deterministicIds,
         jobs: {
           current: (jobId) => jobs.get(jobId) ?? 0,
           advance(jobId) {
@@ -590,11 +636,12 @@ export async function createGoldenLoopHarness(
         guard.restore();
         artifacts.push(
           relativeArtifact(
-            await beatWriter.writeJson("tree-after.json", await tree()),
+            await beatWriter.writeJson("tree-after.json", await settledTree()),
           ),
         );
       }
       for (const artifact of beatWriter.written()) {
+        evidenceFiles.add(artifact);
         artifacts.push(relativeArtifact(artifact));
       }
       const result: BeatResult = {
@@ -614,6 +661,18 @@ export async function createGoldenLoopHarness(
       const ordered = GOLDEN_LOOP_BEATS.map(
         ({ number }) => results.get(number)!,
       );
+      const finalTree = join(artifactRoot, "beat-16", "tree-after.json");
+      const finalTreeContents = connectedUnavailable
+        ? Buffer.from("CONNECTED_MODE_UNAVAILABLE\n", "utf8")
+        : await readFile(finalTree);
+      const determinism: GoldenLoopDeterminismProof = {
+        finalTreeSha256: createHash("sha256")
+          .update(finalTreeContents)
+          .digest("hex"),
+        evidenceSha256: await deterministicEvidenceDigest(artifactRoot, [
+          ...evidenceFiles,
+        ]),
+      };
       report = {
         schemaVersion: 1,
         mode,
@@ -625,6 +684,16 @@ export async function createGoldenLoopHarness(
           ordered.every(({ status }) => status === "skipped")
             ? "failed"
             : "passed",
+        provenance: {
+          executionLabel:
+            mode === "offline" ? "OFFLINE FIXTURE" : "CONNECTED DEV TENANT",
+          cannedRun: { label: "CANNED RUN", active: false },
+          publicLog: {
+            label: "PUBLIC LOG UNAVAILABLE",
+            available: false,
+          },
+        },
+        determinism,
         results: ordered,
         offlineViolations: [...guard.violations],
         ohMoments: Object.fromEntries(
