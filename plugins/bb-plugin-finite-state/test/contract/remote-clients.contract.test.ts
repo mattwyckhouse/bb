@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import { createPluginContext } from "../../lib/context.js";
 import { createRemoteServiceController } from "../../lib/remote/index.js";
@@ -20,6 +20,34 @@ import { ASSURANCE_STUDIO_REFERENCE_ROUTES } from "../mock-remote/generated/assu
 import { registerRemoteServices } from "../../lanes/remote/register.js";
 import { rpcContract } from "../../shared/contract.js";
 import { createMockRemote } from "../mock-remote/server.js";
+
+type FakeHost = ReturnType<typeof createFakePluginHost>;
+
+const hosts: FakeHost[] = [];
+const disposers: Array<() => void | Promise<void>> = [];
+const fetchSpies: Array<{ mockRestore: () => void }> = [];
+
+function trackHost(host: FakeHost): FakeHost {
+  hosts.push(host);
+  return host;
+}
+
+function trackDispose(dispose: () => void | Promise<void>): void {
+  disposers.push(dispose);
+}
+
+function trackFetchSpy<T extends { mockRestore: () => void }>(spy: T): T {
+  fetchSpies.push(spy);
+  return spy;
+}
+
+afterEach(async () => {
+  await Promise.all([
+    ...hosts.splice(0).map((host) => host.harness.lifecycle.dispose()),
+    ...disposers.splice(0).map((dispose) => dispose()),
+  ]);
+  for (const spy of fetchSpies.splice(0)) spy.mockRestore();
+});
 
 async function firstPage<T>(
   pages: AsyncIterable<{ items: T[] }>,
@@ -51,7 +79,7 @@ function mountMockAtPath(
 
 describe("direct remote and compute contract", () => {
   it("keeps the plugin running while missing Platform remains a scoped connection state", async () => {
-    const host = createFakePluginHost({ pluginId: "finite-state" });
+    const host = trackHost(createFakePluginHost({ pluginId: "finite-state" }));
     await registerRemoteServices(host.bb, createPluginContext(host.bb));
     expect(await host.harness.callRpc("connectionsStatus")).toEqual({
       platform: {
@@ -83,6 +111,7 @@ describe("direct remote and compute contract", () => {
       "utf8",
     );
     expect(source.match(/settings\.define\(/gu)).toHaveLength(1);
+    // Dispose is idempotent; afterEach also reclaims the host.
     await host.harness.lifecycle.dispose();
     await host.harness.lifecycle.dispose();
   });
@@ -159,14 +188,15 @@ describe("direct remote and compute contract", () => {
       standaloneUnpackExecutablePath: "",
       standaloneUnpackImage: "localhost:5000/services-unpack:latest",
     };
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(Response.json([]));
-    const host = createFakePluginHost({ pluginId: "finite-state" });
+    const fetchMock = trackFetchSpy(
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json([])),
+    );
+    const host = trackHost(createFakePluginHost({ pluginId: "finite-state" }));
     const controller = createRemoteServiceController(
       createPluginContext(host.bb),
       values,
     );
+    trackDispose(() => controller.dispose());
     const platformDelegate = controller.services.platform;
     const asDelegate = controller.services.assuranceStudio;
     await Promise.resolve();
@@ -188,8 +218,6 @@ describe("direct remote and compute contract", () => {
         new URL(String(input)).hostname.startsWith("platform-"),
       ),
     ).toHaveLength(2);
-    await controller.dispose();
-    fetchMock.mockRestore();
   });
 
   it("keeps named AS non-entity mappings in the vendored snapshot and handler audit", () => {
@@ -386,16 +414,19 @@ describe("direct remote and compute contract", () => {
       standaloneUnpackExecutablePath: "",
       standaloneUnpackImage: "localhost:5000/services-unpack:latest",
     };
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        Response.json({ error: "unauthorized" }, { status: 401 }),
-      );
-    const host = createFakePluginHost({ pluginId: "finite-state" });
+    trackFetchSpy(
+      vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(
+          Response.json({ error: "unauthorized" }, { status: 401 }),
+        ),
+    );
+    const host = trackHost(createFakePluginHost({ pluginId: "finite-state" }));
     const controller = createRemoteServiceController(
       createPluginContext(host.bb),
       values,
     );
+    trackDispose(() => controller.dispose());
     await vi.waitFor(() => {
       expect(controller.connectionStatus().platform.state).toBe("unreachable");
     });
@@ -407,8 +438,6 @@ describe("direct remote and compute contract", () => {
     expect(controller.connectionStatus().assuranceStudio.state).toBe(
       "disabled",
     );
-    await controller.dispose();
-    fetchMock.mockRestore();
   });
 
   it("keeps registered connection status contract-safe while publishing structured auth diagnostics for both remotes", async () => {
@@ -427,12 +456,16 @@ describe("direct remote and compute contract", () => {
       standaloneUnpackExecutablePath: "",
       standaloneUnpackImage: "localhost:5000/services-unpack:latest",
     } satisfies RemoteSettingValues;
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        Response.json({ error: "unauthorized" }, { status: 401 }),
-      );
-    const host = createFakePluginHost({ pluginId: "finite-state-auth-status" });
+    trackFetchSpy(
+      vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(
+          Response.json({ error: "unauthorized" }, { status: 401 }),
+        ),
+    );
+    const host = trackHost(
+      createFakePluginHost({ pluginId: "finite-state-auth-status" }),
+    );
     await registerRemoteServices(host.bb, createPluginContext(host.bb));
     await host.harness.setSettings({
       platformBaseUrl: values.platformBaseUrl,
@@ -511,8 +544,6 @@ describe("direct remote and compute contract", () => {
         ),
       },
     });
-    await host.harness.lifecycle.dispose();
-    fetchMock.mockRestore();
   });
 
   it("keeps syntactically malformed URL settings distinct from reachability", async () => {
@@ -531,13 +562,16 @@ describe("direct remote and compute contract", () => {
       standaloneUnpackExecutablePath: "",
       standaloneUnpackImage: "localhost:5000/services-unpack:latest",
     };
-    const host = createFakePluginHost({
-      pluginId: "finite-state-bad-remote-url",
-    });
+    const host = trackHost(
+      createFakePluginHost({
+        pluginId: "finite-state-bad-remote-url",
+      }),
+    );
     const controller = createRemoteServiceController(
       createPluginContext(host.bb),
       values,
     );
+    trackDispose(() => controller.dispose());
 
     expect(controller.connectionStatus()).toMatchObject({
       platform: {
@@ -553,7 +587,6 @@ describe("direct remote and compute contract", () => {
         ),
       },
     });
-    await controller.dispose();
   });
 
   it("reports base-URL convention failures as settings errors without probing", async () => {
@@ -572,8 +605,10 @@ describe("direct remote and compute contract", () => {
       standaloneUnpackExecutablePath: "",
       standaloneUnpackImage: "localhost:5000/services-unpack:latest",
     };
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-    const host = createFakePluginHost({ pluginId: "finite-state-base-shape" });
+    const fetchMock = trackFetchSpy(vi.spyOn(globalThis, "fetch"));
+    const host = trackHost(
+      createFakePluginHost({ pluginId: "finite-state-base-shape" }),
+    );
     await registerRemoteServices(host.bb, createPluginContext(host.bb));
     await host.harness.setSettings({
       platformBaseUrl: values.platformBaseUrl,
@@ -597,8 +632,6 @@ describe("direct remote and compute contract", () => {
       },
     });
     expect(fetchMock).not.toHaveBeenCalled();
-    await host.harness.lifecycle.dispose();
-    fetchMock.mockRestore();
   });
 
   it.each([
@@ -629,9 +662,8 @@ describe("direct remote and compute contract", () => {
   ])(
     "publishes registered self-diagnosis for $name",
     async ({ name, asConfigured, expected, platformResult }) => {
-      const fetchMock = vi
-        .spyOn(globalThis, "fetch")
-        .mockImplementation(async (input) => {
+      trackFetchSpy(
+        vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
           const url = new URL(String(input));
           if (url.hostname === "platform.example") {
             if (platformResult === "401")
@@ -640,10 +672,13 @@ describe("direct remote and compute contract", () => {
               throw new TypeError("connection refused");
           }
           return Response.json({ items: [], total: 0 });
-        });
-      const host = createFakePluginHost({
-        pluginId: `finite-state-${platformResult}-${asConfigured}`,
-      });
+        }),
+      );
+      const host = trackHost(
+        createFakePluginHost({
+          pluginId: `finite-state-${platformResult}-${asConfigured}`,
+        }),
+      );
       await registerRemoteServices(host.bb, createPluginContext(host.bb));
       await host.harness.setSettings({
         platformBaseUrl: "https://platform.example/api",
@@ -675,8 +710,21 @@ describe("direct remote and compute contract", () => {
           ),
         ).toHaveLength(3);
       }
-      await host.harness.lifecycle.dispose();
-      fetchMock.mockRestore();
     },
   );
+
+  it("installs a global fetch spy without restoring it in the test body", () => {
+    trackFetchSpy(
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json([])),
+    );
+    trackHost(
+      createFakePluginHost({ pluginId: "finite-state-teardown-leak-proof" }),
+    );
+    // Deliberately no mockRestore / dispose here — afterEach must reclaim.
+    expect(vi.isMockFunction(globalThis.fetch)).toBe(true);
+  });
+
+  it("observes a pristine global fetch after unrepaired spy installation", () => {
+    expect(vi.isMockFunction(globalThis.fetch)).toBe(false);
+  });
 });

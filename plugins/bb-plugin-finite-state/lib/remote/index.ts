@@ -445,6 +445,11 @@ function missingSettingsMessage(
             ? ["Assurance Studio API key (asApiKey)"]
             : []),
         ];
+  if (missing.length === 0) {
+    return service === "platform"
+      ? "Platform is not configured."
+      : "Assurance Studio is not configured.";
+  }
   return `${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} not configured.`;
 }
 

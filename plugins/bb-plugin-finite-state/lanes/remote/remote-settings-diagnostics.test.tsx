@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@bb/plugin-sdk/testing/app";
 import { REMOTE_CONNECTIONS_CHANGED_CHANNEL } from "./connection-state.js";
 import type { RemoteSelfDiagnosisView } from "./diagnostics-contract.js";
@@ -115,5 +115,64 @@ describe("remote settings self-diagnosis", () => {
 
     expect(await slot.findByText("Timed out")).toBeTruthy();
     expect(slot.getByText("Unreachable")).toBeTruthy();
+  });
+
+  it("ignores a stale self-diagnosis response after a newer refresh", async () => {
+    type DiagnosisResult = {
+      platform: RemoteSelfDiagnosisView;
+      assuranceStudio: RemoteSelfDiagnosisView;
+    };
+    let resolveSlow: (value: DiagnosisResult) => void = () => undefined;
+    let calls = 0;
+    const slot = renderSlot(
+      settingsSection(),
+      {},
+      {
+        rpc: {
+          remoteConnectionSelfDiagnosis: () => {
+            calls += 1;
+            if (calls === 1) {
+              return new Promise<DiagnosisResult>((resolve) => {
+                resolveSlow = resolve;
+              });
+            }
+            return {
+              platform: diagnosis(
+                "ok",
+                "Authenticated read succeeded in 18ms.",
+              ),
+              assuranceStudio: diagnosis(
+                "ok",
+                "Authenticated read succeeded in 18ms.",
+              ),
+            };
+          },
+        },
+      },
+    );
+
+    expect(
+      await slot.findByLabelText("Checking remote connections"),
+    ).toBeTruthy();
+    await slot.behavior.emitRealtime(REMOTE_CONNECTIONS_CHANGED_CHANNEL, null);
+    expect(await slot.findAllByText("OK")).toHaveLength(2);
+
+    resolveSlow({
+      platform: diagnosis(
+        "auth-failed",
+        "stale Platform authentication failed",
+      ),
+      assuranceStudio: diagnosis(
+        "auth-failed",
+        "stale Assurance Studio authentication failed",
+      ),
+    });
+    await waitFor(() => {
+      expect(slot.queryByText("Auth failed")).toBeNull();
+      expect(
+        slot.queryByText(/stale Platform authentication failed/u),
+      ).toBeNull();
+    });
+    expect(slot.getAllByText("OK")).toHaveLength(2);
   });
 });
