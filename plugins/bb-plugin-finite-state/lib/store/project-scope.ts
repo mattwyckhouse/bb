@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 
+import { REPO_LOCAL_PROJECT_ID_PREFIX } from "../contract-load/projection-key.js";
+
 /**
  * SQL predicate for cache catalogs whose sync_state alias is `s`.
  *
@@ -77,19 +79,27 @@ export function selectAssuranceStudioProjectBinding(
  * the first validated workspace that opens its catalog. Multi-project legacy
  * stores retain the compatibility visibility branch until a later pull records
  * explicit associations.
+ *
+ * Repo-local checkout projections (`fs-local-repo:*`) are ignored both when
+ * counting distinct projects and when deciding whether the one-shot has
+ * already been spent: they are not Platform projects, and a binding to them
+ * must not block a later genuine single-Platform-project backfill.
  */
 export function backfillUnambiguousWorkspaceProjectBinding(
   db: Database.Database,
   workspaceProjectId: string,
 ): void {
-  db.prepare<[string]>(
+  const repoLocalPattern = `${REPO_LOCAL_PROJECT_ID_PREFIX}%`;
+  db.prepare<[string, string, string]>(
     `INSERT OR IGNORE INTO workspace_platform_project_binding
        (workspace_project_id, platform_project_id)
      SELECT ?, MIN(project_id)
        FROM sync_state
-      WHERE NOT EXISTS (
+      WHERE project_id NOT LIKE ?
+        AND NOT EXISTS (
         SELECT 1 FROM workspace_platform_project_binding
+         WHERE platform_project_id NOT LIKE ?
       )
      HAVING COUNT(DISTINCT project_id) = 1`,
-  ).run(workspaceProjectId);
+  ).run(workspaceProjectId, repoLocalPattern, repoLocalPattern);
 }
