@@ -1,11 +1,8 @@
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import type Database from "better-sqlite3";
 import type { PluginContext } from "../../../../lib/context.js";
-import {
-  fromStorageProjectVersionId,
-  PROJECT_LEVEL_VERSION_ID,
-  toStorageProjectVersionId,
-} from "../../../../lib/store/index.js";
+import { resolveNewestAcceptedProjectVersionId } from "../../../../lib/store/accepted-version.js";
+import { toStorageProjectVersionId } from "../../../../lib/store/index.js";
 import { reqIdKey } from "../../../../lib/sync/registry.js";
 import type { JsonValue } from "../../../../shared/contract.js";
 import { rpcContract } from "../../../../shared/contract.js";
@@ -37,10 +34,6 @@ interface CacheRow {
 interface SnapshotRow {
   entity_key: string;
   payload: string;
-}
-
-interface VersionRow {
-  project_version_id: string;
 }
 
 const CACHE_MESSAGE_MAX_LENGTH = 500;
@@ -91,18 +84,12 @@ function resolvedProjectVersionId(
   projectId: string,
   requested: string | null,
 ): string | null {
-  if (requested !== null) return requested;
-  const row = db
-    .prepare<[string, string], VersionRow>(
-      `SELECT project_version_id
-       FROM sync_state
-      WHERE project_id = ? AND entity_kind = 'requirement'
-        AND project_version_id <> ? AND accepted_generation_id IS NOT NULL
-      ORDER BY last_pull DESC, project_version_id DESC
-      LIMIT 1`,
-    )
-    .get(projectId, PROJECT_LEVEL_VERSION_ID);
-  return row ? fromStorageProjectVersionId(row.project_version_id) : null;
+  return resolveNewestAcceptedProjectVersionId(
+    db,
+    projectId,
+    requested,
+    "requirement",
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

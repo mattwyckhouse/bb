@@ -10,6 +10,50 @@ import type { RequirementYamlV1 } from "./schema.js";
 import { reqIdKey } from "../../../../lib/sync/registry.js";
 import { rpcContract } from "../../../../shared/contract.js";
 
+function seedAcceptedRequirementCache(
+  db: ReturnType<ReturnType<typeof createPluginContext>["db"]>,
+  input: {
+    versionId: string;
+    generationId: string;
+    lastPull: string;
+    requirements: readonly RequirementYamlV1[];
+  },
+): void {
+  db.prepare(
+    `INSERT INTO pull_generation
+      (project_id, project_version_id, generation_id, status, requested_kinds_json, started_at, completed_at, accepted_at)
+      VALUES (?, ?, ?, 'accepted', '["requirement"]', ?, ?, ?)`,
+  ).run(
+    "project-1",
+    input.versionId,
+    input.generationId,
+    input.lastPull,
+    input.lastPull,
+    input.lastPull,
+  );
+  db.prepare(
+    `INSERT INTO sync_state
+      (project_id, project_version_id, entity_kind, accepted_generation_id, base_revision, last_pull)
+      VALUES (?, ?, 'requirement', ?, 1, ?)`,
+  ).run("project-1", input.versionId, input.generationId, input.lastPull);
+  const insertSnapshot = db.prepare(
+    `INSERT INTO base_snapshot
+      (project_id, project_version_id, entity_kind, generation_id, entity_key, payload, content_hash, pulled_at)
+      VALUES (?, ?, 'requirement', ?, ?, ?, ?, ?)`,
+  );
+  for (const requirement of input.requirements) {
+    insertSnapshot.run(
+      "project-1",
+      input.versionId,
+      input.generationId,
+      reqIdKey({ reqId: requirement.id }),
+      JSON.stringify(requirement),
+      requirementSemanticSha256(requirement),
+      input.lastPull,
+    );
+  }
+}
+
 const cardsDirectory = dirname(fileURLToPath(import.meta.url));
 
 function localRequirement(id: string): RequirementYamlV1 {
@@ -650,5 +694,77 @@ describe("requirements registration boundary", () => {
       /\.\/adapter\.js|\.\/backend\.js|\.\/query\.js|node:/u,
     );
     expect(backendEntry).toContain('from "./adapter.js"');
+  });
+
+  it("keeps load-more on the pinned version and rejects a continuation after the version changes", async () => {
+    const host = createFakePluginHost({
+      pluginId: "finite-state",
+      sdk: {
+        projects: {
+          get: () => ({
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
+        files: {
+          list: () => ({ files: [], truncated: false }),
+        },
+      },
+    });
+    const context = createPluginContext(host.bb);
+    seedAcceptedRequirementCache(context.db(), {
+      versionId: "version-pin",
+      generationId: "generation-pin",
+      lastPull: "2026-08-01T12:00:00Z",
+      requirements: [
+        localRequirement("REQ-page-a"),
+        localRequirement("REQ-page-b"),
+      ],
+    });
+    seedAcceptedRequirementCache(context.db(), {
+      versionId: "version-new",
+      generationId: "generation-new",
+      lastPull: "2026-08-15T12:00:00Z",
+      requirements: [localRequirement("REQ-other")],
+    });
+    registerRequirementsCardsBackend(host.bb, context);
+
+    const first = rpcContract.requirementsList.output.parse(
+      await host.harness.callRpc("requirementsList", {
+        projectId: "project-1",
+        projectVersionId: "version-pin",
+        pageSize: 1,
+        continuation: null,
+        filters: {},
+      }),
+    );
+    expect(first.items.map((item) => item.key)).toEqual(["REQ-page-a"]);
+    expect(first.items[0]?.projectVersionId).toBe("version-pin");
+    expect(first.next).toBe("REQ-page-a");
+
+    const second = rpcContract.requirementsList.output.parse(
+      await host.harness.callRpc("requirementsList", {
+        projectId: "project-1",
+        projectVersionId: "version-pin",
+        pageSize: 1,
+        continuation: first.next,
+        filters: {},
+      }),
+    );
+    expect(second.items.map((item) => item.key)).toEqual(["REQ-page-b"]);
+    expect(second.items[0]?.projectVersionId).toBe("version-pin");
+    expect(second.next).toBeNull();
+
+    await expect(
+      host.harness.callRpc("requirementsList", {
+        projectId: "project-1",
+        projectVersionId: null,
+        pageSize: 1,
+        continuation: first.next,
+        filters: {},
+      }),
+    ).rejects.toThrow("Requirement continuation token is no longer valid.");
+    await host.harness.lifecycle.dispose();
   });
 });
