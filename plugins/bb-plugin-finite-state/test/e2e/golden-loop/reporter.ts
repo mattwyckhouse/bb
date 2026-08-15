@@ -24,9 +24,38 @@ export interface GoldenLoopMachineReport {
   startedAt: string;
   durationMs: number;
   status: "passed" | "failed";
+  provenance: {
+    executionLabel: "OFFLINE FIXTURE" | "CONNECTED DEV TENANT";
+    cannedRun: { label: "CANNED RUN"; active: false };
+    publicLog: { label: "PUBLIC LOG UNAVAILABLE"; available: false };
+  };
+  determinism: GoldenLoopDeterminismProof;
   results: BeatResult[];
   offlineViolations: OfflineViolationReport[];
   ohMoments: Partial<Record<"5" | "7" | "11" | "12", string[]>>;
+}
+
+export interface GoldenLoopDeterminismProof {
+  finalTreeSha256: string;
+  evidenceSha256: string;
+}
+
+export function assertDeterministicRuns(
+  first: GoldenLoopMachineReport,
+  second: GoldenLoopMachineReport,
+): void {
+  if (
+    first.determinism.finalTreeSha256 !== second.determinism.finalTreeSha256
+  ) {
+    throw new Error(
+      `GOLDEN_LOOP_FINAL_TREE_MISMATCH: ${first.determinism.finalTreeSha256} != ${second.determinism.finalTreeSha256}`,
+    );
+  }
+  if (first.determinism.evidenceSha256 !== second.determinism.evidenceSha256) {
+    throw new Error(
+      `GOLDEN_LOOP_EVIDENCE_MISMATCH: ${first.determinism.evidenceSha256} != ${second.determinism.evidenceSha256}`,
+    );
+  }
 }
 
 export interface GoldenLoopArtifactWriter {
@@ -95,8 +124,9 @@ export function createArtifactWriter(root: string): GoldenLoopArtifactWriter {
 }
 
 export function semanticReport(report: GoldenLoopMachineReport): unknown {
+  const { determinism: _determinism, ...semantic } = report;
   return {
-    ...report,
+    ...semantic,
     durationMs: 0,
     results: report.results.map((result) => ({
       ...result,
@@ -124,8 +154,12 @@ export async function writeGoldenLoopReports(
     "# Golden Loop rehearsal",
     "",
     `- Result: ${report.status.toUpperCase()}`,
-    `- Mode: ${report.mode}`,
+    `- Provenance: ${report.provenance.executionLabel}`,
+    `- ${report.provenance.cannedRun.label}: ${report.provenance.cannedRun.active ? "YES" : "NO"}`,
+    `- Public log: ${report.provenance.publicLog.label}`,
     `- Duration: ${report.durationMs} ms`,
+    `- Final tree SHA-256: ${report.determinism.finalTreeSha256}`,
+    `- Evidence SHA-256: ${report.determinism.evidenceSha256}`,
     `- Beats: ${passed} passed, ${failed} failed, ${pending} pending/skipped`,
     `- Offline violations: ${report.offlineViolations.length}`,
     "",
