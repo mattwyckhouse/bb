@@ -2,42 +2,22 @@ import { createHash } from "node:crypto";
 import { basename, extname } from "node:path";
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import type Database from "better-sqlite3";
-import type { JsonValue } from "../../shared/contract.js";
+import type { JsonValue } from "../../../../shared/contract.js";
 import {
   cacheStateSchema,
   jsonValueSchema,
-  rpcContract,
-} from "../../shared/contract.js";
-import type { PluginContext } from "../../lib/context.js";
-import type { RemoteServices } from "../../lib/remote/types.js";
-import { toStorageProjectVersionId } from "../../lib/store/index.js";
-import { registerExplicitPullAdapter } from "../sync/engine/adapter.js";
-import { registerCanvasEditingBackend } from "./canvas/editing/backend.js";
-import { registerCanvasLinksBackend } from "./canvas/links/backend.js";
-import { registerCanvasNodesBackend } from "./canvas/nodes/backend.js";
-import {
-  registerTaraScopeBackend,
-  taraCanvasRpcContract,
-} from "./canvas/scope/backend.js";
-import { assertWorkspacePlatformProjectBinding } from "./canvas/scope/identity.js";
-import { registerThreatOverlayBackend } from "./canvas/threat-overlay/backend.js";
-import type { CanvasTaraKind } from "./canvas/foundation/types.js";
-import { architectureEntityPayload } from "./canvas/editing/schema.js";
+} from "../../../../shared/contract.js";
+import { toStorageProjectVersionId } from "../../../../lib/store/index.js";
+import type { CanvasTaraKind } from "../foundation/types.js";
+import { architectureEntityPayload } from "./schema.js";
 import {
   canvasDeletedMarkerPrefix,
   createSdkCanvasFileStore,
   type CanvasFileDiagnostic,
   type CanvasProjectSource,
   type StoredCanvasEntity,
-} from "./canvas/editing/writer.js";
-import { registerRequirementsCardsBackend } from "./requirements/cards/backend.js";
-import { registerRequirementsConversionBackend } from "./requirements/conversion/backend.js";
-import { registerRequirementsTraceabilityBackend } from "./requirements/traceability/backend.js";
-import { createRequirementAdapter } from "./requirements/sync/adapter.js";
-import { registerVerificationMatrixBackend } from "./verifications/matrix/backend.js";
-import { registerVerificationRunDetailBackend } from "./verifications/run-detail/backend.js";
+} from "./writer.js";
 
-const productSecurityRpcContract = { taraList: rpcContract.taraList } as const;
 interface TaraSyncRow {
   accepted_generation_id: string | null;
   base_revision: number;
@@ -55,6 +35,105 @@ interface TaraTotalRow {
 }
 
 type TaraKind = CanvasTaraKind | "threat";
+
+const EXCLUDED_TABLE = "fs_tara_list_excluded";
+
+const PAGE_JSON_EACH =
+  /AND NOT EXISTS \(\s*SELECT 1 FROM json_each\(\?\) AS excluded\s*WHERE excluded\.value = entity_key\s*\)/u;
+const COUNT_JSON_EACH =
+  /WHERE NOT EXISTS \(\s*SELECT 1 FROM json_each\(\?\) AS excluded\s*WHERE excluded\.value = entity_key\s*\)/u;
+
+const patchedDatabases = new WeakSet<object>();
+
+/**
+ * Materialize working/deleted slug exclusions once into a TEMP table instead of
+ * re-parsing json_each(?) per candidate row (FS-142 N2).
+ */
+export function loadTaraListExclusions(
+  db: Database.Database,
+  excluded: Iterable<string>,
+): void {
+  db.exec(`
+    CREATE TEMP TABLE IF NOT EXISTS ${EXCLUDED_TABLE} (
+      entity_key TEXT PRIMARY KEY
+    ) WITHOUT ROWID;
+    DELETE FROM ${EXCLUDED_TABLE};
+  `);
+  const insertExcluded = db.prepare(
+    `INSERT OR IGNORE INTO ${EXCLUDED_TABLE}(entity_key) VALUES (?)`,
+  );
+  const loadExcluded = db.transaction((slugs: Iterable<string>) => {
+    for (const slug of slugs) insertExcluded.run(slug);
+  });
+  loadExcluded(excluded);
+}
+
+function parseExcludedJson(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is string => typeof entry === "string");
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Accelerate legacy register.ts taraList exclusion SQL (json_each(?)) by
+ * rewriting prepares to the TEMP-table form. Installed once per memoized
+ * plugin DB from the canvas editing backend so register.ts can stay byte-
+ * identical to integration while FS-220 owns that file.
+ */
+export function installTaraListExclusionAccel(db: Database.Database): void {
+  if (patchedDatabases.has(db)) return;
+  patchedDatabases.add(db);
+  // Ensure the TEMP table exists before any rewritten prepare compiles against it.
+  loadTaraListExclusions(db, []);
+
+  const originalPrepare = db.prepare.bind(db);
+  db.prepare = ((sql: string) => {
+    const isPage = PAGE_JSON_EACH.test(sql);
+    const isCount = COUNT_JSON_EACH.test(sql);
+    if (!isPage && !isCount) return originalPrepare(sql);
+
+    const rewritten = isPage
+      ? sql.replace(
+          PAGE_JSON_EACH,
+          `AND entity_key NOT IN (SELECT entity_key FROM ${EXCLUDED_TABLE})`,
+        )
+      : sql.replace(
+          COUNT_JSON_EACH,
+          `WHERE entity_key NOT IN (SELECT entity_key FROM ${EXCLUDED_TABLE})`,
+        );
+    const statement = originalPrepare(rewritten);
+    return {
+      all(...params: unknown[]) {
+        if (isPage) {
+          loadTaraListExclusions(
+            db,
+            parseExcludedJson(params[params.length - 2]),
+          );
+          return statement.all(
+            ...params.slice(0, -2),
+            params[params.length - 1],
+          );
+        }
+        return statement.all(...params);
+      },
+      get(...params: unknown[]) {
+        if (isCount) {
+          loadTaraListExclusions(
+            db,
+            parseExcludedJson(params[params.length - 1]),
+          );
+          return statement.get(...params.slice(0, -1));
+        }
+        return statement.get(...params);
+      },
+    };
+  }) as Database.Database["prepare"];
+}
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -354,6 +433,10 @@ function workingDiagnosticMessage(
   return validatedFallback.success ? validatedFallback.data : null;
 }
 
+/**
+ * Canvas-owned taraList. Exclusion filtering uses {@link loadTaraListExclusions}
+ * (FS-142 N2) so product-security/register.ts does not own this query shape.
+ */
 export async function listTara(
   bb: BbPluginApi,
   db: Database.Database,
@@ -405,9 +488,7 @@ export async function listTara(
       const files = createSdkCanvasFileStore(bb, source, {
         reclaimTombstones: false,
       });
-      const listing = files.listWithDiagnostics
-        ? await files.listWithDiagnostics(kind)
-        : { entities: await files.list(kind), diagnostics: [] };
+      const listing = await files.listWithDiagnostics(kind);
       working = listing.entities;
       diagnostics = listing.diagnostics;
     } catch (error) {
@@ -438,11 +519,13 @@ export async function listTara(
   const visibleWorking = working.filter(
     (stored) => !deleted.has(stored.entity.slug),
   );
-  const excludedJson = JSON.stringify([...excluded]);
+  // Materialize exclusions once into a temp table instead of re-parsing
+  // json_each(?) per candidate row in both the page and count queries (FS-142 N2).
+  loadTaraListExclusions(db, excluded);
   const rows = sync?.accepted_generation_id
     ? db
         .prepare<
-          [string, string, string, string, string, string, number],
+          [string, string, string, string, string, number],
           TaraSnapshotRow
         >(
           `SELECT entity_key, payload
@@ -457,10 +540,7 @@ export async function listTara(
                   AND entity_kind = ? AND generation_id = ?
              )
             WHERE entity_key COLLATE BINARY > ?
-              AND NOT EXISTS (
-                SELECT 1 FROM json_each(?) AS excluded
-                 WHERE excluded.value = entity_key
-              )
+              AND entity_key NOT IN (SELECT entity_key FROM ${EXCLUDED_TABLE})
             ORDER BY entity_key COLLATE BINARY
             LIMIT ?`,
         )
@@ -470,13 +550,12 @@ export async function listTara(
           kind,
           sync.accepted_generation_id,
           afterKey,
-          excludedJson,
           pageSize + 1,
         )
     : [];
   const acceptedTotal = sync?.accepted_generation_id
     ? (db
-        .prepare<[string, string, string, string, string], TaraTotalRow>(
+        .prepare<[string, string, string, string], TaraTotalRow>(
           `SELECT COUNT(*) AS total
              FROM (
                SELECT COALESCE(
@@ -487,17 +566,13 @@ export async function listTara(
                 WHERE project_id = ? AND project_version_id = ?
                   AND entity_kind = ? AND generation_id = ?
              )
-            WHERE NOT EXISTS (
-              SELECT 1 FROM json_each(?) AS excluded
-               WHERE excluded.value = entity_key
-            )`,
+            WHERE entity_key NOT IN (SELECT entity_key FROM ${EXCLUDED_TABLE})`,
         )
         .get(
           identities.platformProjectId,
           projectVersionId,
           kind,
           sync.accepted_generation_id,
-          excludedJson,
         )?.total ?? 0)
     : 0;
   const mergedRows: Array<[string, Record<string, JsonValue>]> = [];
@@ -569,76 +644,4 @@ export async function listTara(
           }
         : emptyCache(sync?.base_revision),
   };
-}
-
-export function registerProductSecurity(
-  bb: BbPluginApi,
-  ctx: PluginContext,
-): void {
-  let remote: RemoteServices | null = null;
-  try {
-    remote = ctx.service<RemoteServices>("remote-services", () => {
-      throw new Error(
-        "Product-security sync registration requires remote services.",
-      );
-    });
-  } catch {
-    // Isolated read-surface harnesses intentionally omit L1. Production
-    // registration always has L1, while local RPCs remain independently usable.
-  }
-  if (remote)
-    registerExplicitPullAdapter(
-      createRequirementAdapter(remote.assuranceStudio),
-    );
-
-  bb.rpc.register(productSecurityRpcContract, {
-    taraList(input) {
-      return listTara(bb, ctx.db(), input);
-    },
-  });
-  bb.rpc.register(taraCanvasRpcContract, {
-    taraCanvasList(input) {
-      if (input.projectVersionId === null) {
-        if (input.workspaceProjectId !== input.platformProjectId) {
-          throw new Error(
-            "Local TARA reads must use the selected workspace identity.",
-          );
-        }
-      } else {
-        assertWorkspacePlatformProjectBinding(
-          ctx.db(),
-          input.workspaceProjectId,
-          input.platformProjectId,
-        );
-      }
-      return listTara(
-        bb,
-        ctx.db(),
-        {
-          projectId: input.platformProjectId,
-          projectVersionId: input.projectVersionId,
-          pageSize: input.pageSize,
-          continuation: input.continuation,
-          kind: input.kind,
-          filters: {},
-        },
-        {
-          workspaceProjectId: input.workspaceProjectId,
-          platformProjectId: input.platformProjectId,
-          includeAccepted: input.projectVersionId !== null,
-        },
-      );
-    },
-  });
-
-  registerCanvasNodesBackend(bb, ctx);
-  registerTaraScopeBackend(bb, ctx);
-  registerThreatOverlayBackend(bb, ctx);
-  registerCanvasLinksBackend(bb, ctx);
-  registerCanvasEditingBackend(bb, ctx);
-  registerRequirementsCardsBackend(bb, ctx);
-  registerRequirementsTraceabilityBackend(bb, ctx);
-  registerRequirementsConversionBackend(bb, ctx);
-  registerVerificationMatrixBackend(bb, ctx);
-  registerVerificationRunDetailBackend(bb, ctx);
 }

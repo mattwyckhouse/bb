@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPluginContext } from "../../../../lib/context.js";
-import { listTara } from "../../register.js";
+import { listTara } from "./list-tara.js";
 import { parseArchitectureEntity } from "./schema.js";
 import { serializeCanvasEntity } from "./writer.js";
 

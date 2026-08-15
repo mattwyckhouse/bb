@@ -36,6 +36,7 @@ import {
   type DeletionImpact,
 } from "./schema.js";
 import { markRejectedBeforeWrite } from "./reject-before-write.js";
+import { installTaraListExclusionAccel } from "./list-tara.js";
 import {
   CanvasEntityValidationError,
   computeDeletionImpact,
@@ -645,6 +646,9 @@ export function registerCanvasEditingBackend(
   ctx: PluginContext,
 ): void {
   const db = ctx.db();
+  // FS-142 N2: accelerate register.ts taraList exclusion SQL without owning
+  // that file (FS-220 collision). Helper lives in canvas/editing/list-tara.ts.
+  installTaraListExclusionAccel(db);
   const idMap = new IdMapStore(db);
   const resolver = idMapResolver(idMap);
   let remote: RemoteServices | null = null;
