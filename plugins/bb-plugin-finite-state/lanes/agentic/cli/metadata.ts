@@ -63,6 +63,13 @@ export const CANONICAL_COMMANDS: readonly PluginCliCommandInfo[] = [
       "as-project-select --as-project ID [--project PLATFORM_PROJECT_ID] [--json]",
   },
   {
+    name: "seed",
+    summary:
+      "Import the adapter-backed Assurance Studio TARA baseline into local YAML for human review and commit",
+    usage:
+      "seed --from as [--project PLATFORM_PROJECT_ID] [--confirm-overwrite-nonempty] [--json]",
+  },
+  {
     name: "pull",
     summary:
       "Pull each remote kind independently and report every outcome. Canonical verb-first form; surface-scoped aliases exist under triage.",

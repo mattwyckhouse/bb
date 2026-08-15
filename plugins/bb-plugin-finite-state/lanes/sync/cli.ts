@@ -14,6 +14,7 @@ import { diagnoseRemoteFailure } from "../../lib/remote/errors.js";
 import { RemoteError } from "../../lib/remote/types.js";
 import { bindWorkspacePlatformProject } from "../../lib/store/project-scope.js";
 import { ENTITIES, type EntityKind } from "../../lib/sync/registry.js";
+import { registeredAdapters } from "./engine/adapter.js";
 import { pullIsolated, type EngineDeps } from "./engine/pull.js";
 import { assertRemoteSyncScope } from "./engine/scope.js";
 import { pullReportHasFailures, renderPullOutcomeCli } from "./pull-outcome.js";
@@ -26,15 +27,24 @@ import {
   selectedAssuranceStudioProject,
   selectAssuranceStudioProject,
 } from "./as-project-binding.js";
+import { seedFromAs, type SeedFromAsResult } from "./seed/index.js";
 
 interface CliInput {
-  verb: "as-projects" | "as-project-select" | "plan" | "pull" | "status";
+  verb:
+    | "as-projects"
+    | "as-project-select"
+    | "plan"
+    | "pull"
+    | "seed"
+    | "status";
   surface: string | null;
   json: boolean;
   projectId: string | null;
   projectVersionId: string | null;
   projectLevel: boolean;
   assuranceStudioProjectId: string | null;
+  seedFrom: string | null;
+  confirmOverwriteNonempty: boolean;
 }
 
 interface WorkspaceContext {
@@ -81,6 +91,13 @@ const DEFAULT_SYNC_COMMANDS: PluginCliCommandInfo[] = [
     summary: "Pull each remote kind independently and report every outcome",
     usage:
       "pull [surface] [--project PLATFORM_PROJECT_ID] [--version ID] [--json]",
+  },
+  {
+    name: "seed",
+    summary:
+      "Import the adapter-backed Assurance Studio TARA baseline into local YAML for human review and commit",
+    usage:
+      "seed --from as [--project PLATFORM_PROJECT_ID] [--confirm-overwrite-nonempty] [--json]",
   },
   {
     name: "status",
@@ -155,10 +172,11 @@ function parseArgs(argv: string[]): CliInput {
     verb !== "as-project-select" &&
     verb !== "plan" &&
     verb !== "pull" &&
+    verb !== "seed" &&
     verb !== "status"
   ) {
     throw new Error(
-      "usage: bb finite-state <as-projects|as-project-select|plan|pull|status|firmware|bench|triage> ...",
+      "usage: bb finite-state <as-projects|as-project-select|plan|pull|seed|status|firmware|bench|triage> ...",
     );
   }
   let surface: string | null = null;
@@ -167,6 +185,8 @@ function parseArgs(argv: string[]): CliInput {
   let projectVersionId: string | null = null;
   let projectLevel = false;
   let assuranceStudioProjectId: string | null = null;
+  let seedFrom: string | null = null;
+  let confirmOverwriteNonempty = false;
   for (let index = 0; index < args.length; ) {
     const arg = args[index] ?? "";
     if (arg === "--json") {
@@ -187,6 +207,13 @@ function parseArgs(argv: string[]): CliInput {
       const option = optionValue(args, index, "--as-project");
       assuranceStudioProjectId = option.value;
       index += option.consumed;
+    } else if (arg === "--from" || arg.startsWith("--from=")) {
+      const option = optionValue(args, index, "--from");
+      seedFrom = option.value;
+      index += option.consumed;
+    } else if (arg === "--confirm-overwrite-nonempty") {
+      confirmOverwriteNonempty = true;
+      index += 1;
     } else if (arg.startsWith("--")) {
       throw new Error(`unknown option ${arg}`);
     } else if (surface === null) {
@@ -205,6 +232,25 @@ function parseArgs(argv: string[]): CliInput {
   if (verb === "as-projects" && assuranceStudioProjectId !== null) {
     throw new Error("as-projects does not accept --as-project");
   }
+  if (verb === "seed" && seedFrom !== "as") {
+    throw new Error("seed requires --from as");
+  }
+  if (verb !== "seed" && (seedFrom !== null || confirmOverwriteNonempty)) {
+    throw new Error(
+      `${verb} does not accept --from or --confirm-overwrite-nonempty`,
+    );
+  }
+  if (
+    verb === "seed" &&
+    (surface !== null ||
+      projectVersionId !== null ||
+      projectLevel ||
+      assuranceStudioProjectId !== null)
+  ) {
+    throw new Error(
+      "seed accepts only --from as, --project, --confirm-overwrite-nonempty, and --json",
+    );
+  }
   if (
     (verb === "as-projects" || verb === "as-project-select") &&
     (surface !== null || projectVersionId !== null || projectLevel)
@@ -219,6 +265,8 @@ function parseArgs(argv: string[]): CliInput {
     projectVersionId,
     projectLevel,
     assuranceStudioProjectId,
+    seedFrom,
+    confirmOverwriteNonempty,
   };
 }
 
@@ -292,6 +340,22 @@ function output(value: unknown, json: boolean): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+function renderSeedResult(result: SeedFromAsResult, json: boolean): string {
+  if (json) return output(result, true);
+  const lines = [
+    `Seed outcome: ${result.outcome}`,
+    `Assurance Studio project: ${result.projectId}`,
+    `Files written: ${result.filesWritten.length}`,
+    ...result.filesWritten.map((file) => `  written ${file}`),
+    `Human-edited files preserved: ${result.skippedHumanEdited.length}`,
+    ...result.skippedHumanEdited.map((file) => `  preserved ${file}`),
+    "Deferred classes:",
+    ...result.skippedClasses.map((item) => `  ${item.kind}: ${item.reason}`),
+  ];
+  if (result.guidance !== null) lines.push(`Guidance: ${result.guidance}`);
+  return `${lines.join("\n")}\n`;
+}
+
 async function run(
   deps: EngineDeps,
   platform: PlatformClient,
@@ -342,6 +406,37 @@ async function run(
     return {
       exitCode: 0,
       stdout: output({ platformProjectId, selected }, input.json),
+      stderr: "",
+    };
+  }
+  if (input.verb === "seed") {
+    const platformProjectId = await resolveProjectId(platform, input);
+    assertRemoteSyncScope(platformProjectId);
+    const assuranceStudioProjectId = selectedAssuranceStudioProject(
+      deps,
+      workspace.workspaceProjectId,
+      platformProjectId,
+    );
+    if (assuranceStudioProjectId === null) {
+      throw new Error(
+        "AS_PROJECT_SELECTION_REQUIRED: run bb finite-state as-projects, then select one with as-project-select",
+      );
+    }
+    const report = await seedFromAs({
+      assuranceStudio,
+      assuranceStudioProjectId,
+      worktreeRoot: workspace.worktreeRoot,
+      confirmOverwriteNonempty: input.confirmOverwriteNonempty,
+      adapters: registeredAdapters(),
+    });
+    return {
+      exitCode:
+        report.outcome === "written"
+          ? 0
+          : report.outcome === "refused-nonempty"
+            ? 3
+            : 2,
+      stdout: renderSeedResult(report, input.json),
       stderr: "",
     };
   }
