@@ -21,6 +21,7 @@ import { pullReportHasFailures, renderPullOutcomeCli } from "./pull-outcome.js";
 import { statusPerKind } from "./engine/status.js";
 import { computePlan } from "./plan/index.js";
 import { renderPlanCli } from "./plan/render-cli.js";
+import { publishStub } from "./publish/publish-stub.js";
 import {
   assuranceStudioProjectCandidateState,
   enumerateAssuranceStudioProjectCandidates,
@@ -34,6 +35,7 @@ interface CliInput {
     | "as-projects"
     | "as-project-select"
     | "plan"
+    | "publish"
     | "pull"
     | "seed"
     | "status";
@@ -85,6 +87,12 @@ const DEFAULT_SYNC_COMMANDS: PluginCliCommandInfo[] = [
     summary: "Select the Assurance Studio project for a Platform project",
     usage:
       "as-project-select --as-project ID [--project PLATFORM_PROJECT_ID] [--json]",
+  },
+  {
+    name: "publish",
+    summary:
+      "Human-only unavailable stub: report the future Platform Graph destination without sending or writing anything",
+    usage: "publish [--json]",
   },
   {
     name: "pull",
@@ -171,12 +179,13 @@ function parseArgs(argv: string[]): CliInput {
     verb !== "as-projects" &&
     verb !== "as-project-select" &&
     verb !== "plan" &&
+    verb !== "publish" &&
     verb !== "pull" &&
     verb !== "seed" &&
     verb !== "status"
   ) {
     throw new Error(
-      "usage: bb finite-state <as-projects|as-project-select|plan|pull|seed|status|firmware|bench|triage> ...",
+      "usage: bb finite-state <as-projects|as-project-select|plan|publish|pull|seed|status|firmware|bench|triage> ...",
     );
   }
   let surface: string | null = null;
@@ -250,6 +259,16 @@ function parseArgs(argv: string[]): CliInput {
     throw new Error(
       "seed accepts only --from as, --project, --confirm-overwrite-nonempty, and --json",
     );
+  }
+  if (
+    verb === "publish" &&
+    (surface !== null ||
+      projectId !== null ||
+      projectVersionId !== null ||
+      projectLevel ||
+      assuranceStudioProjectId !== null)
+  ) {
+    throw new Error("publish accepts only --json");
   }
   if (
     (verb === "as-projects" || verb === "as-project-select") &&
@@ -371,6 +390,13 @@ async function run(
     return namespaceRunners[namespace]!(args.slice(1), context);
   }
   const input = parseArgs(argv);
+  if (input.verb === "publish") {
+    return {
+      exitCode: 3,
+      stdout: output(publishStub(), input.json),
+      stderr: "",
+    };
+  }
   const workspace = await resolveWorktreeRoot(context);
   if (input.verb === "as-projects" || input.verb === "as-project-select") {
     const platformProjectId = await resolveProjectId(platform, input);
@@ -535,9 +561,10 @@ export function registerSyncCli(
   bb.cli.register({
     name: "finite-state",
     summary: options.summary ?? DEFAULT_SYNC_SUMMARY,
-    commands: options.commands ?? DEFAULT_SYNC_COMMANDS,
+    commands: appendPublishCommand(options.commands ?? DEFAULT_SYNC_COMMANDS),
     async run(argv, context) {
-      if (options.intercept) {
+      const args = argv[0] === "finite-state" ? argv.slice(1) : argv;
+      if (options.intercept && args[0] !== "publish") {
         const intercepted = await options.intercept(argv, context);
         if (intercepted !== null) return intercepted;
       }
@@ -545,4 +572,19 @@ export function registerSyncCli(
     },
   });
   return fallback;
+}
+
+function appendPublishCommand(
+  commands: readonly PluginCliCommandInfo[],
+): PluginCliCommandInfo[] {
+  if (commands.some((command) => command.name === "publish")) {
+    return [...commands];
+  }
+  const publish = DEFAULT_SYNC_COMMANDS.find(
+    (command) => command.name === "publish",
+  );
+  if (publish === undefined) {
+    throw new Error("publish CLI metadata is unavailable");
+  }
+  return [...commands, publish];
 }
