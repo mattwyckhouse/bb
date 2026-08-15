@@ -3,16 +3,24 @@
 Every screen in this procedure must display `CONNECTED DEV TENANT`. It is a
 human rehearsal and does not satisfy the unattended offline gate.
 
+**Current evidence state (2026-08-15): DEFERRED — NOT YET PERFORMED.** The
+owner deferred both connected human passes until an approved dev-tenant reset
+and authorization are available. No reset was inferred, no connected pass is
+represented as complete, and offline evidence must not be substituted here.
+
+After approval, warm the connected cache with
+`bb finite-state pull triage --project project-ax3000-demo --version pv-ax3000-2.4 --json`.
+This is a connected-only remote read and must exit zero before rehearsal.
+
 ```console
 bb finite-state connect status --json
-bb finite-state pull all --project project-ax3000-demo --version pv-ax3000-2.4 --json
-bb finite-state status all --project project-ax3000-demo --version pv-ax3000-2.4 --json
 bb finite-state bench list --pv pv-ax3000-2.4 --json
 ```
 
 1. Operator A confirms the approved tenant, host, daemon, cache hashes, evidence
    fixture, and reset authorization. Without an approved reset command, record
-   `CONNECTED_RESET_UNAVAILABLE` and rehearse read-only; never invent a reset.
+   that the connected reset is unavailable and rehearse read-only; never invent
+   a reset.
 2. Operator B runs all 16 prompts in the stage runbook and records timing,
    screen transitions, deviations, and provenance under `connected/pass-1/`.
 3. Before push or bench dispatch, Operator B reads back the target. These are

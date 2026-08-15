@@ -10,16 +10,32 @@ macOS arm64, Node 22.19.0. Each independently copied warm-seed run must finish
 in less than 15:00. Shared CI is diagnostic unless it matches this profile;
 never loosen the reference assertion to accommodate a contended worker.
 
+## Cache materialization and verification
+
+For each offline automation pass, the Golden Loop harness creates a fresh
+disposable Git worktree, copies `test/e2e/golden-loop/seed/worktree`, and
+materializes `test/e2e/golden-loop/seed/warm-cache/data.db` into the plugin
+store before networking is disabled. Run 2 repeats that materialization from
+the committed seed; it never reuses Run 1 state. This is the existing test
+harness materializer, not a hidden production fallback.
+
+For a connected rehearsal, warm the cache before disconnecting with
+`bb finite-state pull triage --project project-ax3000-demo --version pv-ax3000-2.4 --json`,
+then run the shipped status/firmware/bench checks below. This command is
+**CONNECTED-ONLY**; it is not part of the offline proof. The remaining seeded
+surfaces are materialized by the reviewed Golden Loop harness because there is
+no shipped production verb that imports test fixtures.
+
 ## Operator preflight (T-05:00)
 
-Use a disposable demo worktree. Complete [PREFLIGHT-CHECKLIST.md](./PREFLIGHT-CHECKLIST.md),
-then record configuration and cached state:
+Use the harness-created disposable demo worktree. Complete
+[PREFLIGHT-CHECKLIST.md](./PREFLIGHT-CHECKLIST.md), then record configuration
+and cached state. Every fenced command below is expected to exit zero:
 
 ```console
 bb finite-state connect status --json
-bb finite-state status all --project project-ax3000-demo --version pv-ax3000-2.4 --json
 bb finite-state firmware status pv-ax3000-2.4 --json
-bb finite-state bench verdict pv-ax3000-2.4 --digest 148b4a814b5b2057d855afa7ebdae4d6698e8632e2b1a2ed4a169a0514a1af6d --json
+bb finite-state bench list --pv pv-ax3000-2.4 --json
 ```
 
 Expected seed facts: 16 registered beats; v2.3 and v2.4 each contain four

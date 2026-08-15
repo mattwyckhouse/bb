@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +12,6 @@ import { registerActionTools } from "../../../lanes/agentic/tools/actions.js";
 import { assertion } from "./assertions.js";
 import {
   createGoldenLoopHarness,
-  deterministicEvidenceDigest,
   type GoldenLoopHarness,
 } from "./harness.js";
 import { assertDeterministicRuns, semanticReport } from "./reporter.js";
@@ -354,59 +352,43 @@ describe.sequential("Golden Loop harness", () => {
     }
   });
 
-  it("rejects wall-clock and random-ID mutations in captured beat evidence", async () => {
+  it("rejects nondeterministic bytes emitted through a beat's capture wiring", async () => {
     const repository = await temporaryRepository();
-    const harness = await createGoldenLoopHarness({
+    const first = await createGoldenLoopHarness({
       repositoryRoot: repository.root,
       scenario: scenario({
         1: {
-          action: async ({ artifacts }) => {
+          capture: async ({ artifacts }) => [
             await artifacts.writeJson("captured-evidence.json", {
-              capturedAt: "2026-08-14T12:00:00.000Z",
-              id: "captured-0001",
-            });
-          },
+              capturedAt: Date.now(),
+              nonce: crypto.randomUUID(),
+            }),
+          ],
+        },
+      }),
+    });
+    const second = await createGoldenLoopHarness({
+      repositoryRoot: repository.root,
+      scenario: scenario({
+        1: {
+          capture: async ({ artifacts }) => [
+            await artifacts.writeJson("captured-evidence.json", {
+              capturedAt: Date.now(),
+              nonce: crypto.randomUUID(),
+            }),
+          ],
         },
       }),
     });
     try {
-      await harness.runAll();
-      const original = harness.report!;
-      const evidenceFiles = original.results.flatMap((result) =>
-        result.artifacts.map((artifact) =>
-          join(harness.runDirectory, "artifacts", artifact),
-        ),
-      );
-      const target = join(
-        harness.runDirectory,
-        "artifacts",
-        "beat-01",
-        "captured-evidence.json",
-      );
-      await writeFile(
-        target,
-        `${await readFile(target, "utf8")}\n${new Date().toISOString()} ${randomUUID()}\n`,
-        "utf8",
-      );
-      const mutated = {
-        ...original,
-        determinism: {
-          ...original.determinism,
-          evidenceSha256: await deterministicEvidenceDigest(
-            join(harness.runDirectory, "artifacts"),
-            evidenceFiles.filter(
-              (file) =>
-                !file.endsWith("/tree-before.json") &&
-                !file.endsWith("/tree-after.json"),
-            ),
-          ),
-        },
-      };
-      expect(() => assertDeterministicRuns(original, mutated)).toThrow(
+      await first.runAll();
+      await second.runAll();
+      expect(() => assertDeterministicRuns(first.report!, second.report!)).toThrow(
         "GOLDEN_LOOP_EVIDENCE_MISMATCH",
       );
     } finally {
-      await harness.dispose();
+      await first.dispose();
+      await second.dispose();
       await repository.cleanup();
     }
   });

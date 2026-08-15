@@ -1,5 +1,8 @@
 import dns from "node:dns";
+import dnsPromises from "node:dns/promises";
+import dgram from "node:dgram";
 import http from "node:http";
+import http2 from "node:http2";
 import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
@@ -7,7 +10,15 @@ import { resolve } from "node:path";
 
 export interface NetworkViolation {
   beat: string | null;
-  primitive: "dns" | "fetch" | "http" | "https" | "socket" | "tls";
+  primitive:
+    | "dgram"
+    | "dns"
+    | "fetch"
+    | "http"
+    | "http2"
+    | "https"
+    | "socket"
+    | "tls";
   target: string;
   caller: string;
 }
@@ -95,6 +106,18 @@ function requestTarget(args: readonly unknown[], secure: boolean): Target {
   return { ...target, port: target.port ?? (secure ? 443 : 80) };
 }
 
+function datagramSendTarget(args: readonly unknown[]): Target | null {
+  for (let index = args.length - 1; index >= 0; index -= 1) {
+    const host = args[index];
+    if (typeof host !== "string") continue;
+    const port = args[index - 1];
+    if (typeof port === "number") {
+      return { host, port, path: null };
+    }
+  }
+  return null;
+}
+
 export class OfflineNetworkGuard {
   readonly violations: NetworkViolation[] = [];
   private readonly ports: ReadonlySet<number>;
@@ -176,6 +199,15 @@ export class OfflineNetworkGuard {
         return Reflect.apply(original, net, args);
       });
     }
+    const guard = this;
+    const originalSocketConnect = net.Socket.prototype.connect;
+    this.replace(net.Socket.prototype, "connect", function (
+      this: net.Socket,
+      ...args: unknown[]
+    ) {
+      guard.authorize("socket", socketTarget(args));
+      return Reflect.apply(originalSocketConnect, this, args);
+    });
     const originalTlsConnect = tls.connect;
     this.replace(tls, "connect", (...args: unknown[]) => {
       this.authorize("tls", socketTarget(args));
@@ -195,6 +227,35 @@ export class OfflineNetworkGuard {
       });
     }
 
+    const originalHttp2Connect = http2.connect;
+    this.replace(http2, "connect", (...args: unknown[]) => {
+      this.authorize("http2", requestTarget(args, true));
+      return Reflect.apply(originalHttp2Connect, http2, args);
+    });
+
+    const originalCreateSocket = dgram.createSocket;
+    this.replace(dgram, "createSocket", (...args: unknown[]) => {
+      const socket = Reflect.apply(originalCreateSocket, dgram, args);
+      const originalConnect = socket.connect;
+      Object.defineProperty(socket, "connect", {
+        configurable: true,
+        value: (...connectArgs: unknown[]) => {
+          this.authorize("dgram", socketTarget(connectArgs));
+          return Reflect.apply(originalConnect, socket, connectArgs);
+        },
+      });
+      const originalSend = socket.send;
+      Object.defineProperty(socket, "send", {
+        configurable: true,
+        value: (...sendArgs: unknown[]) => {
+          const target = datagramSendTarget(sendArgs);
+          if (target !== null) this.authorize("dgram", target);
+          return Reflect.apply(originalSend, socket, sendArgs);
+        },
+      });
+      return socket;
+    });
+
     for (const key of ["lookup", "resolve"] as const) {
       const original = dns[key];
       this.replace(dns, key, (...args: unknown[]) => {
@@ -204,6 +265,17 @@ export class OfflineNetworkGuard {
           this.authorize("dns", { host: hostname, port: 53, path: null });
         }
         return Reflect.apply(original, dns, args);
+      });
+    }
+    for (const key of ["lookup", "resolve"] as const) {
+      const original = dnsPromises[key];
+      this.replace(dnsPromises, key, (...args: unknown[]) => {
+        const hostname =
+          typeof args[0] === "string" ? args[0].toLowerCase() : "unknown";
+        if (!["localhost", "127.0.0.1", "::1"].includes(hostname)) {
+          this.authorize("dns", { host: hostname, port: 53, path: null });
+        }
+        return Reflect.apply(original, dnsPromises, args);
       });
     }
   }

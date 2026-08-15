@@ -6,6 +6,11 @@ until an owner approves one.
 
 ## Offline gate
 
+The automation must report that it copied the committed worktree seed and
+warm-cache database into a new disposable instance for this pass. If either
+source is missing or its manifest hash differs, stop and record the manifest
+mismatch; do not regenerate or repair the seed during a demo.
+
 - [ ] Node is 22.19.0 and the plugin four-command gate is green.
 - [ ] Plugin settings report their actual state; remote credentials are not
       required for `OFFLINE FIXTURE` mode.
@@ -22,10 +27,9 @@ until an owner approves one.
 
 ```console
 bb finite-state connect status --json
-bb finite-state status all --project project-ax3000-demo --version pv-ax3000-2.4 --json
 bb finite-state firmware status pv-ax3000-2.3 --json
 bb finite-state firmware status pv-ax3000-2.4 --json
-bb finite-state bench verdict pv-ax3000-2.4 --digest 148b4a814b5b2057d855afa7ebdae4d6698e8632e2b1a2ed4a169a0514a1af6d --json
+bb finite-state bench list --pv pv-ax3000-2.4 --json
 ```
 
 Hash and git-cleanliness checks are performed by the committed seed verifier
@@ -39,6 +43,12 @@ an unreviewed reset or mutation command.
 - [ ] Verify host enrollment and daemon health with the shipped core `bb machine`
       status command before entering the plugin flow.
 - [ ] Obtain explicit approval and the approved reset command. If absent, skip
-      reset and record `CONNECTED_RESET_UNAVAILABLE`; do not infer authority.
+      reset and record that the connected reset is unavailable; do not infer authority.
 - [ ] Verify external evidence publication separately. If unavailable, show
       `PUBLIC LOG UNAVAILABLE` and preserve local evidence.
+
+The connected cache-warm command is
+`bb finite-state pull triage --project project-ax3000-demo --version pv-ax3000-2.4 --json`.
+Run it only after confirming the dev tenant and before disconnecting. A
+non-zero result is a connected preflight failure, not permission to fall back
+silently to the offline seed.

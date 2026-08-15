@@ -451,6 +451,25 @@ export async function createGoldenLoopHarness(
     ]);
     return { tracked: tracked.stdout, status: status.stdout };
   };
+  const settledTree = async () => {
+    let previous = await tree();
+    let stableSamples = 0;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      const current = await tree();
+      if (
+        current.tracked === previous.tracked &&
+        current.status === previous.status
+      ) {
+        stableSamples += 1;
+        if (stableSamples === 3) return current;
+      } else {
+        stableSamples = 0;
+      }
+      previous = current;
+    }
+    throw new Error("GOLDEN_LOOP_TREE_DID_NOT_SETTLE");
+  };
 
   const humanAction = async (
     name: "reviewDiff" | "resolveConflict" | "push",
@@ -617,7 +636,7 @@ export async function createGoldenLoopHarness(
         guard.restore();
         artifacts.push(
           relativeArtifact(
-            await beatWriter.writeJson("tree-after.json", await tree()),
+            await beatWriter.writeJson("tree-after.json", await settledTree()),
           ),
         );
       }
@@ -643,20 +662,16 @@ export async function createGoldenLoopHarness(
         ({ number }) => results.get(number)!,
       );
       const finalTree = join(artifactRoot, "beat-16", "tree-after.json");
-      const finalTreeContents = await readFile(finalTree).catch(async () =>
-        Buffer.from(JSON.stringify(await tree()), "utf8"),
-      );
+      const finalTreeContents = connectedUnavailable
+        ? Buffer.from("CONNECTED_MODE_UNAVAILABLE\n", "utf8")
+        : await readFile(finalTree);
       const determinism: GoldenLoopDeterminismProof = {
         finalTreeSha256: createHash("sha256")
           .update(finalTreeContents)
           .digest("hex"),
         evidenceSha256: await deterministicEvidenceDigest(
           artifactRoot,
-          [...evidenceFiles].filter(
-            (file) =>
-              !file.endsWith("/tree-before.json") &&
-              !file.endsWith("/tree-after.json"),
-          ),
+          [...evidenceFiles],
         ),
       };
       report = {
