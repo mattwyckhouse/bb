@@ -1,5 +1,6 @@
 import type {
   BbPluginApi,
+  PluginCliCommandInfo,
   PluginCliContext,
   PluginCliResult,
 } from "@bb/plugin-sdk";
@@ -48,6 +49,69 @@ export type NamespacedCliRunner = (
   argv: string[],
   context: PluginCliContext,
 ) => PluginCliResult | Promise<PluginCliResult>;
+
+export type SyncCliIntercept = (
+  argv: string[],
+  context: PluginCliContext,
+) => PluginCliResult | Promise<PluginCliResult | null> | null;
+
+export interface RegisterSyncCliOptions {
+  summary?: string;
+  commands?: PluginCliCommandInfo[];
+  intercept?: SyncCliIntercept;
+}
+
+const DEFAULT_SYNC_SUMMARY =
+  "Synchronize Finite State authored entities (--project is a Platform project id, not a bb project id)";
+
+const DEFAULT_SYNC_COMMANDS: PluginCliCommandInfo[] = [
+  {
+    name: "as-projects",
+    summary: "List linked Assurance Studio projects and the current selection",
+    usage: "as-projects [--project PLATFORM_PROJECT_ID] [--json]",
+  },
+  {
+    name: "as-project-select",
+    summary: "Select the Assurance Studio project for a Platform project",
+    usage:
+      "as-project-select --as-project ID [--project PLATFORM_PROJECT_ID] [--json]",
+  },
+  {
+    name: "pull",
+    summary: "Pull each remote kind independently and report every outcome",
+    usage:
+      "pull [surface] [--project PLATFORM_PROJECT_ID] [--version ID] [--json]",
+  },
+  {
+    name: "status",
+    summary: "Compare working, base, and upstream state",
+    usage:
+      "status [surface] [--project PLATFORM_PROJECT_ID] [--version ID] [--json]",
+  },
+  {
+    name: "plan",
+    summary: "Validate and render an ordered sync plan",
+    usage:
+      "plan [surface] [--project PLATFORM_PROJECT_ID] [--version ID] [--json]",
+  },
+  {
+    name: "firmware",
+    summary: "Materialize and inspect firmware",
+    usage: "firmware <pull|status|hydrate|diff> ...",
+  },
+  {
+    name: "bench",
+    summary: "Evaluate cached bench evidence",
+    usage: "bench verdict <pv-id> [--digest <sha256>] [--json]",
+  },
+  {
+    name: "triage",
+    summary:
+      "Read or refresh finding drift, preview/apply vendor VEX, and CAS-prune orphans",
+    usage:
+      "triage --help\ntriage drift report --project PLATFORM_PROJECT_ID --version ID [--cursor CURSOR] [--limit N] [--json]\ntriage drift refresh --project PLATFORM_PROJECT_ID --version ID [--limit N] [--json]\ntriage import-vex preview <file> --vendor NAME --project PLATFORM_PROJECT_ID --version ID [--json]\ntriage import-vex apply --import-id ID --expected-document-sha256 SHA256 --project PLATFORM_PROJECT_ID --version ID [--json]\ntriage orphans list --project PLATFORM_PROJECT_ID --version ID [--json]\ntriage orphans prune --stable-key KEY [--stable-key KEY ... (max 500 per invocation)] --expected-base SHA256 --project PLATFORM_PROJECT_ID --version ID [--json]",
+  },
+];
 
 function isRecord(value: unknown): value is Record<string, Json> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -327,6 +391,35 @@ async function run(
   };
 }
 
+function createSyncCliRunner(
+  deps: EngineDeps,
+  platform: PlatformClient,
+  assuranceStudio: AssuranceStudioClient,
+  resolveWorktreeRoot: WorktreeRootResolver,
+  namespaceRunners: Readonly<Record<string, NamespacedCliRunner>>,
+): NamespacedCliRunner {
+  return async (argv, context) => {
+    try {
+      return await run(
+        deps,
+        platform,
+        assuranceStudio,
+        resolveWorktreeRoot,
+        argv,
+        context,
+        namespaceRunners,
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof RemoteError)) throw error;
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: formatRemoteCliError(error),
+      };
+    }
+  };
+}
+
 /** Registers the verb-first WP-17 CLI through the plugin's sole CLI hook. */
 export function registerSyncCli(
   bb: BbPluginApi,
@@ -335,79 +428,26 @@ export function registerSyncCli(
   assuranceStudio: AssuranceStudioClient,
   resolveWorktreeRoot: WorktreeRootResolver,
   namespaceRunners: Readonly<Record<string, NamespacedCliRunner>> = {},
-): void {
+  options: RegisterSyncCliOptions = {},
+): NamespacedCliRunner {
+  const fallback = createSyncCliRunner(
+    deps,
+    platform,
+    assuranceStudio,
+    resolveWorktreeRoot,
+    namespaceRunners,
+  );
   bb.cli.register({
     name: "finite-state",
-    summary:
-      "Synchronize Finite State authored entities (--project is a Platform project id, not a bb project id)",
-    commands: [
-      {
-        name: "as-projects",
-        summary:
-          "List linked Assurance Studio projects and the current selection",
-        usage: "as-projects [--project PLATFORM_PROJECT_ID] [--json]",
-      },
-      {
-        name: "as-project-select",
-        summary: "Select the Assurance Studio project for a Platform project",
-        usage:
-          "as-project-select --as-project ID [--project PLATFORM_PROJECT_ID] [--json]",
-      },
-      {
-        name: "pull",
-        summary: "Pull each remote kind independently and report every outcome",
-        usage:
-          "pull [surface] [--project PLATFORM_PROJECT_ID] [--version ID] [--json]",
-      },
-      {
-        name: "status",
-        summary: "Compare working, base, and upstream state",
-        usage:
-          "status [surface] [--project PLATFORM_PROJECT_ID] [--version ID] [--json]",
-      },
-      {
-        name: "plan",
-        summary: "Validate and render an ordered sync plan",
-        usage:
-          "plan [surface] [--project PLATFORM_PROJECT_ID] [--version ID] [--json]",
-      },
-      {
-        name: "firmware",
-        summary: "Materialize and inspect firmware",
-        usage: "firmware <pull|status|hydrate|diff> ...",
-      },
-      {
-        name: "bench",
-        summary: "Evaluate cached bench evidence",
-        usage: "bench verdict <pv-id> [--digest <sha256>] [--json]",
-      },
-      {
-        name: "triage",
-        summary:
-          "Read or refresh finding drift, preview/apply vendor VEX, and CAS-prune orphans",
-        usage:
-          "triage --help\ntriage drift report --project PLATFORM_PROJECT_ID --version ID [--cursor CURSOR] [--limit N] [--json]\ntriage drift refresh --project PLATFORM_PROJECT_ID --version ID [--limit N] [--json]\ntriage import-vex preview <file> --vendor NAME --project PLATFORM_PROJECT_ID --version ID [--json]\ntriage import-vex apply --import-id ID --expected-document-sha256 SHA256 --project PLATFORM_PROJECT_ID --version ID [--json]\ntriage orphans list --project PLATFORM_PROJECT_ID --version ID [--json]\ntriage orphans prune --stable-key KEY [--stable-key KEY ... (max 500 per invocation)] --expected-base SHA256 --project PLATFORM_PROJECT_ID --version ID [--json]",
-      },
-    ],
+    summary: options.summary ?? DEFAULT_SYNC_SUMMARY,
+    commands: options.commands ?? DEFAULT_SYNC_COMMANDS,
     async run(argv, context) {
-      try {
-        return await run(
-          deps,
-          platform,
-          assuranceStudio,
-          resolveWorktreeRoot,
-          argv,
-          context,
-          namespaceRunners,
-        );
-      } catch (error: unknown) {
-        if (!(error instanceof RemoteError)) throw error;
-        return {
-          exitCode: 1,
-          stdout: "",
-          stderr: formatRemoteCliError(error),
-        };
+      if (options.intercept) {
+        const intercepted = await options.intercept(argv, context);
+        if (intercepted !== null) return intercepted;
       }
+      return fallback(argv, context);
     },
   });
+  return fallback;
 }
