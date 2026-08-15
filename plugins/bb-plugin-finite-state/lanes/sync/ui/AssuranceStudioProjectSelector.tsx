@@ -100,7 +100,10 @@ export function AssuranceStudioProjectSelector({
           <AlertTitle>No linked Assurance Studio projects</AlertTitle>
           <AlertDescription>
             The Assurance Studio tenant did not report a project linked to this
-            Platform project. No fallback match was attempted.
+            Platform project. Links are created in Assurance Studio by linking
+            an Assurance Studio project to the matching Finite State Platform
+            project and version; then retry this lookup. No fallback match was
+            attempted.
           </AlertDescription>
         </Alert>
       ) : null}

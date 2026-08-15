@@ -265,6 +265,10 @@ function collectFlags(args: readonly string[]): {
       const option = optionValue(args, index, "--candidate");
       flags.candidate = option.value;
       index += option.consumed;
+    } else if (arg === "--as-project" || arg.startsWith("--as-project=")) {
+      const option = optionValue(args, index, "--as-project");
+      flags.asProject = option.value;
+      index += option.consumed;
     } else if (arg === "--target" || arg.startsWith("--target=")) {
       const option = optionValue(args, index, "--target");
       flags.target = option.value;
@@ -349,6 +353,7 @@ export function parseFiniteStateArgv(argv: readonly string[]): ParsedCommand {
     SYNC_VERBS.has(head)
   ) {
     for (const arg of args) rejectYes(arg);
+    collectFlags(args.slice(1));
     return { kind: "legacy", argv: args };
   }
 

@@ -286,6 +286,15 @@ function handlers(
 ) {
   return {
     connectionsStatus: connectionHandler,
+    syncCachedScopes: () => ({
+      scopes: [
+        {
+          platformProjectId: PROJECT,
+          projectVersionId: VERSION,
+          state: "fresh" as const,
+        },
+      ],
+    }),
     syncAsProjectCandidates: () => ({
       platformProjectId: PROJECT,
       candidateState: "unambiguous" as const,
@@ -312,6 +321,44 @@ function handlers(
 }
 
 describe("Sync review panel", () => {
+  it("selects an accepted cached Platform scope instead of requiring raw IDs", async () => {
+    const slot = renderSlot(
+      await syncPanel(),
+      { subPath: "" },
+      {
+        sidebarThreads: {
+          status: "ready",
+          projects: [
+            {
+              id: "workspace-project",
+              name: "Gateway workspace",
+              isPersonal: false,
+            },
+          ],
+        },
+        rpc: handlers(() => plan([])),
+      },
+    );
+
+    const picker = await slot.findByLabelText("Cached Platform scope");
+    expect(slot.getByText(`${PROJECT} / ${VERSION}`)).toBeTruthy();
+    fireEvent.change(picker, {
+      target: {
+        value: `${encodeURIComponent(PROJECT)}/${encodeURIComponent(VERSION)}`,
+      },
+    });
+    expect(slot.queryByPlaceholderText("project-id")).toBeNull();
+    fireEvent.click(slot.getByRole("button", { name: "Apply scope" }));
+
+    await waitFor(() =>
+      expect(slot.inspection.navigateCalls).toContainEqual({
+        method: "toPluginPanel",
+        path: "sync",
+        options: { subPath: SCOPE_PATH },
+      }),
+    );
+  });
+
   it("registers one canonical nav panel and rejects an invalid route before RPC", async () => {
     const { parseSyncReviewSubPath } = await import("./SyncReviewPanel.js");
     expect(parseSyncReviewSubPath("scope/qa-project/%40project")).toEqual({
@@ -361,7 +408,11 @@ describe("Sync review panel", () => {
       expect(
         slot.queryByRole("button", { name: "Retry with fresh plan" }),
       ).toBeNull();
-      expect(slot.inspection.rpcCalls).toEqual(
+      expect(
+        slot.inspection.rpcCalls.filter(
+          (call) => call.method !== "syncCachedScopes",
+        ),
+      ).toEqual(
         subPath === "scope/platform-project/%40project"
           ? [
               {
@@ -574,7 +625,11 @@ describe("Sync review panel", () => {
       expect(
         slot.queryByRole("button", { name: "Retry with fresh plan" }),
       ).toBeNull();
-      expect(slot.inspection.rpcCalls).toEqual(
+      expect(
+        slot.inspection.rpcCalls.filter(
+          (call) => call.method !== "syncCachedScopes",
+        ),
+      ).toEqual(
         surface === "hbomPart"
           ? []
           : [

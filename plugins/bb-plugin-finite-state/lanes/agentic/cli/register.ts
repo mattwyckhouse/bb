@@ -61,6 +61,8 @@ import type { NamespacedCliRunner } from "../../sync/cli.js";
 import {
   AGENTIC_CLI_SLOT,
   FINITE_STATE_COMMAND,
+  finiteStateUsage,
+  renderFiniteStateHelp,
   HBOM_REVIEW_ROUTE,
   SYNC_REVIEW_ROUTE,
   withContributedSubtrees,
@@ -1412,11 +1414,28 @@ function createDispatcher(
       syncRun: sync.run,
       context,
     };
+    if (argv.includes("--help") || argv.includes("-h")) {
+      return result(0, renderFiniteStateHelp(argv));
+    }
     try {
       const parsed = parseFiniteStateArgv(argv);
-      return await executeCommand(parsed, services);
+      const outcome = await executeCommand(parsed, services);
+      const stderr = outcome.stderr ?? "";
+      if (
+        outcome.exitCode === 2 &&
+        stderr.includes("unknown option") &&
+        !stderr.includes("Usage:")
+      ) {
+        return {
+          ...outcome,
+          stderr: `${stderr.trimEnd()}\n${finiteStateUsage(argv)}\n`,
+        };
+      }
+      return outcome;
     } catch (error: unknown) {
-      if (error instanceof CliUsageError) return failUsage(error.message);
+      if (error instanceof CliUsageError) {
+        return failUsage(`${error.message}\n${finiteStateUsage(argv)}`);
+      }
       throw error;
     }
   };

@@ -344,13 +344,17 @@ describe("registered SBOM pull surfaces", () => {
         versions: [
           {
             platformProjectId: projectId,
+            platformProjectName: "Eagle Connected Gateway",
             projectVersionId,
+            projectVersionName: "2.4.0",
             asOf: sbomAsOf,
             state: "fresh",
           },
           {
             platformProjectId: "sibling-project",
+            platformProjectName: null,
             projectVersionId: "sibling-version",
+            projectVersionName: null,
             asOf: "2000-08-14T00:00:00.000Z",
             state: "fresh",
           },
@@ -366,7 +370,9 @@ describe("registered SBOM pull surfaces", () => {
         versions: [
           {
             platformProjectId: "foreign-project",
+            platformProjectName: null,
             projectVersionId: "foreign-version",
+            projectVersionName: null,
             asOf: "2099-08-14T00:00:00.000Z",
             state: "fresh",
           },

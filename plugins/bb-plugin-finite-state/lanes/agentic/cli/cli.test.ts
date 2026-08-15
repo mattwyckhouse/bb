@@ -214,6 +214,37 @@ async function setup(options?: {
 }
 
 describe("finite-state CLI", () => {
+  it("renders full root and subcommand help with exit 0 and usage on unknown flags", async () => {
+    const harness = await setup();
+    const root = await harness.run(["--help"]);
+    expect(root.exitCode).toBe(0);
+    expect(root.stdout).toContain("Commands:");
+    expect(root.stdout).toContain("as-project-select");
+    expect(root.stdout).toContain("Select the Assurance Studio project");
+
+    const subcommand = await harness.run(["as-project-select", "--help"]);
+    expect(subcommand.exitCode).toBe(0);
+    expect(subcommand.stdout).toContain("bb finite-state as-project-select");
+    expect(subcommand.stdout).toContain("Usage:");
+    expect(subcommand.stdout).toContain("--as-project ID");
+
+    const multiline = await harness.run(["connect", "--help"]);
+    expect(multiline.exitCode).toBe(0);
+    expect(multiline.stdout).toContain(
+      "bb finite-state connections status|configure",
+    );
+    expect(multiline.stdout).not.toContain(
+      "bb finite-state bb finite-state connections",
+    );
+
+    const unknown = await harness.run(["pull", "--bad-flag"]);
+    expect(unknown.exitCode).toBe(2);
+    expect(unknown.stderr).toContain("unknown option --bad-flag");
+    expect(unknown.stderr).toContain("Usage:");
+    expect(unknown.stderr).toContain("bb finite-state pull");
+    expect(harness.syncCalls).toEqual([]);
+  });
+
   it("renders table and JSON for each native command family", async () => {
     const harness = await setup();
     const connectTable = await harness.run(["connect"]);

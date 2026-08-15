@@ -72,7 +72,9 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
   const [versions, setVersions] = useState<
     Array<{
       platformProjectId: string;
+      platformProjectName: string | null;
       projectVersionId: string;
+      projectVersionName: string | null;
       state: "fresh" | "stale";
     }>
   >([]);
@@ -238,6 +240,8 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
                   version.projectVersionId,
                 )}
               >
+                {version.platformProjectName ?? version.platformProjectId} ·{" "}
+                {version.projectVersionName ?? version.projectVersionId} —{" "}
                 {version.platformProjectId} / {version.projectVersionId}
                 {version.state === "stale" ? " · stale" : ""}
               </option>

@@ -23,6 +23,30 @@ async function chipRegistration() {
 }
 
 describe("PendingChangesChip", () => {
+  it("surfaces the reason the sync count is unavailable", async () => {
+    const slot = renderSlot(
+      await chipRegistration(),
+      {},
+      {
+        context: { projectId: "workspace-project", threadId: null },
+        rpc: {
+          syncStatus: () =>
+            Promise.reject(
+              new Error(
+                "AS_PROJECT_SELECTION_REQUIRED: choose a linked project",
+              ),
+            ),
+        },
+      },
+    );
+
+    expect(
+      await slot.findByText(
+        "Sync unavailable · AS_PROJECT_SELECTION_REQUIRED: choose a linked project",
+      ),
+    ).toBeTruthy();
+  });
+
   it("leaves safe route segments raw for host navigation encoding", async () => {
     const { syncScopeSubPath } = await import("./PendingChangesChip.js");
 

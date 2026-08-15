@@ -11,7 +11,9 @@ const cachedProjectVersionsRpc = {
         z
           .object({
             platformProjectId: z.string().min(1).max(512),
+            platformProjectName: z.string().min(1).max(512).nullable(),
             projectVersionId: z.string().min(1).max(512),
+            projectVersionName: z.string().min(1).max(512).nullable(),
             asOf: z.string().nullable(),
             state: z.enum(["fresh", "stale"]),
           })

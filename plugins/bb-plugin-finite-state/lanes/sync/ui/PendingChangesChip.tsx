@@ -18,7 +18,7 @@ interface PendingCounts {
 interface PendingResult {
   requestKey: string;
   counts: PendingCounts | null;
-  error: boolean;
+  error: string | null;
 }
 
 const SYNC_ROUTE_IDENTIFIER = /^[A-Za-z0-9@][A-Za-z0-9._:@-]{0,511}$/u;
@@ -78,12 +78,19 @@ export function PendingChangesChip({
             local: status.local.length,
             conflicts: status.conflicts.length,
           },
-          error: false,
+          error: null,
         });
       })
-      .catch(() => {
+      .catch((cause: unknown) => {
         if (cancelled) return;
-        setResult({ requestKey, counts: null, error: true });
+        setResult({
+          requestKey,
+          counts: null,
+          error:
+            cause instanceof Error && cause.message.length > 0
+              ? cause.message.slice(0, 120)
+              : "status could not be loaded",
+        });
       });
     return () => {
       cancelled = true;
@@ -100,15 +107,16 @@ export function PendingChangesChip({
 
   const currentResult = result?.requestKey === requestKey ? result : null;
   const counts = currentResult?.counts ?? null;
-  const error = currentResult?.error ?? false;
-  const unavailable = !validScope || error;
+  const error = currentResult?.error ?? null;
+  const unavailableReason = !validScope ? "invalid scope" : error;
+  const unavailable = unavailableReason !== null;
   const label = unavailable
-    ? "Sync unavailable"
+    ? `Sync unavailable · ${unavailableReason}`
     : counts
       ? `${counts.local} local · ${counts.conflicts} ${counts.conflicts === 1 ? "conflict" : "conflicts"}`
       : "Checking local changes";
   const accessibleLabel = unavailable
-    ? "Open Sync review; pending change count unavailable"
+    ? `Open Sync review; pending change count unavailable: ${unavailableReason}`
     : counts
       ? `Open Sync review: ${counts.local} local changes and ${counts.conflicts} ${counts.conflicts === 1 ? "conflict" : "conflicts"}`
       : "Open Sync review; checking pending changes";

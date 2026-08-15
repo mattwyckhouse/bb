@@ -59,6 +59,44 @@ export interface BomCommandServices {
   ): Promise<SbomPullResult>;
 }
 
+async function platformScopeNames(
+  platform: PlatformClient,
+  scopes: readonly { projectId: string; projectVersionId: string }[],
+): Promise<{
+  projects: ReadonlyMap<string, string>;
+  versions: ReadonlyMap<string, string>;
+}> {
+  const projects = new Map<string, string>();
+  const versions = new Map<string, string>();
+  try {
+    for await (const page of platform.listProjects({ pageSize: 200 })) {
+      for (const item of page.items) {
+        const id = item["id"];
+        const name = item["name"];
+        if (typeof id === "string" && typeof name === "string") {
+          projects.set(id, name);
+        }
+      }
+    }
+    for (const projectId of new Set(scopes.map((scope) => scope.projectId))) {
+      for await (const page of platform.listVersions(projectId, {
+        pageSize: 200,
+      })) {
+        for (const item of page.items) {
+          const id = item["id"];
+          const name = item["name"];
+          if (typeof id === "string" && typeof name === "string") {
+            versions.set(id, name);
+          }
+        }
+      }
+    }
+  } catch {
+    // Accepted cached scopes remain usable while Platform is unavailable.
+  }
+  return { projects, versions };
+}
+
 export function createBomCommandServices(
   bb: BbPluginApi,
   db: Database.Database,
@@ -336,12 +374,38 @@ export function registerBom(bb: BbPluginApi, ctx: PluginContext): void {
         .all(input.projectId);
       const versions = rows.map((row) => ({
         platformProjectId: row.project_id,
+        platformProjectName: null,
         projectVersionId: row.project_version_id,
+        projectVersionName: null,
         asOf: row.as_of,
         state: row.stale === 1 ? ("stale" as const) : ("fresh" as const),
       }));
+      let names: Awaited<ReturnType<typeof platformScopeNames>> = {
+        projects: new Map(),
+        versions: new Map(),
+      };
+      try {
+        const remote = ctx.service<RemoteServices>("remote-services", () => {
+          throw new Error("REMOTE_SERVICES_NOT_REGISTERED");
+        });
+        names = await platformScopeNames(
+          remote.platform,
+          versions.map((version) => ({
+            projectId: version.platformProjectId,
+            projectVersionId: version.projectVersionId,
+          })),
+        );
+      } catch {
+        // Cached scopes remain usable when display-name enrichment is offline.
+      }
       return {
-        versions,
+        versions: versions.map((version) => ({
+          ...version,
+          platformProjectName:
+            names.projects.get(version.platformProjectId) ?? null,
+          projectVersionName:
+            names.versions.get(version.projectVersionId) ?? null,
+        })),
         selectedPlatformProjectId: versions[0]?.platformProjectId ?? null,
         selectedProjectVersionId: versions[0]?.projectVersionId ?? null,
       };

@@ -333,7 +333,9 @@ describe("registered BOM realtime boundary", () => {
                 versions: [
                   {
                     platformProjectId: projectId,
+                    platformProjectName: "Eagle Connected Gateway",
                     projectVersionId: activeVersionId,
+                    projectVersionName: "2.4.0",
                     asOf: null,
                     state: "empty" as const,
                   },

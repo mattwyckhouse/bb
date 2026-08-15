@@ -156,7 +156,9 @@ async function renderBom(
           versions: [
             {
               platformProjectId: "project-1",
+              platformProjectName: "Gateway",
               projectVersionId: "version-1",
+              projectVersionName: "2.4.0",
               asOf: "2026-08-12T20:00:00.000Z",
               state: "fresh",
             },
@@ -172,6 +174,9 @@ async function renderBom(
     },
   );
   await slot.findByLabelText("Finite State project version");
+  expect(
+    await slot.findByText(/Gateway · 2\.4\.0 — project-1 \/ version-1/u),
+  ).toBeTruthy();
   return slot;
 }
 
