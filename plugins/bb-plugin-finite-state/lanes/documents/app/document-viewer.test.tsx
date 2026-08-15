@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { cleanup } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@bb/plugin-sdk/testing/app";
 
 const app = await loadPluginApp(() => import("../../../app.js"));
@@ -20,18 +20,71 @@ describe("documents viewer registration", () => {
     expect(opener.extensions).toContain("xlsx");
   });
 
-  it("renders unconfigured and loading/empty/error states", async () => {
+  it("renders a project picker in the unconfigured state and loads the selected project", async () => {
+    const documentsList = vi.fn(async () => ({
+      items: [],
+      total: 0,
+      next: null,
+      cache: {
+        state: "empty" as const,
+        asOf: null,
+        message: null,
+        acceptedGenerationId: null,
+        baseRevision: 0,
+      },
+    }));
     const unconfigured = renderSlot(
       panel,
       { subPath: "" },
       {
         context: { projectId: null, threadId: null },
-        sidebarThreads: { status: "ready", projects: [], threads: [] },
+        sidebarThreads: {
+          status: "ready",
+          projects: [{ id: "project-a", name: "Project A", isPersonal: false }],
+          threads: [],
+        },
+        rpc: {
+          bomCachedProjectVersions: async () => ({
+            versions: [
+              {
+                platformProjectId: "platform-a",
+                projectVersionId: "version-a",
+                asOf: "2026-08-15T10:00:00.000Z",
+                state: "fresh" as const,
+              },
+            ],
+            selectedPlatformProjectId: "platform-a",
+            selectedProjectVersionId: "version-a",
+          }),
+          documentsList,
+        },
       },
     );
     expect(await unconfigured.findByText("Choose a project")).toBeTruthy();
+    const projectPicker = unconfigured.getByLabelText("Project");
+    expect(projectPicker).toBeTruthy();
+    fireEvent.change(projectPicker, { target: { value: "project-a" } });
+    expect(await unconfigured.findByText("No documents yet")).toBeTruthy();
+    expect(documentsList).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "project-a",
+        projectVersionId: null,
+      }),
+    );
+    const versionPicker = await unconfigured.findByLabelText("Project version");
+    fireEvent.change(versionPicker, { target: { value: "version-a" } });
+    await waitFor(() =>
+      expect(documentsList).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-a",
+          projectVersionId: "version-a",
+        }),
+      ),
+    );
     unconfigured.lifecycle.unmount();
+  });
 
+  it("renders loading/empty/error states", async () => {
     const loading = renderSlot(
       panel,
       { subPath: "" },

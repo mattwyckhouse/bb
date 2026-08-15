@@ -4,12 +4,14 @@ import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
 import { Skeleton } from "@bb/shared-ui/skeleton";
 import {
+  experimental_useSidebarThreads,
   useBbContext,
   useRealtime,
   useRpc,
   type PluginNavPanelProps,
 } from "@bb/plugin-sdk/app";
 import { type RpcContract } from "../../../shared/contract.js";
+import { bomCachedVersionsContract } from "../../bom/rpc.js";
 import { DocumentViewer } from "./document-viewer.js";
 
 type PanelState = "unconfigured" | "loading" | "empty" | "ready" | "error";
@@ -42,9 +44,22 @@ async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
 }
 
 export function DocumentsPanel(_props: PluginNavPanelProps): React.JSX.Element {
-  const { projectId } = useBbContext();
-  const rpc = useRpc<RpcContract>();
+  const { projectId: routeProjectId } = useBbContext();
+  const sidebar = experimental_useSidebarThreads();
+  const rpc = useRpc<RpcContract & typeof bomCachedVersionsContract>();
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    null,
+  );
+  const projectId = routeProjectId ?? selectedProjectId;
+  const [versions, setVersions] = useState<
+    Array<{
+      platformProjectId: string;
+      projectVersionId: string;
+      state: "fresh" | "stale";
+    }>
+  >([]);
   const [projectVersionId, setProjectVersionId] = useState<string | null>(null);
+  const [versionsLoading, setVersionsLoading] = useState(false);
   const [items, setItems] = useState<DocumentListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [state, setState] = useState<PanelState>(
@@ -55,6 +70,33 @@ export function DocumentsPanel(_props: PluginNavPanelProps): React.JSX.Element {
   const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const listParent = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!projectId) {
+      setVersions([]);
+      setProjectVersionId(null);
+      setVersionsLoading(false);
+      return;
+    }
+    let active = true;
+    setVersions([]);
+    setProjectVersionId(null);
+    setVersionsLoading(true);
+    void rpc
+      .call("bomCachedProjectVersions", { projectId })
+      .then((result) => {
+        if (active) setVersions(result.versions);
+      })
+      .catch(() => {
+        if (active) setVersions([]);
+      })
+      .finally(() => {
+        if (active) setVersionsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [projectId, rpc]);
 
   useEffect(() => {
     if (!projectId) {
@@ -208,6 +250,33 @@ export function DocumentsPanel(_props: PluginNavPanelProps): React.JSX.Element {
             Documents are plugin-local evidence stored under
             product-security/documents in the selected workspace.
           </p>
+          <label
+            className="mt-4 block text-left text-xs font-medium text-muted-foreground"
+            htmlFor="documents-project"
+          >
+            Project
+          </label>
+          <select
+            className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+            disabled={sidebar.status === "loading"}
+            id="documents-project"
+            onChange={(event) => {
+              setSelectedProjectId(event.target.value || null);
+              setProjectVersionId(null);
+            }}
+            value={projectId ?? ""}
+          >
+            <option value="">
+              {sidebar.status === "loading"
+                ? "Loading projects…"
+                : "Select project"}
+            </option>
+            {sidebar.projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
     );
@@ -245,26 +314,61 @@ export function DocumentsPanel(_props: PluginNavPanelProps): React.JSX.Element {
             type="file"
           />
         </header>
-        <div className="border-b border-border px-3 py-2">
+        <div className="space-y-2 border-b border-border px-3 py-2">
+          {!routeProjectId ? (
+            <div>
+              <label
+                className="text-xs text-muted-foreground"
+                htmlFor="documents-project"
+              >
+                Project
+              </label>
+              <select
+                className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                id="documents-project"
+                onChange={(event) => {
+                  setSelectedProjectId(event.target.value || null);
+                  setProjectVersionId(null);
+                }}
+                value={projectId ?? ""}
+              >
+                <option value="">Select project</option>
+                {sidebar.projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
           <label
-            className="text-xs text-muted-foreground"
+            className="block text-xs text-muted-foreground"
             htmlFor="docs-version"
           >
-            Project version (empty = project-level)
+            Project version
           </label>
-          <input
-            className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
+          <select
+            className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+            disabled={versionsLoading}
             id="docs-version"
             onChange={(event) =>
-              setProjectVersionId(
-                event.target.value.trim().length === 0
-                  ? null
-                  : event.target.value.trim(),
-              )
+              setProjectVersionId(event.target.value || null)
             }
-            placeholder="version id"
             value={projectVersionId ?? ""}
-          />
+          >
+            <option value="">
+              {versionsLoading ? "Loading cached versions…" : "Project-level"}
+            </option>
+            {versions.map((version) => (
+              <option
+                key={`${version.platformProjectId}/${version.projectVersionId}`}
+                value={version.projectVersionId}
+              >
+                {version.platformProjectId} / {version.projectVersionId}
+                {version.state === "stale" ? " · stale" : ""}
+              </option>
+            ))}
+          </select>
         </div>
         {state === "loading" ? (
           <div
