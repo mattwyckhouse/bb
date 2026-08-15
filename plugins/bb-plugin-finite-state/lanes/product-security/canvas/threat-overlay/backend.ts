@@ -7,11 +7,8 @@ import {
   jsonValueSchema,
   type JsonValue,
 } from "../../../../shared/contract.js";
-import {
-  fromStorageProjectVersionId,
-  PROJECT_LEVEL_VERSION_ID,
-  toStorageProjectVersionId,
-} from "../../../../lib/store/index.js";
+import { resolveNewestAcceptedProjectVersionId } from "../../../../lib/store/accepted-version.js";
+import { toStorageProjectVersionId } from "../../../../lib/store/index.js";
 import {
   aggregateThreats,
   categoryFromVocabulary,
@@ -214,31 +211,20 @@ interface SyncRow {
   error: string | null;
 }
 
-interface VersionRow {
-  project_version_id: string;
-}
-
 function resolvedThreatScope(
   db: Database.Database,
   scope: ProjectScope,
 ): ProjectScope {
   if (scope.projectVersionId !== null) return scope;
-  const row = db
-    .prepare<[string, string], VersionRow>(
-      `SELECT project_version_id
-         FROM sync_state
-        WHERE project_id = ? AND entity_kind = 'threat'
-          AND project_version_id <> ? AND accepted_generation_id IS NOT NULL
-        ORDER BY last_pull DESC, project_version_id DESC
-        LIMIT 1`,
-    )
-    .get(scope.projectId, PROJECT_LEVEL_VERSION_ID);
   return {
     workspaceProjectId: scope.workspaceProjectId,
     projectId: scope.projectId,
-    projectVersionId: row
-      ? fromStorageProjectVersionId(row.project_version_id)
-      : null,
+    projectVersionId: resolveNewestAcceptedProjectVersionId(
+      db,
+      scope.projectId,
+      null,
+      "threat",
+    ),
   };
 }
 

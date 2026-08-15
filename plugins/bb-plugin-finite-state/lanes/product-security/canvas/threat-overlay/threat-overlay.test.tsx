@@ -29,7 +29,6 @@ import {
 } from "./aggregate.js";
 import { AttackPathOverlay } from "./AttackPathOverlay.js";
 import {
-  readThreatSnapshot,
   registerThreatOverlayBackend,
   threatOverlayRpcContract,
 } from "./backend.js";
@@ -928,18 +927,17 @@ describe("WP-33 bounded cache and DOM", () => {
     registerThreatOverlayBackend(bb, ctx);
     seedThreatOverlay(ctx.db(), 5_000);
 
-    const cache = new Map();
-    const first = readThreatSnapshot(
-      ctx.db(),
-      { projectId: PROJECT_ID, projectVersionId: null },
-      cache,
+    const snapshotInput = {
+      projectId: PROJECT_ID,
+      projectVersionId: null,
+    };
+    const first = threatOverlayRpcContract.threatOverlaySnapshot.output.parse(
+      await harness.behavior.callRpc("threatOverlaySnapshot", snapshotInput),
     );
-    const second = readThreatSnapshot(
-      ctx.db(),
-      { projectId: PROJECT_ID, projectVersionId: null },
-      cache,
+    const second = threatOverlayRpcContract.threatOverlaySnapshot.output.parse(
+      await harness.behavior.callRpc("threatOverlaySnapshot", snapshotInput),
     );
-    expect(second).toBe(first);
+    expect(second).toEqual(first);
     expect(first.projectVersionId).toBeNull();
     ctx
       .db()
@@ -951,12 +949,10 @@ describe("WP-33 bounded cache and DOM", () => {
             AND entity_kind = 'threat'`,
       )
       .run(PROJECT_ID, VERSION_ID);
-    const stale = readThreatSnapshot(
-      ctx.db(),
-      { projectId: PROJECT_ID, projectVersionId: null },
-      cache,
+    const stale = threatOverlayRpcContract.threatOverlaySnapshot.output.parse(
+      await harness.behavior.callRpc("threatOverlaySnapshot", snapshotInput),
     );
-    expect(stale).not.toBe(first);
+    expect(stale.revision).not.toBe(first.revision);
     expect(stale.cache.state).toBe("stale");
     expect(first.threats).toEqual([
       expect.objectContaining({
@@ -1019,6 +1015,7 @@ describe("WP-33 bounded cache and DOM", () => {
       pluginId: "finite-state-wp33-version-resolution",
     });
     const ctx = createPluginContext(bb);
+    registerThreatOverlayBackend(bb, ctx);
     ctx
       .db()
       .prepare(
@@ -1045,10 +1042,13 @@ describe("WP-33 bounded cache and DOM", () => {
       )
       .run(PROJECT_ID, "version-accepted", "generation-versioned", PULLED_AT);
 
-    const snapshot = readThreatSnapshot(ctx.db(), {
-      projectId: PROJECT_ID,
-      projectVersionId: null,
-    });
+    const snapshot =
+      threatOverlayRpcContract.threatOverlaySnapshot.output.parse(
+        await harness.behavior.callRpc("threatOverlaySnapshot", {
+          projectId: PROJECT_ID,
+          projectVersionId: null,
+        }),
+      );
     expect(snapshot.projectVersionId).toBe("version-accepted");
     await harness.lifecycle.dispose();
   });
