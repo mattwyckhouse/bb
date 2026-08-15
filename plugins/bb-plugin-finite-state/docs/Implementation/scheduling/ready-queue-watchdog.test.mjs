@@ -172,7 +172,7 @@ test("the shipped manifest prohibits WP02", async () => {
 // owner gate hit at first dispatch 2026-08-15. WP82 stopped under the same
 // post-core gate as WP74 once WP56 shipped and made it dependency-ready;
 // WP78 likewise once WP44 shipped.
-test("the shipped manifest temporarily stops WP74, WP78, WP82, and WP100 with resume conditions", async () => {
+test("the shipped manifest temporarily stops WP67, WP74, WP78, WP82, and WP100 with resume conditions", async () => {
   const { readFileSync } = await import("node:fs");
   const shipped = JSON.parse(
     readFileSync(
@@ -181,6 +181,7 @@ test("the shipped manifest temporarily stops WP74, WP78, WP82, and WP100 with re
     ),
   );
   assert.deepEqual(shipped.dispatchPolicy.stoppedWorkPackages, [
+    "WP67",
     "WP74",
     "WP78",
     "WP82",
