@@ -4,6 +4,7 @@ import { registerMentions as registerOwnedMentions } from "./mentions/register.j
 import { registerActionTools as registerOwnedActionTools } from "./tools/actions.js";
 import { registerReadTools as registerOwnedReadTools } from "./tools/read.js";
 import { registerWriteTools as registerOwnedWriteTools } from "./tools/write.js";
+import { registerFiniteStateCli as registerOwnedFiniteStateCli } from "./cli/register.js";
 
 export type AgenticRegistrar = (bb: BbPluginApi, ctx: PluginContext) => void;
 
@@ -13,7 +14,8 @@ export const registerReadTools: AgenticRegistrar = registerOwnedReadTools;
 export const registerWriteTools: AgenticRegistrar = registerOwnedWriteTools;
 export const registerActionTools: AgenticRegistrar = registerOwnedActionTools;
 export const registerMentions: AgenticRegistrar = registerOwnedMentions;
-export const registerFiniteStateCli: AgenticRegistrar = () => {};
+export const registerFiniteStateCli: AgenticRegistrar =
+  registerOwnedFiniteStateCli;
 
 const REGISTRARS = [
   registerReadTools,

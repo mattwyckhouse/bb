@@ -3,6 +3,12 @@ import { registerRepoContractLoadService } from "../../lib/contract-load/index.j
 import type { PluginContext } from "../../lib/context.js";
 import type { RemoteServices } from "../../lib/remote/types.js";
 import { openStore } from "../../lib/store/index.js";
+import {
+  AGENTIC_CLI_SLOT,
+  FINITE_STATE_COMMAND,
+  withContributedSubtrees,
+  type AgenticCliSlot,
+} from "../agentic/cli/metadata.js";
 import { registerSyncCli } from "./cli.js";
 import type { NamespacedCliRunner } from "./cli.js";
 import { registerAdapter, registerResolver } from "./engine/adapter.js";
@@ -97,7 +103,7 @@ export function registerSync(bb: BbPluginApi, ctx: PluginContext): void {
     },
   };
   registerSyncRpc(bb, deps, remote.assuranceStudio);
-  registerSyncCli(
+  const raw = registerSyncCli(
     bb,
     deps,
     remote.platform,
@@ -123,5 +129,17 @@ export function registerSync(bb: BbPluginApi, ctx: PluginContext): void {
           })
           .run(argv, cliContext),
     },
+    {
+      summary: FINITE_STATE_COMMAND.summary,
+      commands: withContributedSubtrees(),
+      intercept: async (argv, cliContext) => {
+        const slot = ctx.service<AgenticCliSlot>(AGENTIC_CLI_SLOT, () => ({
+          run: null,
+        }));
+        if (slot.run === null) return null;
+        return slot.run(argv, cliContext);
+      },
+    },
   );
+  ctx.service<{ run: NamespacedCliRunner }>("sync.cli", () => ({ run: raw }));
 }
