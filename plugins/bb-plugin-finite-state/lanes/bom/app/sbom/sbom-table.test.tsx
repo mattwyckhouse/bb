@@ -11,6 +11,7 @@ import {
 import { loadPluginApp, renderSlot } from "@bb/plugin-sdk/testing/app";
 import { connectedRemoteStatus } from "../../../../test/app-connections.js";
 import type { JsonValue } from "../../../../shared/contract.js";
+import { bomVersionLabel } from "../version-label.js";
 
 const cache = {
   state: "fresh" as const,
@@ -156,13 +157,25 @@ async function renderBom(
           versions: [
             {
               platformProjectId: "project-1",
+              platformProjectName: null,
               projectVersionId: "version-1",
+              projectVersionName: null,
               asOf: "2026-08-12T20:00:00.000Z",
               state: "fresh",
             },
           ],
           selectedPlatformProjectId: "project-1",
           selectedProjectVersionId: "version-1",
+        }),
+        bomPlatformScopeNames: () => ({
+          scopes: [
+            {
+              projectId: "project-1",
+              projectName: "Gateway",
+              projectVersionId: "version-1",
+              projectVersionName: "2.4.0",
+            },
+          ],
         }),
         bomSoftwareList: handler,
         bomComponentGet: detailHandler,
@@ -172,10 +185,25 @@ async function renderBom(
     },
   );
   await slot.findByLabelText("Finite State project version");
+  expect(
+    await slot.findByText(/Gateway · 2\.4\.0 — project-1 \/ version-1/u),
+  ).toBeTruthy();
   return slot;
 }
 
 describe("SBOM virtual table", () => {
+  it("uses one raw-key label when offline name enrichment is unavailable", () => {
+    expect(
+      bomVersionLabel({
+        platformProjectId: "project-1",
+        platformProjectName: null,
+        projectVersionId: "version-1",
+        projectVersionName: null,
+        state: "fresh",
+      }),
+    ).toBe("project-1 / version-1");
+  });
+
   it("pulls an empty scoped cache through sync and renders the resulting rows", async () => {
     let pulled = false;
     const emptyCache = {

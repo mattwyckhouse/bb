@@ -40,6 +40,7 @@ import {
 } from "./PlanRow.js";
 import { PushResults, type SyncPushReport } from "./PushResults.js";
 import { SyncPullOutcomes } from "./SyncPullOutcomes.js";
+import { syncAppRpcContract } from "../rpc.js";
 
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
 const SCOPE_STORAGE_KEY = "finite-state:sync-review-scope:v1";
@@ -89,6 +90,13 @@ type AssuranceStudioProjectCandidates = z.output<
 export interface SyncScope {
   projectId: string;
   projectVersionId: string | null;
+}
+
+interface CachedSyncScope extends SyncScope {
+  projectVersionId: string;
+  platformProjectName: string | null;
+  projectVersionName: string | null;
+  state: "fresh" | "stale";
 }
 
 export type SyncSurfaceFilter =
@@ -392,13 +400,29 @@ function planConnectionReady(
 }
 
 function ScopeToolbar({
+  cachedScopes,
+  cachedScopesError,
+  cachedScopesLoading,
+  onWorkspaceProjectChange,
   scope,
+  sidebarProjects,
+  sidebarProjectsLoading,
   surface,
+  workspaceProjectFixed,
+  workspaceProjectId,
   onApply,
   onSurfaceChange,
 }: {
+  cachedScopes: readonly CachedSyncScope[];
+  cachedScopesError: string | null;
+  cachedScopesLoading: boolean;
+  onWorkspaceProjectChange(projectId: string | null): void;
   scope: SyncScope | null;
+  sidebarProjects: readonly { id: string; name: string }[];
+  sidebarProjectsLoading: boolean;
   surface: SyncSurfaceFilter;
+  workspaceProjectFixed: boolean;
+  workspaceProjectId: string | null;
   onApply(scope: SyncScope): void;
   onSurfaceChange(surface: SyncSurfaceFilter): void;
 }): React.JSX.Element {
@@ -407,9 +431,94 @@ function ScopeToolbar({
     scope?.projectVersionId ?? "",
   );
   const [error, setError] = useState<string | null>(null);
+  const cachedScopeValue = projectId
+    ? `${encodeURIComponent(projectId)}/${projectVersionId ? encodeURIComponent(projectVersionId) : "@project"}`
+    : "";
+  const cachedProjects = [
+    ...new Map(
+      cachedScopes.map((candidate) => [
+        candidate.projectId,
+        candidate.platformProjectName,
+      ]),
+    ),
+  ];
 
   return (
     <div className="flex shrink-0 flex-wrap items-end gap-2 border-b border-border bg-card px-3 py-2">
+      <label className="min-w-48 flex-1 text-xs font-medium text-muted-foreground">
+        bb project
+        <select
+          aria-label="bb project for Sync scope"
+          className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+          disabled={workspaceProjectFixed || sidebarProjectsLoading}
+          onChange={(event) =>
+            onWorkspaceProjectChange(event.target.value || null)
+          }
+          value={workspaceProjectId ?? ""}
+        >
+          <option value="">Select a bb project</option>
+          {sidebarProjects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {workspaceProjectId && cachedScopes.length > 0 ? (
+        <label className="min-w-72 flex-[2] text-xs font-medium text-muted-foreground">
+          Cached Platform scope
+          <select
+            aria-label="Cached Platform scope"
+            className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onChange={(event) => {
+              const selected = cachedScopes.find(
+                (candidate) =>
+                  `${encodeURIComponent(candidate.projectId)}/${encodeURIComponent(candidate.projectVersionId)}` ===
+                  event.target.value,
+              );
+              if (selected) {
+                setProjectId(selected.projectId);
+                setProjectVersionId(selected.projectVersionId);
+                setError(null);
+                return;
+              }
+              const projectLevel = cachedProjects.find(
+                ([candidateProjectId]) =>
+                  `${encodeURIComponent(candidateProjectId)}/@project` ===
+                  event.target.value,
+              );
+              if (!projectLevel) return;
+              setProjectId(projectLevel[0]);
+              setProjectVersionId("");
+              setError(null);
+            }}
+            value={cachedScopeValue}
+          >
+            <option value="">Select a cached scope</option>
+            {cachedProjects.map(([candidateProjectId, candidateName]) => (
+              <option
+                key={`${candidateProjectId}\0@project`}
+                value={`${encodeURIComponent(candidateProjectId)}/@project`}
+              >
+                {candidateName ?? candidateProjectId} · Project level —{" "}
+                {candidateProjectId} / @project
+              </option>
+            ))}
+            {cachedScopes.map((candidate) => (
+              <option
+                key={`${candidate.projectId}\0${candidate.projectVersionId}`}
+                value={`${encodeURIComponent(candidate.projectId)}/${encodeURIComponent(candidate.projectVersionId)}`}
+              >
+                {candidate.platformProjectName === null &&
+                candidate.projectVersionName === null
+                  ? `${candidate.projectId} / ${candidate.projectVersionId}`
+                  : `${candidate.platformProjectName ?? candidate.projectId} · ${candidate.projectVersionName ?? candidate.projectVersionId} — ${candidate.projectId} / ${candidate.projectVersionId}`}
+                {candidate.state === "stale" ? " · stale" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <label className="min-w-48 flex-1 text-xs font-medium text-muted-foreground">
         Platform project ID
         <Input
@@ -484,6 +593,21 @@ function ScopeToolbar({
           {error}
         </p>
       ) : null}
+      {cachedScopesLoading ? (
+        <p className="w-full text-xs text-muted-foreground" role="status">
+          Loading cached Platform scopes…
+        </p>
+      ) : cachedScopesError ? (
+        <p className="w-full text-xs text-warning" role="status">
+          Cached scope lookup failed: {cachedScopesError}. Enter Platform IDs
+          manually.
+        </p>
+      ) : workspaceProjectId && cachedScopes.length === 0 ? (
+        <p className="w-full text-xs text-muted-foreground">
+          No accepted cached scope exists for this bb project yet. Enter IDs
+          manually, or pull a Platform version to add it to this picker.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -542,9 +666,9 @@ function MissingScopeState(): React.JSX.Element {
         <Icon className="size-6 text-muted-foreground" name="Target" />
         <h2 className="mt-4 text-lg font-semibold">Choose a Platform scope</h2>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          Enter the Finite State Platform project ID and optional version ID.
-          The bb project ID is intentionally not sent to Platform because the
-          two systems use different identity spaces.
+          Choose an accepted cached scope above, or enter a Finite State
+          Platform project ID and optional version ID manually. Leave the
+          version blank for project-level review.
         </p>
       </section>
     </div>
@@ -760,7 +884,7 @@ export function SyncReviewPanel({
   subPath,
   humanApprovalCapability = null,
 }: SyncReviewPanelProps): React.JSX.Element {
-  const rpc = useRpc<typeof rpcContract>();
+  const rpc = useRpc<typeof syncAppRpcContract>();
   const navigate = useBbNavigate();
   const { projectId: routeWorkspaceProjectId } = useBbContext();
   const sidebar = experimental_useSidebarThreads();
@@ -800,6 +924,11 @@ export function SyncReviewPanel({
   const [asProjectsLoading, setAsProjectsLoading] = useState(false);
   const [asProjectsSaving, setAsProjectsSaving] = useState(false);
   const [asProjectsError, setAsProjectsError] = useState<string | null>(null);
+  const [cachedScopes, setCachedScopes] = useState<CachedSyncScope[]>([]);
+  const [cachedScopesLoading, setCachedScopesLoading] = useState(false);
+  const [cachedScopesError, setCachedScopesError] = useState<string | null>(
+    null,
+  );
   const assuranceStudioSelectionReady =
     !requiresAssuranceStudio ||
     typeof asProjects?.selectedAssuranceStudioProjectId === "string";
@@ -813,8 +942,86 @@ export function SyncReviewPanel({
     persistScope(route.scope);
   }, [route?.scope]);
 
+  useEffect(() => {
+    if (!parsedRoute.valid || !workspaceProjectId) {
+      setCachedScopes([]);
+      setCachedScopesLoading(false);
+      setCachedScopesError(null);
+      return;
+    }
+    let active = true;
+    setCachedScopesLoading(true);
+    setCachedScopesError(null);
+    void rpc
+      .call("syncCachedScopes", { workspaceProjectId })
+      .then((result) => {
+        if (active) {
+          setCachedScopes(
+            result.scopes.map((scope) => ({
+              projectId: scope.platformProjectId,
+              projectVersionId: scope.projectVersionId,
+              platformProjectName: scope.platformProjectName,
+              projectVersionName: scope.projectVersionName,
+              state: scope.state,
+            })),
+          );
+          if (result.scopes.length > 0) {
+            void rpc
+              .call("syncPlatformScopeNames", {
+                scopes: result.scopes.map((scope) => ({
+                  projectId: scope.platformProjectId,
+                  projectVersionId: scope.projectVersionId,
+                })),
+              })
+              .then((names) => {
+                if (!active) return;
+                const byScope = new Map(
+                  names.scopes.map((scope) => [
+                    `${scope.projectId}\0${scope.projectVersionId}`,
+                    scope,
+                  ]),
+                );
+                setCachedScopes((current) =>
+                  current.map((scope) => {
+                    const name = byScope.get(
+                      `${scope.projectId}\0${scope.projectVersionId}`,
+                    );
+                    return name
+                      ? {
+                          ...scope,
+                          platformProjectName: name.projectName,
+                          projectVersionName: name.projectVersionName,
+                        }
+                      : scope;
+                  }),
+                );
+              })
+              .catch(() => {
+                // Raw cached identifiers remain usable when enrichment is offline.
+              });
+          }
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setCachedScopes([]);
+        setCachedScopesError(
+          error instanceof Error
+            ? error.message.slice(0, 300)
+            : "unknown error",
+        );
+      })
+      .finally(() => {
+        if (active) setCachedScopesLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [parsedRoute.valid, rpc, workspaceProjectId]);
+
   const loadAssuranceStudioProjects = useCallback(async () => {
     if (
+      !parsedRoute.valid ||
       !activeScope ||
       !workspaceProjectId ||
       !surfaceUsesAssuranceStudio(surface)
@@ -842,7 +1049,7 @@ export function SyncReviewPanel({
     } finally {
       setAsProjectsLoading(false);
     }
-  }, [activeScope, rpc, surface, workspaceProjectId]);
+  }, [activeScope, parsedRoute.valid, rpc, surface, workspaceProjectId]);
 
   useEffect(() => {
     void loadAssuranceStudioProjects();
@@ -1245,7 +1452,11 @@ export function SyncReviewPanel({
   return (
     <section className="flex h-full min-h-0 flex-col bg-background text-foreground">
       <ScopeToolbar
+        cachedScopes={cachedScopes}
+        cachedScopesError={cachedScopesError}
+        cachedScopesLoading={cachedScopesLoading}
         key={`${activeScope?.projectId ?? "none"}\0${activeScope?.projectVersionId ?? "@project"}`}
+        onWorkspaceProjectChange={setSelectedWorkspaceProjectId}
         onApply={(scope) => {
           setSelectedScope(scope);
           persistScope(scope);
@@ -1268,38 +1479,15 @@ export function SyncReviewPanel({
           });
         }}
         scope={activeScope}
+        sidebarProjects={sidebar.projects}
+        sidebarProjectsLoading={sidebar.status === "loading"}
         surface={surface}
+        workspaceProjectFixed={Boolean(routeWorkspaceProjectId)}
+        workspaceProjectId={workspaceProjectId}
       />
 
       {activeScope && surfaceUsesAssuranceStudio(surface) ? (
         <>
-          <div className="flex items-center gap-2 border-b border-border bg-card px-4 py-2">
-            <label
-              className="text-xs font-medium text-muted-foreground"
-              htmlFor="sync-workspace-project"
-            >
-              bb project
-            </label>
-            <select
-              aria-label="bb project for Assurance Studio mapping"
-              className="h-9 max-w-72 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-              disabled={
-                Boolean(routeWorkspaceProjectId) || sidebar.status === "loading"
-              }
-              id="sync-workspace-project"
-              onChange={(event) =>
-                setSelectedWorkspaceProjectId(event.target.value || null)
-              }
-              value={workspaceProjectId ?? ""}
-            >
-              <option value="">Select a bb project</option>
-              {sidebar.projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
-          </div>
           {workspaceProjectId ? (
             <AssuranceStudioProjectSelector
               candidateState={asProjects?.candidateState ?? "none"}

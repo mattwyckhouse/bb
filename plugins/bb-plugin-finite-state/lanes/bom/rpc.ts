@@ -11,7 +11,9 @@ const cachedProjectVersionsRpc = {
         z
           .object({
             platformProjectId: z.string().min(1).max(512),
+            platformProjectName: z.string().min(1).max(512).nullable(),
             projectVersionId: z.string().min(1).max(512),
+            projectVersionName: z.string().min(1).max(512).nullable(),
             asOf: z.string().nullable(),
             state: z.enum(["fresh", "stale"]),
           })
@@ -23,10 +25,42 @@ const cachedProjectVersionsRpc = {
     .strict(),
 } as const;
 
+const platformScopeNamesRpc = {
+  input: z
+    .object({
+      scopes: z
+        .array(
+          z
+            .object({
+              projectId: z.string().min(1).max(512),
+              projectVersionId: z.string().min(1).max(512),
+            })
+            .strict(),
+        )
+        .max(100),
+    })
+    .strict(),
+  output: z
+    .object({
+      scopes: z.array(
+        z
+          .object({
+            projectId: z.string().min(1).max(512),
+            projectName: z.string().min(1).max(512).nullable(),
+            projectVersionId: z.string().min(1).max(512),
+            projectVersionName: z.string().min(1).max(512).nullable(),
+          })
+          .strict(),
+      ),
+    })
+    .strict(),
+} as const;
+
 // This copies WP-24's discovery shape under BOM ownership. No findings-lane
 // source or handler is imported across the lane boundary.
 export const bomCachedVersionsContract = defineRpcContract({
   bomCachedProjectVersions: cachedProjectVersionsRpc,
+  bomPlatformScopeNames: platformScopeNamesRpc,
 });
 
 export const bomAppRpcContract = defineRpcContract({
@@ -34,4 +68,5 @@ export const bomAppRpcContract = defineRpcContract({
   bomComponentGet: rpcContract.bomComponentGet,
   syncPull: rpcContract.syncPull,
   bomCachedProjectVersions: cachedProjectVersionsRpc,
+  bomPlatformScopeNames: platformScopeNamesRpc,
 });

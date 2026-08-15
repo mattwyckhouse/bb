@@ -1,7 +1,20 @@
-import type { BbPluginApi } from "@bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
+import { z } from "zod";
 
-import type { AssuranceStudioClient } from "../../lib/remote/types.js";
-import { bindWorkspacePlatformProject } from "../../lib/store/project-scope.js";
+import type {
+  AssuranceStudioClient,
+  PlatformClient,
+} from "../../lib/remote/types.js";
+import { resolvePlatformScopeNames } from "../../lib/remote/platform/scope-names.js";
+import {
+  connectionStatusMessage,
+  diagnoseRemoteFailure,
+} from "../../lib/remote/errors.js";
+import {
+  backfillUnambiguousWorkspaceProjectBinding,
+  bindWorkspacePlatformProject,
+  WORKSPACE_PLATFORM_PROJECT_PREDICATE,
+} from "../../lib/store/project-scope.js";
 import { ENTITIES, type EntityKind } from "../../lib/sync/registry.js";
 import { rpcContract } from "../../shared/contract.js";
 import { resolveConflictRpc } from "./conflicts/index.js";
@@ -27,6 +40,68 @@ const syncContract = {
   syncPush: rpcContract.syncPush,
   syncPushRetry: rpcContract.syncPushRetry,
 };
+
+const cachedSyncScopesRpc = {
+  input: z.object({ workspaceProjectId: z.string().min(1).max(512) }).strict(),
+  output: z
+    .object({
+      scopes: z.array(
+        z
+          .object({
+            platformProjectId: z.string().min(1).max(512),
+            platformProjectName: z.string().min(1).max(512).nullable(),
+            projectVersionId: z.string().min(1).max(512),
+            projectVersionName: z.string().min(1).max(512).nullable(),
+            state: z.enum(["fresh", "stale"]),
+          })
+          .strict(),
+      ),
+    })
+    .strict(),
+} as const;
+
+const platformScopeNamesRpc = {
+  input: z
+    .object({
+      scopes: z
+        .array(
+          z
+            .object({
+              projectId: z.string().min(1).max(512),
+              projectVersionId: z.string().min(1).max(512),
+            })
+            .strict(),
+        )
+        .max(100),
+    })
+    .strict(),
+  output: z
+    .object({
+      scopes: z.array(
+        z
+          .object({
+            projectId: z.string().min(1).max(512),
+            projectName: z.string().min(1).max(512).nullable(),
+            projectVersionId: z.string().min(1).max(512),
+            projectVersionName: z.string().min(1).max(512).nullable(),
+          })
+          .strict(),
+      ),
+    })
+    .strict(),
+} as const;
+
+export const syncScopeCatalogContract = defineRpcContract({
+  syncCachedScopes: cachedSyncScopesRpc,
+  syncPlatformScopeNames: platformScopeNamesRpc,
+});
+
+export const syncAppRpcContract = defineRpcContract({
+  connectionsStatus: rpcContract.connectionsStatus,
+  ...syncContract,
+  syncCachedScopes: cachedSyncScopesRpc,
+  syncPlatformScopeNames: platformScopeNamesRpc,
+});
 
 function entityKinds(values: string[] | undefined): EntityKind[] | undefined {
   if (values === undefined) return undefined;
@@ -55,7 +130,47 @@ export function registerSyncRpc(
   bb: BbPluginApi,
   deps: EngineDeps,
   assuranceStudio: AssuranceStudioClient | null = null,
+  platform: Pick<PlatformClient, "listProjects" | "listVersions"> | null = null,
 ): void {
+  bb.rpc.register(syncScopeCatalogContract, {
+    async syncCachedScopes(input) {
+      await bb.sdk.projects.get({ projectId: input.workspaceProjectId });
+      backfillUnambiguousWorkspaceProjectBinding(
+        deps.db,
+        input.workspaceProjectId,
+      );
+      const rows = deps.db
+        .prepare<
+          [string],
+          { project_id: string; project_version_id: string; stale: number }
+        >(
+          `SELECT project_id, project_version_id,
+                  MAX(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS stale
+             FROM sync_state s
+            WHERE ${WORKSPACE_PLATFORM_PROJECT_PREDICATE}
+              AND s.accepted_generation_id IS NOT NULL
+              AND s.project_version_id != '@project'
+            GROUP BY s.project_id, s.project_version_id
+            ORDER BY MAX(s.last_pull) DESC, s.project_id, s.project_version_id`,
+        )
+        .all(input.workspaceProjectId);
+      return {
+        scopes: rows.map((row) => ({
+          platformProjectId: row.project_id,
+          platformProjectName: null,
+          projectVersionId: row.project_version_id,
+          projectVersionName: null,
+          state: row.stale === 1 ? ("stale" as const) : ("fresh" as const),
+        })),
+      };
+    },
+    async syncPlatformScopeNames(input) {
+      if (!platform) return { scopes: [] };
+      return {
+        scopes: await resolvePlatformScopeNames(platform, input.scopes),
+      };
+    },
+  });
   bb.rpc.register(syncContract, {
     async syncAsProjectCandidates(input) {
       assertRemoteSyncScope(input.projectId);
@@ -123,15 +238,25 @@ export function registerSyncRpc(
         projectId: input.projectId,
         projectVersionId: input.projectVersionId,
       };
-      const report = await status(deps, scope, kinds, {
-        assuranceStudioProjectId: input.workspaceProjectId
-          ? selectedAssuranceStudioProject(
-              deps,
-              input.workspaceProjectId,
-              scope.projectId,
-            )
-          : null,
-      });
+      let report: Awaited<ReturnType<typeof status>>;
+      try {
+        report = await status(deps, scope, kinds, {
+          assuranceStudioProjectId: input.workspaceProjectId
+            ? selectedAssuranceStudioProject(
+                deps,
+                input.workspaceProjectId,
+                scope.projectId,
+              )
+            : null,
+        });
+      } catch (error: unknown) {
+        const diagnostic = diagnoseRemoteFailure(error);
+        if (diagnostic.service !== null) {
+          const code = `SYNC_REMOTE_${diagnostic.kind.replaceAll("-", "_").toUpperCase()}`;
+          throw new Error(`${code}: ${connectionStatusMessage(diagnostic)}`);
+        }
+        throw error;
+      }
       const metadata = syncMetadata(deps, scope, kinds);
       const scopedChange = (
         change: { kind: EntityKind; key: string; fields: string[] },

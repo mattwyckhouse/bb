@@ -24,6 +24,28 @@ const candidates = [
 ];
 
 describe("AssuranceStudioProjectSelector", () => {
+  it("explains where an absent fs-link is created", () => {
+    const slot = render(
+      <AssuranceStudioProjectSelector
+        candidateState="none"
+        candidates={[]}
+        error={null}
+        loading={false}
+        onRetry={vi.fn()}
+        onSelect={vi.fn()}
+        saving={false}
+        selectedId={null}
+      />,
+    );
+
+    expect(
+      slot.getByText(/Links are created in Assurance Studio by linking/u),
+    ).toBeTruthy();
+    expect(
+      slot.getByText(/matching Finite State Platform project/u),
+    ).toBeTruthy();
+  });
+
   it("does not infer a winner from equally primary linked projects", () => {
     const slot = render(
       <AssuranceStudioProjectSelector

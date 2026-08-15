@@ -26,6 +26,7 @@ import {
 import { ENTITIES, parseFindingStableKey } from "../../lib/sync/registry.js";
 import { rpcContract } from "../../shared/contract.js";
 import { registerFindings } from "../findings/register.js";
+import { registerFiniteStateCli } from "../agentic/cli/register.js";
 import {
   createMockRemote,
   type MockRemoteHarness,
@@ -232,6 +233,80 @@ function findingComponentIdentity(finding: Record<string, unknown>): {
 }
 
 describe("sync registration", () => {
+  it("lists only accepted cached scopes bound to the requested bb project", async () => {
+    const db = context.db();
+    bindWorkspacePlatformProject(
+      db,
+      "bb-project-scope-picker",
+      "platform-picker",
+    );
+    bindWorkspacePlatformProject(
+      db,
+      "other-bb-project-scope-picker",
+      "foreign-platform-picker",
+    );
+    const insertGeneration = db.prepare(
+      `INSERT INTO pull_generation
+         (project_id, project_version_id, generation_id, status,
+          requested_kinds_json, started_at, completed_at, accepted_at, error)
+       VALUES (?, ?, ?, 'accepted', '["finding"]', ?, ?, ?, NULL)`,
+    );
+    insertGeneration.run(
+      "platform-picker",
+      "version-picker",
+      "generation-picker",
+      "2026-08-15T00:00:00.000Z",
+      "2026-08-15T00:00:00.000Z",
+      "2026-08-15T00:00:00.000Z",
+    );
+    insertGeneration.run(
+      "foreign-platform-picker",
+      "foreign-version-picker",
+      "foreign-generation-picker",
+      "2026-08-15T00:00:00.000Z",
+      "2026-08-15T00:00:00.000Z",
+      "2026-08-15T00:00:00.000Z",
+    );
+    db.prepare(
+      `INSERT INTO sync_state
+         (project_id, project_version_id, entity_kind, last_pull, error,
+          accepted_generation_id, staging_generation_id, base_revision)
+       VALUES (?, ?, 'finding', ?, NULL, ?, NULL, 1)`,
+    ).run(
+      "platform-picker",
+      "version-picker",
+      "2026-08-15T00:00:00.000Z",
+      "generation-picker",
+    );
+    db.prepare(
+      `INSERT INTO sync_state
+         (project_id, project_version_id, entity_kind, last_pull, error,
+          accepted_generation_id, staging_generation_id, base_revision)
+       VALUES (?, ?, 'finding', ?, NULL, ?, NULL, 1)`,
+    ).run(
+      "foreign-platform-picker",
+      "foreign-version-picker",
+      "2026-08-15T00:00:00.000Z",
+      "foreign-generation-picker",
+    );
+
+    await expect(
+      host.harness.behavior.callRpc("syncCachedScopes", {
+        workspaceProjectId: "bb-project-scope-picker",
+      }),
+    ).resolves.toEqual({
+      scopes: [
+        {
+          platformProjectId: "platform-picker",
+          platformProjectName: null,
+          projectVersionId: "version-picker",
+          projectVersionName: null,
+          state: "fresh",
+        },
+      ],
+    });
+  });
+
   it("round-trips a foreign registry adapter registered entirely from test code", async () => {
     const deps = {
       db: context.db(),
@@ -1920,5 +1995,22 @@ decisions:
       stdout: "",
       stderr: expect.stringContaining("SYNC_EXECUTION_CONTEXT_REQUIRED"),
     });
+  });
+
+  it("classifies canonical-but-legacy unknown flags as registered usage errors", async () => {
+    registerFiniteStateCli(host.bb, context);
+    for (const argv of [
+      ["pull", "--limit", "5"],
+      ["status", "--format", "json"],
+      ["as-projects", "--kind", "vex"],
+    ]) {
+      const result = await host.harness.behavior.runCli(argv, {
+        threadId: "thread-sync-cli",
+        projectId: "bb-project-sync",
+      });
+      expect(result.exitCode, argv.join(" ")).toBe(2);
+      expect(result.stderr, argv.join(" ")).toContain("unknown option");
+      expect(result.stderr, argv.join(" ")).toContain("Usage:");
+    }
   });
 });

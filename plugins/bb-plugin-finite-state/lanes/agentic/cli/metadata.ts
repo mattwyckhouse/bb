@@ -164,6 +164,56 @@ export const FINITE_STATE_COMMAND = {
   commands: CANONICAL_COMMANDS,
 } as const;
 
+function commandFromArgv(argv: readonly string[]): PluginCliCommandInfo | null {
+  const args = argv[0] === FINITE_STATE_CLI_NAME ? argv.slice(1) : argv;
+  const name = args[0];
+  return name
+    ? (CANONICAL_COMMANDS.find((command) => command.name === name) ?? null)
+    : null;
+}
+
+function renderUsageLine(line: string): string {
+  return line.startsWith("bb ") ? `  ${line}` : `  bb finite-state ${line}`;
+}
+
+export function renderFiniteStateHelp(argv: readonly string[] = []): string {
+  const command = commandFromArgv(argv);
+  if (command) {
+    return [
+      `bb finite-state ${command.name}`,
+      "",
+      command.summary,
+      "",
+      "Usage:",
+      ...command.usage.split("\n").map(renderUsageLine),
+      "",
+    ].join("\n");
+  }
+  return [
+    "bb finite-state",
+    "",
+    FINITE_STATE_COMMAND.summary,
+    "",
+    "Usage:",
+    "  bb finite-state <command> [options]",
+    "",
+    "Commands:",
+    ...CANONICAL_COMMANDS.map(
+      (candidate) => `  ${candidate.name.padEnd(19)} ${candidate.summary}`,
+    ),
+    "",
+    "Run bb finite-state <command> --help for command details.",
+    "",
+  ].join("\n");
+}
+
+export function finiteStateUsage(argv: readonly string[]): string {
+  const command = commandFromArgv(argv);
+  return command
+    ? ["Usage:", ...command.usage.split("\n").map(renderUsageLine)].join("\n")
+    : "Usage: bb finite-state <command> [options]";
+}
+
 export function withContributedSubtrees(
   extra: readonly PluginCliCommandInfo[] = [],
 ): PluginCliCommandInfo[] {

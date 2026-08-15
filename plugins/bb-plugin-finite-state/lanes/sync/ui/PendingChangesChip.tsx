@@ -18,10 +18,29 @@ interface PendingCounts {
 interface PendingResult {
   requestKey: string;
   counts: PendingCounts | null;
-  error: boolean;
+  error: { code: string; detail: string } | null;
 }
 
 const SYNC_ROUTE_IDENTIFIER = /^[A-Za-z0-9@][A-Za-z0-9._:@-]{0,511}$/u;
+const ERROR_CODE_PREFIX = /^([A-Z][A-Z0-9_]{2,80}):\s*/u;
+const URL = /https?:\/\/[^\s)]+/giu;
+
+function syncUnavailableDiagnostic(cause: unknown): {
+  code: string;
+  detail: string;
+} {
+  const raw =
+    cause instanceof Error && cause.message.length > 0
+      ? cause.message
+      : "Sync status could not be loaded.";
+  const match = ERROR_CODE_PREFIX.exec(raw);
+  const code = match?.[1] ?? "SYNC_STATUS_UNAVAILABLE";
+  const detail = raw
+    .slice(match?.[0].length ?? 0)
+    .replaceAll(URL, "the configured remote endpoint")
+    .slice(0, 300);
+  return { code, detail };
+}
 
 export function isSyncRouteIdentifier(value: string): boolean {
   return SYNC_ROUTE_IDENTIFIER.test(value);
@@ -78,12 +97,16 @@ export function PendingChangesChip({
             local: status.local.length,
             conflicts: status.conflicts.length,
           },
-          error: false,
+          error: null,
         });
       })
-      .catch(() => {
+      .catch((cause: unknown) => {
         if (cancelled) return;
-        setResult({ requestKey, counts: null, error: true });
+        setResult({
+          requestKey,
+          counts: null,
+          error: syncUnavailableDiagnostic(cause),
+        });
       });
     return () => {
       cancelled = true;
@@ -100,15 +123,18 @@ export function PendingChangesChip({
 
   const currentResult = result?.requestKey === requestKey ? result : null;
   const counts = currentResult?.counts ?? null;
-  const error = currentResult?.error ?? false;
-  const unavailable = !validScope || error;
+  const error = currentResult?.error ?? null;
+  const unavailableReason = !validScope
+    ? { code: "INVALID_SCOPE", detail: "The Sync scope is invalid." }
+    : error;
+  const unavailable = unavailableReason !== null;
   const label = unavailable
-    ? "Sync unavailable"
+    ? `Sync unavailable · ${unavailableReason.code}`
     : counts
       ? `${counts.local} local · ${counts.conflicts} ${counts.conflicts === 1 ? "conflict" : "conflicts"}`
       : "Checking local changes";
   const accessibleLabel = unavailable
-    ? "Open Sync review; pending change count unavailable"
+    ? `Open Sync review; pending change count unavailable: ${unavailableReason.code}. ${unavailableReason.detail}`
     : counts
       ? `Open Sync review: ${counts.local} local changes and ${counts.conflicts} ${counts.conflicts === 1 ? "conflict" : "conflicts"}`
       : "Open Sync review; checking pending changes";
@@ -118,6 +144,7 @@ export function PendingChangesChip({
       aria-label={accessibleLabel}
       className="inline-flex h-7 items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       disabled={!validScope}
+      title={unavailableReason?.detail}
       onClick={() =>
         navigate.toPluginPanel("sync", {
           subPath: syncScopeSubPath(scope, surface),

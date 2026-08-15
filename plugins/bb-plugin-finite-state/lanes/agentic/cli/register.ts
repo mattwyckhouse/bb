@@ -61,6 +61,8 @@ import type { NamespacedCliRunner } from "../../sync/cli.js";
 import {
   AGENTIC_CLI_SLOT,
   FINITE_STATE_COMMAND,
+  finiteStateUsage,
+  renderFiniteStateHelp,
   HBOM_REVIEW_ROUTE,
   SYNC_REVIEW_ROUTE,
   withContributedSubtrees,
@@ -148,6 +150,44 @@ function asCliExit(code: number): CliExit {
     return code;
   }
   return 5;
+}
+
+const HELP_VALUE_OPTIONS = new Set([
+  "--as-project",
+  "--candidate",
+  "--check",
+  "--clause",
+  "--cursor",
+  "--evidence",
+  "--expected-hash",
+  "--filter",
+  "--format",
+  "--justification",
+  "--kind",
+  "--limit",
+  "--output",
+  "--pin",
+  "--project",
+  "--pv",
+  "--reason",
+  "--reqs",
+  "--requirement",
+  "--response",
+  "--status",
+  "--target",
+  "--tier",
+  "--type",
+  "--version",
+  "-o",
+]);
+
+function hasHelpFlag(argv: readonly string[]): boolean {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--help" || arg === "-h") return true;
+    if (arg !== undefined && HELP_VALUE_OPTIONS.has(arg)) index += 1;
+  }
+  return false;
 }
 
 async function collectRecords(
@@ -1385,6 +1425,14 @@ async function executeCommand(
       return failConfig(error.message);
     }
     if (error instanceof Error) {
+      if (
+        error.message.startsWith("unknown option ") ||
+        error.message.startsWith("unexpected argument ") ||
+        error.message.includes(" requires a value") ||
+        error.message.includes(" accepts only ")
+      ) {
+        return failUsage(error.message);
+      }
       const conflict =
         error.message.includes("CAS") ||
         error.message.includes("cas_mismatch") ||
@@ -1412,11 +1460,28 @@ function createDispatcher(
       syncRun: sync.run,
       context,
     };
+    if (hasHelpFlag(argv)) {
+      return result(0, renderFiniteStateHelp(argv));
+    }
     try {
       const parsed = parseFiniteStateArgv(argv);
-      return await executeCommand(parsed, services);
+      const outcome = await executeCommand(parsed, services);
+      const stderr = outcome.stderr ?? "";
+      if (
+        outcome.exitCode === 2 &&
+        stderr.includes("unknown option") &&
+        !stderr.includes("Usage:")
+      ) {
+        return {
+          ...outcome,
+          stderr: `${stderr.trimEnd()}\n${finiteStateUsage(argv)}\n`,
+        };
+      }
+      return outcome;
     } catch (error: unknown) {
-      if (error instanceof CliUsageError) return failUsage(error.message);
+      if (error instanceof CliUsageError) {
+        return failUsage(`${error.message}\n${finiteStateUsage(argv)}`);
+      }
       throw error;
     }
   };

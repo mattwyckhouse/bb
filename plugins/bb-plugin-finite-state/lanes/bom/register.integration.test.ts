@@ -336,6 +336,7 @@ describe("registered SBOM pull surfaces", () => {
           .pluck()
           .all(),
       ).toEqual([projectId, "sibling-project"].sort());
+      const versionRequestsBeforeCacheRead = versionRequests;
       expect(
         await host.harness.behavior.callRpc("bomCachedProjectVersions", {
           projectId: "bb-project-fs172",
@@ -344,19 +345,50 @@ describe("registered SBOM pull surfaces", () => {
         versions: [
           {
             platformProjectId: projectId,
+            platformProjectName: null,
             projectVersionId,
+            projectVersionName: null,
             asOf: sbomAsOf,
             state: "fresh",
           },
           {
             platformProjectId: "sibling-project",
+            platformProjectName: null,
             projectVersionId: "sibling-version",
+            projectVersionName: null,
             asOf: "2000-08-14T00:00:00.000Z",
             state: "fresh",
           },
         ],
         selectedPlatformProjectId: projectId,
         selectedProjectVersionId: projectVersionId,
+      });
+      expect(versionRequests).toBe(versionRequestsBeforeCacheRead);
+      await expect(
+        host.harness.behavior.callRpc("bomPlatformScopeNames", {
+          scopes: [
+            { projectId, projectVersionId },
+            {
+              projectId: "sibling-project",
+              projectVersionId: "sibling-version",
+            },
+          ],
+        }),
+      ).resolves.toEqual({
+        scopes: [
+          {
+            projectId,
+            projectName: "Eagle Connected Gateway",
+            projectVersionId,
+            projectVersionName: "2.4.0",
+          },
+          {
+            projectId: "sibling-project",
+            projectName: null,
+            projectVersionId: "sibling-version",
+            projectVersionName: null,
+          },
+        ],
       });
       await expect(
         host.harness.behavior.callRpc("bomCachedProjectVersions", {
@@ -366,7 +398,9 @@ describe("registered SBOM pull surfaces", () => {
         versions: [
           {
             platformProjectId: "foreign-project",
+            platformProjectName: null,
             projectVersionId: "foreign-version",
+            projectVersionName: null,
             asOf: "2099-08-14T00:00:00.000Z",
             state: "fresh",
           },

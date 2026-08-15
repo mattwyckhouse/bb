@@ -3,6 +3,7 @@ import type { PluginContext } from "../../lib/context.js";
 import type Database from "better-sqlite3";
 import { dirname, isAbsolute } from "node:path";
 import type { PlatformClient, RemoteServices } from "../../lib/remote/types.js";
+import { resolvePlatformScopeNames } from "../../lib/remote/platform/scope-names.js";
 import {
   backfillUnambiguousWorkspaceProjectBinding,
   WORKSPACE_PLATFORM_PROJECT_PREDICATE,
@@ -336,7 +337,9 @@ export function registerBom(bb: BbPluginApi, ctx: PluginContext): void {
         .all(input.projectId);
       const versions = rows.map((row) => ({
         platformProjectId: row.project_id,
+        platformProjectName: null,
         projectVersionId: row.project_version_id,
+        projectVersionName: null,
         asOf: row.as_of,
         state: row.stale === 1 ? ("stale" as const) : ("fresh" as const),
       }));
@@ -344,6 +347,14 @@ export function registerBom(bb: BbPluginApi, ctx: PluginContext): void {
         versions,
         selectedPlatformProjectId: versions[0]?.platformProjectId ?? null,
         selectedProjectVersionId: versions[0]?.projectVersionId ?? null,
+      };
+    },
+    async bomPlatformScopeNames(input) {
+      const remote = ctx.service<RemoteServices>("remote-services", () => {
+        throw new Error("REMOTE_SERVICES_NOT_REGISTERED");
+      });
+      return {
+        scopes: await resolvePlatformScopeNames(remote.platform, input.scopes),
       };
     },
   });
