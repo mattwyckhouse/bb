@@ -1,5 +1,6 @@
 export interface ReviewTransitionInput {
-  entityId: string; operationId: string;
+  entityId: string;
+  operationId: string;
   expectedReviewVersion: string;
   action: "approve" | "reject";
 }
@@ -12,3 +13,9 @@ export interface ReviewTransitionInput {
  * exposing an unwired helper from this lane.
  */
 export const REVIEW_TRANSITION_REGISTRATION = "unavailable" as const;
+
+export function reviewTransitionAuthorizationUnavailable(): never {
+  throw new Error(
+    "REVIEW_TRANSITION_AUTHORIZATION_UNAVAILABLE: review transition is authorization-unavailable until bb can mint and verify an actor-authenticated human approval capability",
+  );
+}

@@ -12,9 +12,13 @@ import {
   type FindingsDriftService,
 } from "./drift/index.js";
 import { registerFindingsOverlay } from "./overlay/index.js";
-import { registerFindingsPolicyStub } from "./policy/index.js";
+import { registerFindingsPolicy } from "./policy/index.js";
 import { registerFindingsStableKeyStub } from "./stable-key/index.js";
-import { registerFindingsRpc } from "./rpc.js";
+import {
+  acceptedPlatformProjectId,
+  findingsProjectSource,
+  registerFindingsRpc,
+} from "./rpc.js";
 import { createFindingsCliRunner } from "./cli.js";
 import { assertAcceptedFindingsScope } from "./scope.js";
 import { MAX_VENDOR_VEX_BYTES } from "./drift/vendor/parse.js";
@@ -236,7 +240,21 @@ export function registerFindings(bb: BbPluginApi, ctx: PluginContext): void {
   });
   registerFindingsStableKeyStub(db);
   registerFindingsOverlay(ctx);
-  registerFindingsPolicyStub();
+  registerFindingsPolicy(bb, db, async (input) => {
+    if (input.projectVersionId === null) {
+      throw new Error("FINDINGS_PROJECT_VERSION_REQUIRED");
+    }
+    const source = await findingsProjectSource(bb, input.projectId);
+    return {
+      root: source.path,
+      platformProjectId: acceptedPlatformProjectId(
+        db,
+        input.projectId,
+        input.projectVersionId,
+      ),
+      projectVersionId: input.projectVersionId,
+    };
+  });
   registerFindingsBulk({
     db,
     platform: remote.platform,

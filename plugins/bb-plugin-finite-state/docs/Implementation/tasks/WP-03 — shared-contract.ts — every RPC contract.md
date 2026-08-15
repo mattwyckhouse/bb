@@ -5,26 +5,32 @@
 **Produces a FROZEN artifact:** **yes** — `shared/contract.ts` and `CONTRACT_VERSION` freeze on merge
 
 ## Files you own
-`plugins/bb-plugin-finite-state/shared/contract.ts` *(FROZEN)*
+
+`plugins/bb-plugin-finite-state/shared/contract.ts` _(FROZEN)_
 `plugins/bb-plugin-finite-state/shared/contract.test.ts`
 `plugins/bb-plugin-finite-state/shared/contract.type-test.ts`
 
 ## Files you must not touch
+
 `server.ts`, `app.tsx`, `lib/context.ts`, `lib/app-context.ts`, `lib/store/schema.ts`, `lib/sync/registry.ts`, `lib/remote/types.ts`, `test/mock-remote/fixtures/**`, `package.json`, `pnpm-lock.yaml`, or any lane.
 
 ## Context
+
 All backend lanes and all React surfaces compile independently against this one Standard Schema contract. Product documentation uses stable dotted logical method names, but pinned bb RPC keys cannot contain dots. The exported `RPC_WIRE_METHODS` map is the one bijection to lower-camel wire keys used at `POST /api/v1/plugins/finite-state/rpc/<wireMethod>`; no lane derives or aliases names. bb validates input and output and owns the outer `{ok,result|error}` envelope. This contract therefore describes successful result values only. RPC is strict JSON; binary uploads/downloads, XLSX/SBOM exports, and large log/file streams are deliberately absent and use `bb.http`.
 
 Pinned bb RPC supplies parsed input but no authenticated human actor or request submitter. The contract reserves `humanApprovalCapability` on human-only mutations, but v1 has no capability mint path. Those contract methods are intentionally authorization-unavailable and must not be registered as executable mutation handlers until bb supplies verifiable actor/capability proof. A caller-provided boolean, plugin token, `requestInput` metadata, Origin/Host check, or CLI flag is never human authorization.
 
 The frozen contract must be broad enough for every planned surface without embedding unstable server payloads. Put stable identity, paging, state, provenance, and summaries in typed schemas; carry entity-specific display payloads in a bounded `fields: z.record(z.string(), jsonValueSchema)` seam. Never use `z.any()`.
 
+**Current amendment state:** AMD-0025 advances the executable contract to version 11 with 86 methods. It retires the original `workspace.summary` / `workspaceSummary` and `triage.run.get` / `triageRunGet` reservations because neither frozen shape can truthfully identify the shipped data it purported to read. The original v1 inventory and schematic below retain the remaining 63 v1 methods; later additive amendments are canonical in `shared/contract.ts` and `AMENDMENTS.md`.
+
 ## What to build
+
 1. Export `CONTRACT_VERSION = 1`, JSON-value schemas, stable-key schemas, the D-1 scope pair, opaque continuation paging, provenance, staleness, field-diff, validation error, and job state schemas. Every object is `.strict()`; recursive JSON values are the only open payload. Every project-data request carries `projectId` plus `projectVersionId`; null is project-level and literal `"@project"` is rejected because only the backend storage boundary may map it to `PROJECT_LEVEL_VERSION_ID`.
-2. Export `RPC_WIRE_METHODS`, a literal bijection from every dotted logical name below to one lower-camel wire key, and define `rpcContract` only with those wire keys. The complete v1 logical method inventory is:
-   - foundation: `connections.status`, `workspace.summary`;
+2. Export `RPC_WIRE_METHODS`, a literal bijection from every dotted logical name below to one lower-camel wire key, and define `rpcContract` only with those wire keys. The retained v1 logical method inventory after AMD-0025 is:
+   - foundation: `connections.status`;
    - sync: `sync.pull`, `sync.status`, `sync.plan`, `sync.conflict.resolve`, `sync.push`, `sync.push.retry`;
-   - findings and local triage: `findings.list`, `findings.get`, `findings.activity.list`, `findings.comments.list`, `findings.comments.create`, `findings.comments.update`, `findings.comments.delete`, `findings.facets`, `triage.run.get`, `triage.decision.write`, `triage.decision.bulkWrite`, `triage.decision.undo`, `triage.policy.preview`, `triage.policy.apply`, `triage.vendorVex.preview`, `triage.vendorVex.apply`, `triage.orphans.prune`;
+   - findings and local triage: `findings.list`, `findings.get`, `findings.activity.list`, `findings.comments.list`, `findings.comments.create`, `findings.comments.update`, `findings.comments.delete`, `findings.facets`, `triage.decision.write`, `triage.decision.bulkWrite`, `triage.decision.undo`, `triage.policy.preview`, `triage.policy.apply`, `triage.vendorVex.preview`, `triage.vendorVex.apply`, `triage.orphans.prune`;
    - product security: `tara.list`, `tara.get`, `tara.command.apply`, `tara.deleteImpact`, `requirements.list`, `requirements.get`, `requirements.write`, `ears.conversion.start`, `ears.conversion.get`, `ears.conversion.review`, `verifications.matrix`, `verifications.run.get`, `verifications.run.start`, `verifications.manualAttestation.record`, `review.transition`;
    - BOM: `bom.software.list`, `bom.component.get`, `hbom.review.list`, `hbom.review.resolve`, `hbom.extraction.apply`;
    - firmware: `firmware.mounts.list`, `firmware.mount.get`, `firmware.tree.list`, `firmware.file.get`, `firmware.diff`, `firmware.materialize.start`, `firmware.materialize.cancel`, `firmware.file.hydrate`;
@@ -38,7 +44,7 @@ The frozen contract must be broad enough for every planned surface without embed
 
 ## Interface contract
 
-The complete field-by-field Standard Schema contract is the frozen executable artifact in `shared/contract.ts`; this section freezes the cross-lane names and shapes that downstream WPs consume. The block below is a **normative schematic excerpt**, not a second pasteable implementation: every shown name, literal, bound, and shape is mandatory, while comments explicitly identify field-level bodies owned only by the executable artifact. Tests mechanically assert the exact 65-entry logical/wire inventory, the exact method classifications, and every executable schema key. Abbreviated or alternate scope/fence objects are forbidden.
+The complete field-by-field Standard Schema contract is the frozen executable artifact in `shared/contract.ts`; this section freezes the cross-lane names and shapes that downstream WPs consume. The block below is a **normative schematic excerpt**, not a second pasteable implementation: every shown name, literal, bound, and shape is mandatory, while comments explicitly identify field-level bodies owned only by the executable artifact. The amended excerpt contains the 63 retained v1 logical/wire names; current executable tests assert the complete 86-method v11 inventory, exact classifications, and every schema key. Abbreviated or alternate scope/fence objects are forbidden.
 
 ```ts
 // shared/contract.ts — FROZEN. Amendment + CONTRACT_VERSION bump required after merge.
@@ -48,20 +54,27 @@ export const CONTRACT_VERSION = 1 as const;
 const identifierSchema = z.string().trim().min(1).max(512);
 export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
 export type JsonValue =
-  | null | boolean | number | string | JsonValue[]
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
   | { [key: string]: JsonValue };
 export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
-    z.null(), z.boolean(), z.number().finite(), z.string(),
-    z.array(jsonValueSchema), z.record(z.string(), jsonValueSchema),
+    z.null(),
+    z.boolean(),
+    z.number().finite(),
+    z.string(),
+    z.array(jsonValueSchema),
+    z.record(z.string(), jsonValueSchema),
   ]),
 );
 
-// Exact 65-entry dotted logical name -> unique lowerCamelCase bb.rpc wire name.
+// Exact retained 63-entry v1 dotted logical name -> unique lowerCamelCase bb.rpc wire name.
 // There is no derived alias or second public translation.
 export const RPC_WIRE_METHODS = {
   "connections.status": "connectionsStatus",
-  "workspace.summary": "workspaceSummary",
   "sync.pull": "syncPull",
   "sync.status": "syncStatus",
   "sync.plan": "syncPlan",
@@ -76,7 +89,6 @@ export const RPC_WIRE_METHODS = {
   "findings.comments.update": "findingsCommentsUpdate",
   "findings.comments.delete": "findingsCommentsDelete",
   "findings.facets": "findingsFacets",
-  "triage.run.get": "triageRunGet",
   "triage.decision.write": "triageDecisionWrite",
   "triage.decision.bulkWrite": "triageDecisionBulkWrite",
   "triage.decision.undo": "triageDecisionUndo",
@@ -128,8 +140,9 @@ export const RPC_WIRE_METHODS = {
   "documents.extractions.list": "documentsExtractionsList",
 } as const;
 
-export const projectVersionIdSchema = identifierSchema
-  .refine((value) => value !== "@project");
+export const projectVersionIdSchema = identifierSchema.refine(
+  (value) => value !== "@project",
+);
 export const projectScopeFields = {
   projectId: identifierSchema,
   projectVersionId: projectVersionIdSchema.nullable(),
@@ -140,13 +153,18 @@ export const pageRequestFields = {
   pageSize: z.number().int().min(1).max(200).default(50),
   continuation: z.string().min(1).max(4096).nullable().default(null),
 } as const;
-export const scopedPageRequestSchema =
-  z.object({ ...projectScopeFields, ...pageRequestFields }).strict();
+export const scopedPageRequestSchema = z
+  .object({ ...projectScopeFields, ...pageRequestFields })
+  .strict();
 
-export const humanApprovalCapabilitySchema =
-  z.string().min(32).max(4096).brand<"HumanApprovalCapability">();
-export type HumanApprovalCapability =
-  z.infer<typeof humanApprovalCapabilitySchema>;
+export const humanApprovalCapabilitySchema = z
+  .string()
+  .min(32)
+  .max(4096)
+  .brand<"HumanApprovalCapability">();
+export type HumanApprovalCapability = z.infer<
+  typeof humanApprovalCapabilitySchema
+>;
 
 export const HUMAN_APPROVAL_CAPABILITY_POLICY = {
   minting: "unavailable",
@@ -155,42 +173,66 @@ export const HUMAN_APPROVAL_CAPABILITY_POLICY = {
   handlerDisposition: "authorization-unavailable",
   singleUse: true,
   bindings: [
-    "actor", "action", "projectId", "projectVersionId", "planOrSnapshotDigest",
+    "actor",
+    "action",
+    "projectId",
+    "projectVersionId",
+    "planOrSnapshotDigest",
   ],
   rejectedEvidence: [
-    "caller-boolean", "cli-yes", "plugin-token", "request-input",
+    "caller-boolean",
+    "cli-yes",
+    "plugin-token",
+    "request-input",
   ],
 } as const;
 
-export const cacheStateSchema = z.object({
-  state: z.enum(["fresh", "stale", "empty"]),
-  asOf: z.string().datetime({ offset: true }).nullable(),
-  message: z.string().max(500).nullable(),
-  acceptedGenerationId: identifierSchema.nullable(),
-  baseRevision: z.number().int().nonnegative(),
-}).strict();
+export const cacheStateSchema = z
+  .object({
+    state: z.enum(["fresh", "stale", "empty"]),
+    asOf: z.string().datetime({ offset: true }).nullable(),
+    message: z.string().max(500).nullable(),
+    acceptedGenerationId: identifierSchema.nullable(),
+    baseRevision: z.number().int().nonnegative(),
+  })
+  .strict();
 
-export const baseGenerationIdsSchema =
-  z.record(identifierSchema, identifierSchema);
-export const baseRevisionsSchema =
-  z.record(identifierSchema, z.number().int().nonnegative());
+export const baseGenerationIdsSchema = z.record(
+  identifierSchema,
+  identifierSchema,
+);
+export const baseRevisionsSchema = z.record(
+  identifierSchema,
+  z.number().int().nonnegative(),
+);
 
-export const syncPlanFenceSchema = z.object({
-  planId: identifierSchema,
-  planSha256: sha256Schema,
-  baseGenerationIds: baseGenerationIdsSchema,
-  baseRevisions: baseRevisionsSchema,
-  baseStateSha256: sha256Schema,
-}).strict();
+export const syncPlanFenceSchema = z
+  .object({
+    planId: identifierSchema,
+    planSha256: sha256Schema,
+    baseGenerationIds: baseGenerationIdsSchema,
+    baseRevisions: baseRevisionsSchema,
+    baseStateSha256: sha256Schema,
+  })
+  .strict();
 
-export const planItemSchema = z.object({
-  ...projectScopeFields,
-  kind: identifierSchema,
-  key: identifierSchema,
-  operation: z.enum(["create", "update", "delete", "noop", "conflict", "orphan"]),
-  expectedBaseContentHash: sha256Schema.nullable(),
-  // exact diff/conflict/referrer/error fields are defined in shared/contract.ts
-}).strict();
+export const planItemSchema = z
+  .object({
+    ...projectScopeFields,
+    kind: identifierSchema,
+    key: identifierSchema,
+    operation: z.enum([
+      "create",
+      "update",
+      "delete",
+      "noop",
+      "conflict",
+      "orphan",
+    ]),
+    expectedBaseContentHash: sha256Schema.nullable(),
+    // exact diff/conflict/referrer/error fields are defined in shared/contract.ts
+  })
+  .strict();
 
 const planFenceInputFields = {
   planId: identifierSchema,
@@ -204,10 +246,16 @@ export const AGENT_ACTION_RPC_METHODS = [
   "benchRunStart",
 ] as const;
 export const HUMAN_ONLY_RPC_METHODS = [
-  "syncConflictResolve", "syncPush", "syncPushRetry",
-  "findingsCommentsCreate", "findingsCommentsUpdate", "findingsCommentsDelete",
-  "verificationsManualAttestationRecord", "reviewTransition",
-  "hbomReviewResolve", "hbomExtractionApply",
+  "syncConflictResolve",
+  "syncPush",
+  "syncPushRetry",
+  "findingsCommentsCreate",
+  "findingsCommentsUpdate",
+  "findingsCommentsDelete",
+  "verificationsManualAttestationRecord",
+  "reviewTransition",
+  "hbomReviewResolve",
+  "hbomExtractionApply",
 ] as const;
 
 // Every scoped input and output spreads projectScopeFields at its top level.
@@ -216,14 +264,15 @@ export const HUMAN_ONLY_RPC_METHODS = [
 // { items, total, next, cache }. sync plan/status expose the generation-id and
 // revision maps above; push/conflict/retry take the expected hashes and each
 // plan/push item carries the exact expectedBaseContentHash CAS. The executable
-// rpcContract contains exactly Object.values(RPC_WIRE_METHODS); its 65 strict
+// rpcContract contains exactly Object.values(RPC_WIRE_METHODS); its strict
 // input/output schemas are mechanically compared with this map in contract.test.ts.
 ```
 
 `baseStateSha256` hashes the explicit project/version pair plus the sorted kind → `{acceptedGenerationId,baseRevision}` map. `planSha256` remains the whole immutable-plan digest. Apply inputs use `expectedPlanSha256` and `expectedBaseStateSha256`; each plan and push item uses `expectedBaseContentHash`, so a successful sibling push stales a prior plan even while the accepted generation id is unchanged. `firmware.materialize.start.inputId` is an opaque identifier issued by the verified host-safe file selection flow, never a raw browser-supplied absolute path. Vendor VEX bytes and document uploads arrive through local-authenticated `bb.http`; their RPC methods accept only a registered content digest/import id. Local HTTP origin checks protect against cross-site requests but do not prove a human actor.
 
 ## Acceptance criteria
-- [ ] All 65 logical names map bijectively through `RPC_WIRE_METHODS` to 65 unique lower-camel, dot-free wire keys, which exist exactly once in `rpcContract` and use Standard Schema/Zod through `defineRpcContract`.
+
+- [ ] All 86 current logical names map bijectively through `RPC_WIRE_METHODS` to 86 unique lower-camel, dot-free wire keys, which exist exactly once in `rpcContract` and use Standard Schema/Zod through `defineRpcContract`.
 - [ ] Every object schema is strict; no `z.any()`, unbounded `z.unknown()`, binary value, filesystem path, secret, or raw Forge response crosses the boundary.
 - [ ] `connections.status` reports three independent service states; configured-but-unreachable is distinct from missing configuration, optional disabled services do not degrade the others, and serialized output contains no token, key, authorization header, URL credentials/query, command argument, or raw exception.
 - [ ] Every list result is `{items,total,next,cache}` and accepts an opaque `continuation` with `pageSize <= 200`.
@@ -240,7 +289,8 @@ export const HUMAN_ONLY_RPC_METHODS = [
 - [ ] Typecheck/test/lint/build is green before freeze.
 
 ## Test plan — `rpc-contract-freeze`
-- `all 65 planned methods are present` — compare sorted logical names and sorted wire keys to literal expected lists; assert a dot-free lower-camel bijection and exact `rpcContract` key parity.
+
+- `all 86 current methods are present` — compare sorted logical names and sorted wire keys to literal expected lists; assert a dot-free lower-camel bijection and exact `rpcContract` key parity.
 - `human-only mutations are unavailable without minted actor proof` — reserved capability parses only as its explicit field, but every v1 handler registration/dispatch attempt fails authorization-unavailable before any store or remote call; booleans/tokens/request metadata cannot substitute (**authorization/error path**).
 - `all list endpoints page consistently` — parse minimum and maximum limits and reject 0/201 (**error path**).
 - `strict input rejects an injected key` (**error path**) — exercise sync and one domain method.
@@ -251,12 +301,14 @@ export const HUMAN_ONLY_RPC_METHODS = [
 - `binary routes are absent` — assert no method named upload/export/download/stream.
 
 ## Do not
+
 - Do not put the bb outer RPC envelope in output schemas; bb owns it.
 - Do not encode Forge file paths or stream large/binary payloads through RPC.
 - Do not solve uncertainty with `z.any()` or an unconstrained top-level record.
 - Do not edit this file after merge without `AMENDMENTS.md`, a human merge, a version bump, and a lane broadcast.
 
 ## Open questions
+
 1. Confirm the current fork exports `defineRpcContract` from `@bb/plugin-sdk` and the frontend consumes the same value type without importing backend-only modules. Adjust imports before freeze if the verified identifier differs.
 2. The product specs do not pin every display field for all 65 methods. The intended stability seam is `entitySummary.fields`; a human reviewer must approve that tradeoff before freeze.
 3. Confirm whether dot characters are accepted in RPC method keys by the current contract/router. If not, choose one deterministic camelCase mapping for all methods before freeze and record it in the file header; do not mix styles.

@@ -9,7 +9,7 @@
 import { defineRpcContract } from "@bb/plugin-sdk";
 import { z } from "zod";
 
-export const CONTRACT_VERSION = 10 as const;
+export const CONTRACT_VERSION = 11 as const;
 
 export type JsonValue =
   | null
@@ -32,7 +32,6 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 
 export const RPC_WIRE_METHODS = {
   "connections.status": "connectionsStatus",
-  "workspace.summary": "workspaceSummary",
   "sync.pull": "syncPull",
   "sync.asProject.candidates": "syncAsProjectCandidates",
   "sync.asProject.select": "syncAsProjectSelect",
@@ -49,7 +48,6 @@ export const RPC_WIRE_METHODS = {
   "findings.comments.update": "findingsCommentsUpdate",
   "findings.comments.delete": "findingsCommentsDelete",
   "findings.facets": "findingsFacets",
-  "triage.run.get": "triageRunGet",
   "triage.decision.write": "triageDecisionWrite",
   "triage.decision.bulkWrite": "triageDecisionBulkWrite",
   "triage.decision.undo": "triageDecisionUndo",
@@ -129,7 +127,6 @@ export type RpcMethodClass = "read" | "local-write" | "action" | "human-only";
 /** Security classification is independent of whether an RPC exists. */
 export const RPC_METHOD_CLASSIFICATIONS = {
   connectionsStatus: "read",
-  workspaceSummary: "read",
   syncPull: "local-write",
   syncAsProjectCandidates: "read",
   syncAsProjectSelect: "local-write",
@@ -146,7 +143,6 @@ export const RPC_METHOD_CLASSIFICATIONS = {
   findingsCommentsUpdate: "human-only",
   findingsCommentsDelete: "human-only",
   findingsFacets: "read",
-  triageRunGet: "read",
   triageDecisionWrite: "local-write",
   triageDecisionBulkWrite: "local-write",
   triageDecisionUndo: "local-write",
@@ -630,21 +626,6 @@ const connectionsStatusSchema = z
     forgeCompute: serviceConnectionSchema,
   })
   .strict();
-const workspaceSummarySchema = z
-  .object({
-    ...projectScopeFields,
-    surfaces: z.array(
-      z
-        .object({
-          id: identifierSchema,
-          pending: z.number().int().nonnegative(),
-          conflicts: z.number().int().nonnegative(),
-          cache: cacheStateSchema,
-        })
-        .strict(),
-    ),
-  })
-  .strict();
 const assuranceStudioProjectCandidateSchema = z
   .object({
     linkId: identifierSchema,
@@ -730,17 +711,6 @@ const facetsSchema = z
     severity: z.record(z.string(), z.number().int().nonnegative()),
     triage: z.record(z.string(), z.number().int().nonnegative()),
     total: z.number().int().nonnegative(),
-    cache: cacheStateSchema,
-  })
-  .strict();
-const triageRunSchema = z
-  .object({
-    ...projectScopeFields,
-    id: identifierSchema,
-    written: z.number().int().nonnegative(),
-    held: z.number().int().nonnegative(),
-    conflicts: z.number().int().nonnegative(),
-    findingIds: z.array(identifierSchema),
     cache: cacheStateSchema,
   })
   .strict();
@@ -1439,10 +1409,6 @@ const pagedScopedInput = (extra: z.ZodRawShape = {}) =>
 
 export const rpcContract = defineRpcContract({
   connectionsStatus: { input: z.null(), output: connectionsStatusSchema },
-  workspaceSummary: {
-    input: projectScopeSchema,
-    output: workspaceSummarySchema,
-  },
   syncPull: {
     input: z
       .object({
@@ -1594,12 +1560,6 @@ export const rpcContract = defineRpcContract({
       .strict(),
   },
   findingsFacets: { input: projectScopeSchema, output: facetsSchema },
-  triageRunGet: {
-    input: z
-      .object({ ...projectScopeFields, runId: identifierSchema })
-      .strict(),
-    output: triageRunSchema,
-  },
   triageDecisionWrite: {
     input: triageDecisionSchema,
     output: nonDeletingLocalWriteResultSchema,

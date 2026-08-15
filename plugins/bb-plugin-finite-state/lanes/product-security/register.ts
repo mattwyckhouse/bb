@@ -24,7 +24,9 @@ import { registerThreatOverlayBackend } from "./canvas/threat-overlay/backend.js
 import type { CanvasTaraKind } from "./canvas/foundation/types.js";
 import { architectureEntityPayload } from "./canvas/editing/schema.js";
 import {
+  canvasDeletedMarkerKey,
   canvasDeletedMarkerPrefix,
+  canvasEntityFile,
   createSdkCanvasFileStore,
   type CanvasFileDiagnostic,
   type CanvasProjectSource,
@@ -37,7 +39,10 @@ import { createRequirementAdapter } from "./requirements/sync/adapter.js";
 import { registerVerificationMatrixBackend } from "./verifications/matrix/backend.js";
 import { registerVerificationRunDetailBackend } from "./verifications/run-detail/backend.js";
 
-const productSecurityRpcContract = { taraList: rpcContract.taraList } as const;
+const productSecurityRpcContract = {
+  taraList: rpcContract.taraList,
+  taraGet: rpcContract.taraGet,
+} as const;
 interface TaraSyncRow {
   accepted_generation_id: string | null;
   base_revision: number;
@@ -571,6 +576,116 @@ export async function listTara(
   };
 }
 
+export async function getTara(
+  bb: BbPluginApi,
+  db: Database.Database,
+  input: {
+    projectId: string;
+    projectVersionId: string | null;
+    kind: TaraKind;
+    id: string;
+  },
+) {
+  const projectVersionId = toStorageProjectVersionId(input.projectVersionId);
+  const sync = db
+    .prepare<[string, string, string], TaraSyncRow>(
+      `SELECT accepted_generation_id, base_revision, last_pull, error
+         FROM sync_state
+        WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?`,
+    )
+    .get(input.projectId, projectVersionId, input.kind);
+  const cache = sync?.accepted_generation_id
+    ? {
+        state: sync.error ? ("stale" as const) : ("fresh" as const),
+        asOf: sync.last_pull,
+        message: workingDiagnosticMessage(
+          sync.error
+            ? "The last product-security refresh failed; showing accepted cache."
+            : null,
+          [],
+        ),
+        acceptedGenerationId: sync.accepted_generation_id,
+        baseRevision: sync.base_revision,
+      }
+    : emptyCache(sync?.base_revision);
+
+  if (
+    (await bb.storage.kv.get<boolean>(
+      canvasDeletedMarkerKey(
+        input.projectId,
+        input.projectVersionId,
+        input.kind,
+        input.id,
+      ),
+    )) === true
+  ) {
+    throw new Error("TARA_ENTITY_NOT_FOUND");
+  }
+
+  let source: CanvasProjectSource | null = null;
+  try {
+    source = await projectSource(bb, input.projectId);
+  } catch {
+    // The accepted cache remains readable when the bb project has no source.
+  }
+  if (source) {
+    const stored = await createSdkCanvasFileStore(bb, source, {
+      reclaimTombstones: false,
+    }).read(canvasEntityFile(input.kind, input.id));
+    if (stored) {
+      const fields = jsonValueSchema.parse(
+        architectureEntityPayload(stored.entity),
+      );
+      if (!isJsonRecord(fields)) {
+        throw new Error(
+          "INVALID_WORKING_TARA: authored entity must be a mapping.",
+        );
+      }
+      return {
+        projectId: input.projectId,
+        projectVersionId: input.projectVersionId,
+        kind: input.kind,
+        key: input.id,
+        label: payloadLabel(fields, input.id),
+        fields,
+        links: [],
+        cache,
+      };
+    }
+  }
+
+  if (!sync?.accepted_generation_id) throw new Error("TARA_ENTITY_NOT_FOUND");
+  const rows = db
+    .prepare<[string, string, string, string, string], TaraSnapshotRow>(
+      `SELECT entity_key, payload
+         FROM base_snapshot
+        WHERE project_id = ? AND project_version_id = ?
+          AND entity_kind = ? AND generation_id = ?
+          AND COALESCE(NULLIF(json_extract(payload, '$.slug'), ''), entity_key) = ?
+        ORDER BY entity_key COLLATE BINARY
+        LIMIT 2`,
+    )
+    .all(
+      input.projectId,
+      projectVersionId,
+      input.kind,
+      sync.accepted_generation_id,
+      input.id,
+    );
+  if (rows.length !== 1) throw new Error("TARA_ENTITY_NOT_FOUND");
+  const fields = parsePayload(rows[0]!.payload);
+  return {
+    projectId: input.projectId,
+    projectVersionId: input.projectVersionId,
+    kind: input.kind,
+    key: input.id,
+    label: payloadLabel(fields, input.id),
+    fields,
+    links: [],
+    cache,
+  };
+}
+
 export function registerProductSecurity(
   bb: BbPluginApi,
   ctx: PluginContext,
@@ -594,6 +709,9 @@ export function registerProductSecurity(
   bb.rpc.register(productSecurityRpcContract, {
     taraList(input) {
       return listTara(bb, ctx.db(), input);
+    },
+    taraGet(input) {
+      return getTara(bb, ctx.db(), input);
     },
   });
   bb.rpc.register(taraCanvasRpcContract, {
