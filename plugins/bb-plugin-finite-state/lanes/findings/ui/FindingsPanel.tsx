@@ -459,7 +459,6 @@ export function FindingsPanel({
           route.kind === "view"
         }
         cursorKey={ui.cursorKey}
-        filter={filterSnapshot(filter)}
         loading={versionLoading || data.loading}
         onCommitted={() => void data.retry()}
         onCursor={(key) => setUi((current) => ({ ...current, cursorKey: key }))}

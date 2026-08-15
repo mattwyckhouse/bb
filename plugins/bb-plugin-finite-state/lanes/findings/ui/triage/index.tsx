@@ -6,7 +6,7 @@ import type { z } from "zod";
 import type { VexStatus } from "../../../../lib/remote/types.js";
 import type { findingsUiRpcContract } from "../../rpc.js";
 import type { FindingRow } from "../columns.js";
-import type { FindingSelection, SavedFindingView } from "../route.js";
+import type { FindingSelection } from "../route.js";
 import { BulkDecisionBar, type BulkFailure } from "./BulkDecisionBar.js";
 import { TriageEditor, type TriageWriteError } from "./TriageEditor.js";
 import { ShortcutSheet } from "./ShortcutSheet.js";
@@ -73,20 +73,25 @@ function currentRow(
   return rows.find((row) => row.findingId === cursorKey) ?? rows[0] ?? null;
 }
 
+const BULK_EVIDENCE_PLACEHOLDER = "{evidence}";
+
 function draftFor(
   target: TriageTarget,
   status: VexStatus,
-  includeSeed: boolean,
+  mode: "single" | "bulk",
 ): TriageDraft {
-  const prior = includeSeed ? target.prior : null;
+  const prior = mode === "single" ? target.prior : null;
   return {
     stableKey: target.stableKey,
     status,
     justification:
       status === "NOT_AFFECTED" ? (prior?.justification ?? null) : null,
     response: prior?.response ?? null,
-    reason: prior?.reason ?? (includeSeed ? target.reasonSeed : ""),
-    evidence: prior?.provenance.evidence ?? target.evidence,
+    reason: prior?.reason ?? (mode === "single" ? target.reasonSeed : ""),
+    evidence:
+      mode === "bulk"
+        ? BULK_EVIDENCE_PLACEHOLDER
+        : (prior?.provenance.evidence ?? target.evidence),
     pin: prior?.pin ?? "exact_version",
   };
 }
@@ -106,7 +111,6 @@ export function FindingsTriage({
   projectVersionId,
   rows,
   total,
-  filter,
   selection,
   cursorKey,
   onCursor,
@@ -121,7 +125,6 @@ export function FindingsTriage({
   projectVersionId: string | null;
   rows: readonly FindingRow[];
   total: number;
-  filter: SavedFindingView["filter"];
   selection: FindingSelection;
   cursorKey: string | null;
   onCursor(findingId: string): void;
@@ -142,7 +145,10 @@ export function FindingsTriage({
   const [reasonConfirmed, setReasonConfirmed] = useState(false);
   const [pending, setPending] = useState(false);
   const [writeError, setWriteError] = useState<TriageWriteError | null>(null);
-  const [undoError, setUndoError] = useState<string | null>(null);
+  const [undoFeedback, setUndoFeedback] = useState<{
+    kind: "success" | "error" | "info";
+    message: string;
+  } | null>(null);
   const [announcement, setAnnouncement] = useState(
     "Findings shortcuts ready. Press question mark for the keyboard map.",
   );
@@ -221,8 +227,9 @@ export function FindingsTriage({
         const { scope, target: exact } = await readExactTarget(row);
         setTarget(exact);
         setSingleScope(scope);
-        setDraft(draftFor(exact, status, true));
+        setDraft(draftFor(exact, status, "single"));
         setReasonConfirmed(false);
+        setUndoFeedback(null);
         setAnnouncement(
           `${status.replaceAll("_", " ")} draft opened for ${exact.label}. Review the seeded text before commit.`,
         );
@@ -281,6 +288,7 @@ export function FindingsTriage({
     ) => {
       setPending(true);
       setWriteError(null);
+      setUndoFeedback(null);
       try {
         const response = await rpc.call("triageDecisionsWrite", {
           ...scope,
@@ -396,19 +404,20 @@ export function FindingsTriage({
     const token = undoStack.current.peek();
     const entry = token ? undoEntries.current.get(token) : null;
     if (!token) {
-      setUndoError(null);
-      setAnnouncement("There is no local decision to undo in this session.");
+      const message = "There is no local decision to undo in this session.";
+      setUndoFeedback({ kind: "info", message });
+      setAnnouncement(message);
       return;
     }
     if (!entry) {
       const message =
         "The last local decision has no saved undo scope. Its YAML was not changed.";
-      setUndoError(message);
+      setUndoFeedback({ kind: "error", message });
       setAnnouncement(`Undo was not attempted: ${message}`);
       return;
     }
     setPending(true);
-    setUndoError(null);
+    setUndoFeedback(null);
     try {
       await rpc.call("triageDecisionUndo", {
         ...entry.scope,
@@ -418,14 +427,13 @@ export function FindingsTriage({
       });
       undoStack.current.accept(token);
       undoEntries.current.delete(token);
-      setAnnouncement(
-        `Undid the last local decision for ${entry.target.label}.`,
-      );
-      setUndoError(null);
+      const message = `Undid the last local decision for ${entry.target.label}. Local YAML was restored.`;
+      setUndoFeedback({ kind: "success", message });
+      setAnnouncement(message);
       onCommitted();
     } catch (error) {
       const message = `Undo refused: ${error instanceof Error ? error.message : "the file changed after the decision"}. The newer YAML was preserved.`;
-      setUndoError(message);
+      setUndoFeedback({ kind: "error", message });
       setAnnouncement(message);
     } finally {
       setPending(false);
@@ -472,6 +480,11 @@ export function FindingsTriage({
   const loadBulkTargets = useCallback(async (): Promise<TriageTarget[]> => {
     if (!workspaceProjectId || !platformProjectId || !projectVersionId)
       throw new Error("Choose a findings scope before bulk triage.");
+    if (selection.mode === "predicate" && selection.excluded.size > 2_000) {
+      throw new Error(
+        "Too many excluded findings for predicate bulk triage (limit 2000). Narrow the filter or clear exclusions, then retry.",
+      );
+    }
     if (selection.mode === "explicit") {
       const targets: TriageTarget[] = [];
       for (
@@ -549,10 +562,11 @@ export function FindingsTriage({
         setPreparedBulk({ selection, targets });
         setTarget(exact);
         setSingleScope(scoped.scope);
-        setDraft(draftFor(exact, status, false));
+        setDraft(draftFor(exact, status, "bulk"));
         setReasonConfirmed(false);
+        setUndoFeedback(null);
         setAnnouncement(
-          `Bulk preview ready: ${targets.length} shared local overlay ${targets.length === 1 ? "identity" : "identities"} will be written.`,
+          `Bulk preview ready: ${targets.length} shared local overlay ${targets.length === 1 ? "identity" : "identities"} will be written. Evidence defaults to per-row {evidence}.`,
         );
       } catch (error) {
         setBulkFailures([
@@ -895,16 +909,24 @@ export function FindingsTriage({
           Shortcuts <kbd className="font-mono">?</kbd>
         </Button>
       </div>
-      {undoError ? (
+      {undoFeedback ? (
         <div
-          className="border-b border-destructive/40 bg-muted px-3 py-2 text-xs text-destructive"
-          role="alert"
+          className={
+            undoFeedback.kind === "error"
+              ? "border-b border-destructive/40 bg-muted px-3 py-2 text-xs text-destructive"
+              : undoFeedback.kind === "success"
+                ? "border-b border-primary/30 bg-muted/40 px-3 py-2 text-xs text-foreground"
+                : "border-b border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+          }
+          data-triage-undo-feedback={undoFeedback.kind}
+          role={undoFeedback.kind === "error" ? "alert" : "status"}
         >
-          {undoError}
+          {undoFeedback.message}
         </div>
       ) : null}
       {draft && target ? (
         <TriageEditor
+          bulkPlaceholders={count > 0}
           commitBlockedReason={
             count === 0 && !singleScope ? UNRESOLVED_DRAFT_SCOPE : null
           }

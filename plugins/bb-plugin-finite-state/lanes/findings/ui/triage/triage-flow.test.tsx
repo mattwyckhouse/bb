@@ -701,10 +701,76 @@ describe("manual triage flow", () => {
         stableKey: "stable-0",
       }),
     );
-    expect(
-      await slot.findByText(/Undid the last local decision/u),
-    ).toBeTruthy();
+    const visible = await slot.findByText(/Undid the last local decision/u, {
+      selector: "[data-triage-undo-feedback]",
+    });
+    expect(visible.getAttribute("data-triage-undo-feedback")).toBe("success");
+    expect(visible.className).not.toMatch(/sr-only/u);
+    expect(visible.textContent).toMatch(/Local YAML was restored/u);
     expect(slot.queryByText(/There is no local decision to undo/u)).toBeNull();
+  });
+
+  it("defaults bulk evidence to per-row {evidence} and expands it at write time", async () => {
+    const slot = await renderFlow({
+      read: () => ({
+        items: [
+          {
+            ...target("finding-0"),
+            evidence: "Row-0 call graph",
+          },
+          {
+            ...target("finding-1"),
+            evidence: "Row-1 call graph",
+          },
+          {
+            ...target("finding-2"),
+            evidence: "Row-2 call graph",
+          },
+        ],
+        total: 3,
+        next: null,
+      }),
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Select all 3" }));
+    fireEvent.keyDown(window, { key: "b" });
+    fireEvent.click(slot.getByRole("button", { name: /eEXPLOITABLE/u }));
+    const editor = await slot.findByRole("form", {
+      name: /3 local overlay identities/u,
+    });
+    expect(
+      (
+        within(editor).getByLabelText(
+          "Evidence reviewed",
+        ) as HTMLTextAreaElement
+      ).value,
+    ).toBe("{evidence}");
+    expect(
+      within(editor).getByText(/each selected row keeps its own evidence/u),
+    ).toBeTruthy();
+    confirmEditor(editor, "Reviewed every selected finding locally");
+    fireEvent.click(
+      within(editor).getByRole("button", { name: /Write YAML/u }),
+    );
+    fireEvent.click(
+      await slot.findByRole("button", { name: "Confirm local writes" }),
+    );
+    await waitFor(() =>
+      expect(
+        slot.inspection.rpcCalls.filter(
+          (call) => call.method === "triageDecisionsWrite",
+        ),
+      ).toHaveLength(1),
+    );
+    const write = slot.inspection.rpcCalls.find(
+      (call) => call.method === "triageDecisionsWrite",
+    );
+    expect(write?.input).toMatchObject({
+      decisions: [
+        { findingId: "finding-0", evidence: "Row-0 call graph" },
+        { findingId: "finding-1", evidence: "Row-1 call graph" },
+        { findingId: "finding-2", evidence: "Row-2 call graph" },
+      ],
+    });
   });
 
   it("refreshes the CAS base across a 20-item chunk boundary", async () => {
@@ -991,9 +1057,23 @@ describe("manual triage flow", () => {
       expect(slot.queryByRole("form", { name: /Triage/u })).toBeNull(),
     );
     fireEvent.keyDown(window, { key: "u" });
-    const alert = await slot.findByRole("alert");
-    expect(alert.textContent).toMatch(
+    const alert = await slot.findByText(
       /Undo refused: Triage overlay changed concurrently/u,
+      {
+        selector: "[data-triage-undo-feedback='error']",
+      },
     );
+    expect(alert.className).not.toMatch(/sr-only/u);
+    expect(alert.getAttribute("role")).toBe("alert");
+  });
+
+  it("shows a visible no-op notice when undo has nothing to restore", async () => {
+    const slot = await renderFlow();
+    fireEvent.keyDown(window, { key: "u" });
+    const notice = await slot.findByText(
+      /There is no local decision to undo in this session/u,
+      { selector: "[data-triage-undo-feedback='info']" },
+    );
+    expect(notice.className).not.toMatch(/sr-only/u);
   });
 });

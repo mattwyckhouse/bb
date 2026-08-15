@@ -88,4 +88,31 @@ describe("TriageEditor commit gates", () => {
     expect(onCommit).not.toHaveBeenCalled();
     expect(within(form).getAllByRole("alert")).toHaveLength(1);
   });
+
+  it("documents the bulk {evidence} placeholder without using arbitrary text sizes", () => {
+    const view = render(
+      <TriageEditor
+        bulkPlaceholders
+        commitBlockedReason={null}
+        draft={{ ...validDraft, evidence: "{evidence}" }}
+        error={null}
+        onCancel={() => {}}
+        onChange={() => {}}
+        onCommit={() => {}}
+        onReasonConfirmed={() => {}}
+        onReload={() => {}}
+        pending={false}
+        prior={null}
+        reasonConfirmed
+        seededReason={false}
+        targetLabel="3 local overlay identities"
+      />,
+    );
+    expect(
+      view.getByText(/each selected row keeps its own evidence/u),
+    ).toBeTruthy();
+    const shortcut = view.container.querySelector("kbd");
+    expect(shortcut?.className).toMatch(/text-2xs/u);
+    expect(shortcut?.className).not.toMatch(/text-\[0\.7rem\]/u);
+  });
 });

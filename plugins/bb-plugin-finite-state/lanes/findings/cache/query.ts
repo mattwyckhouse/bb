@@ -481,6 +481,49 @@ export function queryFindings(
   };
 }
 
+/** Collision-aware unique stable-key count for a findings filter. */
+export function countDistinctFindingStableKeys(
+  db: Database.Database,
+  filter: FindingsFilter,
+  excludedStableKeys: readonly string[] = [],
+): { findingTotal: number; uniqueStableKeys: number } {
+  const cache = cacheState(db, filter.projectId, filter.pvId);
+  if (cache.acceptedGenerationId === null) {
+    return { findingTotal: 0, uniqueStableKeys: 0 };
+  }
+  const baseWhere = whereFor(filter, cache.acceptedGenerationId);
+  const findingTotal = (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM findings AS f WHERE ${baseWhere.sql}`,
+      )
+      .get(...baseWhere.parameters) as { count: number }
+  ).count;
+  if (excludedStableKeys.length === 0) {
+    const uniqueStableKeys = (
+      db
+        .prepare(
+          `SELECT COUNT(DISTINCT f.stable_key) AS count
+             FROM findings AS f WHERE ${baseWhere.sql}`,
+        )
+        .get(...baseWhere.parameters) as { count: number }
+    ).count;
+    return { findingTotal, uniqueStableKeys };
+  }
+  const placeholders = excludedStableKeys.map(() => "?").join(", ");
+  const uniqueStableKeys = (
+    db
+      .prepare(
+        `SELECT COUNT(DISTINCT f.stable_key) AS count
+           FROM findings AS f
+          WHERE ${baseWhere.sql}
+            AND f.stable_key NOT IN (${placeholders})`,
+      )
+      .get(...baseWhere.parameters, ...excludedStableKeys) as { count: number }
+  ).count;
+  return { findingTotal, uniqueStableKeys };
+}
+
 export function getCachedFinding(
   db: Database.Database,
   projectId: string,

@@ -411,7 +411,10 @@ describe("bulk triage registered surface", () => {
       ),
     );
     expect(
-      await within(slot.container).findByText(/Undid the last local decision/u),
+      await within(slot.container).findByText(
+        /Undid the last local decision/u,
+        { selector: "[data-triage-undo-feedback='success']" },
+      ),
     ).toBeTruthy();
     slot.lifecycle.unmount();
   });
