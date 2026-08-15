@@ -68,13 +68,17 @@ export function DataflowEdge({
         path={path}
         style={{
           stroke: selected ? "var(--primary)" : "var(--muted-foreground)",
-          strokeWidth: selected ? 2.5 : 1.5,
+          strokeWidth: selected ? 3.5 : 1.5,
         }}
       />
       <EdgeLabelRenderer>
         <button
           aria-label={`Dataflow ${flow.name ?? flow.slug}: ${flow.sourceSlug} to ${flow.targetSlug}`}
-          className="nodrag nopan absolute flex max-w-64 -translate-x-1/2 -translate-y-1/2 flex-wrap items-center gap-1 rounded-md border border-border bg-card/95 px-2 py-1 text-xs text-card-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className={`nodrag nopan absolute flex max-w-64 -translate-x-1/2 -translate-y-1/2 flex-wrap items-center gap-1 rounded-md border bg-card/95 px-2 py-1 text-xs text-card-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+            selected
+              ? "border-primary ring-2 ring-primary ring-offset-1 ring-offset-background"
+              : "border-border"
+          }`}
           data-canvas-edge-id={flow.slug}
           onClick={() => {
             selection.setSelectedIds([flow.slug]);

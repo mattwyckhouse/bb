@@ -140,7 +140,9 @@ export function CanvasNodeFrame({
     <article
       aria-label={`${architecture.kind} ${architecture.name}`}
       className={`h-full w-full rounded-lg border bg-card px-3 py-2 text-card-foreground shadow-sm ${
-        selected ? "border-primary ring-2 ring-ring" : "border-border"
+        selected
+          ? "border-primary ring-2 ring-primary ring-offset-2 ring-offset-background"
+          : "border-border"
       } ${className}`}
       data-canvas-node-id={architecture.slug}
       onContextMenu={(event) => {

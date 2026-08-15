@@ -76,6 +76,12 @@ function optionValue(
   return { value, consumed: 2 };
 }
 
+function formatRemoteCliError(error: RemoteError): string {
+  const diagnostic = diagnoseRemoteFailure(error);
+  const status = error.status === null ? "none" : String(error.status);
+  return `${diagnostic.message}\ncode=${error.code} service=${error.service} status=${status}\n`;
+}
+
 function parseArgs(argv: string[]): CliInput {
   const args = argv[0] === "finite-state" ? argv.slice(1) : [...argv];
   const verb = args.shift();
@@ -330,33 +336,38 @@ export function registerSyncCli(
 ): void {
   bb.cli.register({
     name: "finite-state",
-    summary: "Synchronize Finite State authored entities",
+    summary:
+      "Synchronize Finite State authored entities (--project is a Platform project id, not a bb project id)",
     commands: [
       {
         name: "as-projects",
         summary:
           "List linked Assurance Studio projects and the current selection",
-        usage: "as-projects [--project ID] [--json]",
+        usage: "as-projects [--project PLATFORM_PROJECT_ID] [--json]",
       },
       {
         name: "as-project-select",
         summary: "Select the Assurance Studio project for a Platform project",
-        usage: "as-project-select --as-project ID [--project ID] [--json]",
+        usage:
+          "as-project-select --as-project ID [--project PLATFORM_PROJECT_ID] [--json]",
       },
       {
         name: "pull",
         summary: "Pull each remote kind independently and report every outcome",
-        usage: "pull [surface] [--project ID] [--version ID] [--json]",
+        usage:
+          "pull [surface] [--project PLATFORM_PROJECT_ID] [--version ID] [--json]",
       },
       {
         name: "status",
         summary: "Compare working, base, and upstream state",
-        usage: "status [surface] [--project ID] [--version ID] [--json]",
+        usage:
+          "status [surface] [--project PLATFORM_PROJECT_ID] [--version ID] [--json]",
       },
       {
         name: "plan",
         summary: "Validate and render an ordered sync plan",
-        usage: "plan [surface] [--project ID] [--version ID] [--json]",
+        usage:
+          "plan [surface] [--project PLATFORM_PROJECT_ID] [--version ID] [--json]",
       },
       {
         name: "firmware",
@@ -373,7 +384,7 @@ export function registerSyncCli(
         summary:
           "Read or refresh finding drift, preview/apply vendor VEX, and CAS-prune orphans",
         usage:
-          "triage --help\ntriage drift report --project ID --version ID [--cursor CURSOR] [--limit N] [--json]\ntriage drift refresh --project ID --version ID [--limit N] [--json]\ntriage import-vex preview <file> --vendor NAME --project ID --version ID [--json]\ntriage import-vex apply --import-id ID --expected-document-sha256 SHA256 --project ID --version ID [--json]\ntriage orphans list --project ID --version ID [--json]\ntriage orphans prune --stable-key KEY [--stable-key KEY ... (max 500 per invocation)] --expected-base SHA256 --project ID --version ID [--json]",
+          "triage --help\ntriage drift report --project PLATFORM_PROJECT_ID --version ID [--cursor CURSOR] [--limit N] [--json]\ntriage drift refresh --project PLATFORM_PROJECT_ID --version ID [--limit N] [--json]\ntriage import-vex preview <file> --vendor NAME --project PLATFORM_PROJECT_ID --version ID [--json]\ntriage import-vex apply --import-id ID --expected-document-sha256 SHA256 --project PLATFORM_PROJECT_ID --version ID [--json]\ntriage orphans list --project PLATFORM_PROJECT_ID --version ID [--json]\ntriage orphans prune --stable-key KEY [--stable-key KEY ... (max 500 per invocation)] --expected-base SHA256 --project PLATFORM_PROJECT_ID --version ID [--json]",
       },
     ],
     async run(argv, context) {
@@ -389,11 +400,10 @@ export function registerSyncCli(
         );
       } catch (error: unknown) {
         if (!(error instanceof RemoteError)) throw error;
-        const diagnostic = diagnoseRemoteFailure(error);
         return {
           exitCode: 1,
           stdout: "",
-          stderr: `${diagnostic.message}\n`,
+          stderr: formatRemoteCliError(error),
         };
       }
     },

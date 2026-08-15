@@ -114,7 +114,11 @@ function SourceFileActions({
           size="sm"
           variant="outline"
         >
-          <Icon aria-hidden="true" className="size-4" name="BubbleChatQuestion" />
+          <Icon
+            aria-hidden="true"
+            className="size-4"
+            name="BubbleChatQuestion"
+          />
           Repair via chat
         </Button>
         <Button
@@ -325,7 +329,12 @@ export function Inspector(): React.JSX.Element {
           <p className="text-xs text-muted-foreground">{ids.length} selected</p>
         </div>
         <Button
-          disabled={ids.length === 0}
+          aria-label={
+            ids.length === 0
+              ? "Fit all architecture nodes into view"
+              : "Fit selected architecture entities into view"
+          }
+          disabled={selection.graph.nodes.length === 0}
           onClick={selection.fitSelection}
           size="sm"
           variant="outline"

@@ -25,7 +25,10 @@ function localRequirement(id: string): RequirementYamlV1 {
       parts: { system: "gateway", response: "reject unsigned firmware" },
     },
     source_description: "Protect the update trust boundary.",
-    mitigations: [], controls: [], standards: [], verification: [],
+    mitigations: [],
+    controls: [],
+    standards: [],
+    verification: [],
   };
 }
 
@@ -47,11 +50,17 @@ describe("requirements registration boundary", () => {
       sdk: {
         projects: {
           get: () => ({
-            sources: [{ hostId: "host-1", path: "/workspace", isDefault: true }],
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
           }),
         },
         files: {
-          write: () => ({ outcome: "written", sha256: "b".repeat(64), sizeBytes: 512 }),
+          write: () => ({
+            outcome: "written",
+            sha256: "b".repeat(64),
+            sizeBytes: 512,
+          }),
         },
       },
     });
@@ -80,21 +89,27 @@ describe("requirements registration boundary", () => {
       },
     });
 
-    expect(result).toEqual(expect.objectContaining({
-      beforeSha256: null,
-      afterSha256: "b".repeat(64),
-      stableKey: "REQ-secure-update",
-    }));
-    expect(host.harness.sdk.callsTo("files.write")[0]?.[0]).toEqual(expect.objectContaining({
-      path: "/workspace/product-security/requirements/REQ-secure-update.yaml",
-      rootPath: "/workspace",
-      expectedSha256: null,
-      createParents: true,
-    }));
-    expect(host.harness.inspection.realtimeSignals).toEqual([{
-      channel: "requirements:changed",
-      payload: { projectId: "project-1", requirementId: "REQ-secure-update" },
-    }]);
+    expect(result).toEqual(
+      expect.objectContaining({
+        beforeSha256: null,
+        afterSha256: "b".repeat(64),
+        stableKey: "REQ-secure-update",
+      }),
+    );
+    expect(host.harness.sdk.callsTo("files.write")[0]?.[0]).toEqual(
+      expect.objectContaining({
+        path: "/workspace/product-security/requirements/REQ-secure-update.yaml",
+        rootPath: "/workspace",
+        expectedSha256: null,
+        createParents: true,
+      }),
+    );
+    expect(host.harness.inspection.realtimeSignals).toEqual([
+      {
+        channel: "requirements:changed",
+        payload: { projectId: "project-1", requirementId: "REQ-secure-update" },
+      },
+    ]);
     expect(host.harness.sdk.calls.map((call) => call.path)).toEqual([
       "projects.get",
       "files.write",
@@ -108,26 +123,34 @@ describe("requirements registration boundary", () => {
       sdk: {
         projects: {
           get: () => ({
-            sources: [{ hostId: "host-1", path: "/workspace", isDefault: true }],
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
           }),
         },
         files: {
-          list: () => { throw new Error("ENOENT: directory does not exist"); },
+          list: () => {
+            throw new Error("ENOENT: directory does not exist");
+          },
         },
       },
     });
     registerRequirementsCardsBackend(host.bb, createPluginContext(host.bb));
-    await expect(host.harness.callRpc("requirementsList", {
-      projectId: "project-1",
-      projectVersionId: null,
-      pageSize: 50,
-      continuation: null,
-      filters: {},
-    })).resolves.toEqual(expect.objectContaining({
-      items: [],
-      total: 0,
-      next: null,
-    }));
+    await expect(
+      host.harness.callRpc("requirementsList", {
+        projectId: "project-1",
+        projectVersionId: null,
+        pageSize: 50,
+        continuation: null,
+        filters: {},
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        items: [],
+        total: 0,
+        next: null,
+      }),
+    );
     await host.harness.lifecycle.dispose();
   });
 
@@ -137,7 +160,9 @@ describe("requirements registration boundary", () => {
       sdk: {
         projects: {
           get: () => ({
-            sources: [{ hostId: "host-1", path: "/workspace", isDefault: true }],
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
           }),
         },
         files: {
@@ -164,10 +189,12 @@ describe("requirements registration boundary", () => {
       }),
     );
     expect(result.items.map((item) => item.key)).toEqual(["REQ-valid"]);
-    expect(host.harness.sdk.callsTo("files.read")[0]?.[0]).toEqual(expect.objectContaining({
-      path: "/workspace/product-security/requirements/REQ-valid.yaml",
-      rootPath: "/workspace",
-    }));
+    expect(host.harness.sdk.callsTo("files.read")[0]?.[0]).toEqual(
+      expect.objectContaining({
+        path: "/workspace/product-security/requirements/REQ-valid.yaml",
+        rootPath: "/workspace",
+      }),
+    );
     await host.harness.lifecycle.dispose();
   });
 
@@ -175,18 +202,35 @@ describe("requirements registration boundary", () => {
     const host = createFakePluginHost({
       pluginId: "finite-state",
       sdk: {
-        projects: { get: () => ({ sources: [{ hostId: "host-1", path: "/workspace", isDefault: true }] }) },
+        projects: {
+          get: () => ({
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
         files: {
           list: () => ({
             files: [
-              { name: "REQ-valid.yaml", path: "/workspace/product-security/requirements/REQ-valid.yaml" },
-              { name: "REQ-bad.yaml", path: "/workspace/product-security/requirements/REQ-bad.yaml" },
-              { name: "REQ-nested.yaml", path: "/workspace/product-security/requirements/nested/REQ-nested.yaml" },
+              {
+                name: "REQ-valid.yaml",
+                path: "/workspace/product-security/requirements/REQ-valid.yaml",
+              },
+              {
+                name: "REQ-bad.yaml",
+                path: "/workspace/product-security/requirements/REQ-bad.yaml",
+              },
+              {
+                name: "REQ-nested.yaml",
+                path: "/workspace/product-security/requirements/nested/REQ-nested.yaml",
+              },
             ],
             truncated: false,
           }),
           read: ({ path }: { path: string }) => ({
-            content: path.endsWith("REQ-valid.yaml") ? serializeRequirement(localRequirement("REQ-valid")) : "schema: [\n",
+            content: path.endsWith("REQ-valid.yaml")
+              ? serializeRequirement(localRequirement("REQ-valid"))
+              : "schema: [\n",
             contentEncoding: "utf8" as const,
             sha256: "a".repeat(64),
           }),
@@ -194,12 +238,22 @@ describe("requirements registration boundary", () => {
       },
     });
     registerRequirementsCardsBackend(host.bb, createPluginContext(host.bb));
-    const result = rpcContract.requirementsList.output.parse(await host.harness.callRpc("requirementsList", {
-      projectId: "project-1", projectVersionId: null, pageSize: 50, continuation: null, filters: {},
-    }));
+    const result = rpcContract.requirementsList.output.parse(
+      await host.harness.callRpc("requirementsList", {
+        projectId: "project-1",
+        projectVersionId: null,
+        pageSize: 50,
+        continuation: null,
+        filters: {},
+      }),
+    );
     expect(result.items.map((item) => item.key)).toEqual(["REQ-valid"]);
-    expect(result.cache.message).toContain("product-security/requirements/nested/REQ-nested.yaml:1 NESTED_REQUIREMENT_FILE");
-    expect(result.cache.message).toContain("And 1 more invalid requirement file.");
+    expect(result.cache.message).toContain(
+      "product-security/requirements/nested/REQ-nested.yaml:1 NESTED_REQUIREMENT_FILE",
+    );
+    expect(result.cache.message).toContain(
+      "And 1 more invalid requirement document.",
+    );
     await host.harness.lifecycle.dispose();
   });
 
@@ -208,14 +262,19 @@ describe("requirements registration boundary", () => {
     async (invalidCount) => {
       const invalidFiles = Array.from({ length: invalidCount }, (_, index) => {
         const name = `REQ-bad-${String(index).padStart(2, "0")}.yaml`;
-        return { name, path: `/workspace/product-security/requirements/${name}` };
+        return {
+          name,
+          path: `/workspace/product-security/requirements/${name}`,
+        };
       });
       const host = createFakePluginHost({
         pluginId: "finite-state",
         sdk: {
           projects: {
             get: () => ({
-              sources: [{ hostId: "host-1", path: "/workspace", isDefault: true }],
+              sources: [
+                { hostId: "host-1", path: "/workspace", isDefault: true },
+              ],
             }),
           },
           files: {
@@ -253,7 +312,9 @@ describe("requirements registration boundary", () => {
       expect(result.cache.message).toContain(
         "product-security/requirements/REQ-bad-00.yaml:2 YAML_PARSE",
       );
-      expect(result.cache.message).toContain(`And ${invalidCount - 1} more invalid requirement files.`);
+      expect(result.cache.message).toContain(
+        `And ${invalidCount - 1} more invalid requirement documents.`,
+      );
       expect(result.cache.message?.length).toBeLessThanOrEqual(500);
       await host.harness.lifecycle.dispose();
     },
@@ -267,7 +328,9 @@ describe("requirements registration boundary", () => {
         sdk: {
           projects: {
             get: () => ({
-              sources: [{ hostId: "host-1", path: "/workspace", isDefault: true }],
+              sources: [
+                { hostId: "host-1", path: "/workspace", isDefault: true },
+              ],
             }),
           },
           files: {
@@ -325,22 +388,45 @@ describe("requirements registration boundary", () => {
     const host = createFakePluginHost({
       pluginId: "finite-state",
       sdk: {
-        projects: { get: () => ({ sources: [{ hostId: "host-1", path: "/workspace", isDefault: true }] }) },
+        projects: {
+          get: () => ({
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
         files: {
           list: () => ({ files, truncated: false }),
           read: ({ path }: { path: string }) => {
-            const id = path.split("/").at(-1)!.replace(/\.yaml$/u, "");
-            return { content: serializeRequirement(localRequirement(id)), contentEncoding: "utf8" as const, sha256: "a".repeat(64) };
+            const id = path
+              .split("/")
+              .at(-1)!
+              .replace(/\.yaml$/u, "");
+            return {
+              content: serializeRequirement(localRequirement(id)),
+              contentEncoding: "utf8" as const,
+              sha256: "a".repeat(64),
+            };
           },
         },
       },
     });
     registerRequirementsCardsBackend(host.bb, createPluginContext(host.bb));
-    const first = rpcContract.requirementsList.output.parse(await host.harness.callRpc("requirementsList", {
-      projectId: "project-1", projectVersionId: null, pageSize: 100, continuation: null, filters: {},
-    }));
+    const first = rpcContract.requirementsList.output.parse(
+      await host.harness.callRpc("requirementsList", {
+        projectId: "project-1",
+        projectVersionId: null,
+        pageSize: 100,
+        continuation: null,
+        filters: {},
+      }),
+    );
     await host.harness.callRpc("requirementsList", {
-      projectId: "project-1", projectVersionId: null, pageSize: 100, continuation: first.next, filters: {},
+      projectId: "project-1",
+      projectVersionId: null,
+      pageSize: 100,
+      continuation: first.next,
+      filters: {},
     });
     expect(host.harness.sdk.callsTo("projects.get")).toHaveLength(1);
     expect(host.harness.sdk.callsTo("files.list")).toHaveLength(1);
@@ -358,53 +444,211 @@ describe("requirements registration boundary", () => {
     const host = createFakePluginHost({
       pluginId: "finite-state",
       sdk: {
-        projects: { get: () => ({ sources: [{ hostId: "host-1", path: "/workspace", isDefault: true }] }) },
+        projects: {
+          get: () => ({
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
         files: {
-          list: () => ({ files: [{ name: "REQ-local.yaml", path: "/workspace/product-security/requirements/REQ-local.yaml" }], truncated: false }),
-          read: () => ({ content: serializeRequirement(editedLocal), contentEncoding: "utf8" as const, sha256: "d".repeat(64) }),
+          list: () => ({
+            files: [
+              {
+                name: "REQ-local.yaml",
+                path: "/workspace/product-security/requirements/REQ-local.yaml",
+              },
+            ],
+            truncated: false,
+          }),
+          read: () => ({
+            content: serializeRequirement(editedLocal),
+            contentEncoding: "utf8" as const,
+            sha256: "d".repeat(64),
+          }),
         },
       },
     });
     const context = createPluginContext(host.bb);
     const db = context.db();
-    db.prepare(`INSERT INTO pull_generation
+    db.prepare(
+      `INSERT INTO pull_generation
       (project_id, project_version_id, generation_id, status, requested_kinds_json, started_at, completed_at, accepted_at)
-      VALUES (?, ?, ?, 'accepted', '["requirement"]', ?, ?, ?)`)
-      .run("project-1", "version-7", "generation-7", "2026-08-12T12:00:00Z", "2026-08-12T12:00:00Z", "2026-08-12T12:00:00Z");
-    db.prepare(`INSERT INTO sync_state
+      VALUES (?, ?, ?, 'accepted', '["requirement"]', ?, ?, ?)`,
+    ).run(
+      "project-1",
+      "version-7",
+      "generation-7",
+      "2026-08-12T12:00:00Z",
+      "2026-08-12T12:00:00Z",
+      "2026-08-12T12:00:00Z",
+    );
+    db.prepare(
+      `INSERT INTO sync_state
       (project_id, project_version_id, entity_kind, accepted_generation_id, base_revision, last_pull)
-      VALUES (?, ?, 'requirement', ?, 1, ?)`)
-      .run("project-1", "version-7", "generation-7", "2026-08-12T12:00:00Z");
+      VALUES (?, ?, 'requirement', ?, 1, ?)`,
+    ).run("project-1", "version-7", "generation-7", "2026-08-12T12:00:00Z");
     const insertSnapshot = db.prepare(`INSERT INTO base_snapshot
       (project_id, project_version_id, entity_kind, generation_id, entity_key, payload, content_hash, pulled_at)
       VALUES (?, ?, 'requirement', ?, ?, ?, ?, ?)`);
     for (const requirement of [cachedLocal, cachedOnly]) {
-      insertSnapshot.run("project-1", "version-7", "generation-7", reqIdKey({ reqId: requirement.id }), JSON.stringify(requirement), requirementSemanticSha256(requirement), "2026-08-12T12:00:00Z");
+      insertSnapshot.run(
+        "project-1",
+        "version-7",
+        "generation-7",
+        reqIdKey({ reqId: requirement.id }),
+        JSON.stringify(requirement),
+        requirementSemanticSha256(requirement),
+        "2026-08-12T12:00:00Z",
+      );
     }
-    db.prepare(`INSERT INTO verification_results
+    db.prepare(
+      `INSERT INTO verification_results
       (project_id, project_version_id, generation_id, result_id, requirement_key, tier, status, fs_version_id, is_latest, raw, pulled_at)
-      VALUES (?, ?, ?, ?, ?, 'static', 'verified', 'version-6', 1, '{}', ?)`)
-      .run("project-1", "version-7", "generation-7", "result-1", reqIdKey({ reqId: "REQ-local" }), "2026-08-12T12:00:00Z");
+      VALUES (?, ?, ?, ?, ?, 'static', 'verified', 'version-6', 1, '{}', ?)`,
+    ).run(
+      "project-1",
+      "version-7",
+      "generation-7",
+      "result-1",
+      reqIdKey({ reqId: "REQ-local" }),
+      "2026-08-12T12:00:00Z",
+    );
     registerRequirementsCardsBackend(host.bb, context);
-    const result = rpcContract.requirementsList.output.parse(await host.harness.callRpc("requirementsList", {
-      projectId: "project-1", projectVersionId: null, pageSize: 50, continuation: null, filters: {},
-    }));
-    expect(result.items.map((item) => item.key).sort()).toEqual(["REQ-cached", "REQ-local"]);
-    expect(result.items.every((item) => item.projectVersionId === "version-7")).toBe(true);
+    const result = rpcContract.requirementsList.output.parse(
+      await host.harness.callRpc("requirementsList", {
+        projectId: "project-1",
+        projectVersionId: null,
+        pageSize: 50,
+        continuation: null,
+        filters: {},
+      }),
+    );
+    expect(result.items.map((item) => item.key).sort()).toEqual([
+      "REQ-cached",
+      "REQ-local",
+    ]);
+    expect(
+      result.items.every((item) => item.projectVersionId === "version-7"),
+    ).toBe(true);
     const local = result.items.find((item) => item.key === "REQ-local");
-    expect(local?.fields).toEqual(expect.objectContaining({ stale: true, local: true, sourceSha256: "d".repeat(64) }));
+    expect(local?.fields).toEqual(
+      expect.objectContaining({
+        stale: true,
+        local: true,
+        sourceSha256: "d".repeat(64),
+      }),
+    );
+    await host.harness.lifecycle.dispose();
+  });
+
+  it("surfaces invalid cached requirement payloads in the cache banner", async () => {
+    const validCached = localRequirement("REQ-cached-valid");
+    const host = createFakePluginHost({
+      pluginId: "finite-state",
+      sdk: {
+        projects: {
+          get: () => ({
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
+        files: {
+          list: () => ({ files: [], truncated: false }),
+          read: () => {
+            throw new Error("no local YAML");
+          },
+        },
+      },
+    });
+    const context = createPluginContext(host.bb);
+    const db = context.db();
+    db.prepare(
+      `INSERT INTO pull_generation
+      (project_id, project_version_id, generation_id, status, requested_kinds_json, started_at, completed_at, accepted_at)
+      VALUES (?, ?, ?, 'accepted', '["requirement"]', ?, ?, ?)`,
+    ).run(
+      "project-1",
+      "version-9",
+      "generation-9",
+      "2026-08-12T12:00:00Z",
+      "2026-08-12T12:00:00Z",
+      "2026-08-12T12:00:00Z",
+    );
+    db.prepare(
+      `INSERT INTO sync_state
+      (project_id, project_version_id, entity_kind, accepted_generation_id, base_revision, last_pull)
+      VALUES (?, ?, 'requirement', ?, 1, ?)`,
+    ).run("project-1", "version-9", "generation-9", "2026-08-12T12:00:00Z");
+    const insertSnapshot = db.prepare(`INSERT INTO base_snapshot
+      (project_id, project_version_id, entity_kind, generation_id, entity_key, payload, content_hash, pulled_at)
+      VALUES (?, ?, 'requirement', ?, ?, ?, ?, ?)`);
+    insertSnapshot.run(
+      "project-1",
+      "version-9",
+      "generation-9",
+      reqIdKey({ reqId: validCached.id }),
+      JSON.stringify(validCached),
+      requirementSemanticSha256(validCached),
+      "2026-08-12T12:00:00Z",
+    );
+    insertSnapshot.run(
+      "project-1",
+      "version-9",
+      "generation-9",
+      reqIdKey({ reqId: "REQ-cached-bad" }),
+      JSON.stringify({ schema: "not-a-requirement", id: "REQ-cached-bad" }),
+      "e".repeat(64),
+      "2026-08-12T12:00:00Z",
+    );
+    insertSnapshot.run(
+      "project-1",
+      "version-9",
+      "generation-9",
+      reqIdKey({ reqId: "REQ-cached-json" }),
+      "{not-json",
+      "f".repeat(64),
+      "2026-08-12T12:00:00Z",
+    );
+    registerRequirementsCardsBackend(host.bb, context);
+    const result = rpcContract.requirementsList.output.parse(
+      await host.harness.callRpc("requirementsList", {
+        projectId: "project-1",
+        projectVersionId: null,
+        pageSize: 50,
+        continuation: null,
+        filters: {},
+      }),
+    );
+    expect(result.items.map((item) => item.key)).toEqual(["REQ-cached-valid"]);
+    expect(result.cache.message).toMatch(/cache:fs1\./u);
+    expect(result.cache.message).toContain(
+      "And 1 more invalid requirement document.",
+    );
     await host.harness.lifecycle.dispose();
   });
 
   it("keeps Node-only persistence outside the browser import graph", () => {
     const appEntry = readFileSync(resolve(cardsDirectory, "index.tsx"), "utf8");
-    const backendEntry = readFileSync(resolve(cardsDirectory, "backend.ts"), "utf8");
-    const laneServer = readFileSync(resolve(cardsDirectory, "../../register.ts"), "utf8");
-    const laneApp = readFileSync(resolve(cardsDirectory, "../../register.app.tsx"), "utf8");
+    const backendEntry = readFileSync(
+      resolve(cardsDirectory, "backend.ts"),
+      "utf8",
+    );
+    const laneServer = readFileSync(
+      resolve(cardsDirectory, "../../register.ts"),
+      "utf8",
+    );
+    const laneApp = readFileSync(
+      resolve(cardsDirectory, "../../register.app.tsx"),
+      "utf8",
+    );
 
     expect(laneServer).toContain('from "./requirements/cards/backend.js"');
     expect(laneApp).toContain('from "./requirements/cards/index.js"');
-    expect(appEntry).not.toMatch(/\.\/adapter\.js|\.\/backend\.js|\.\/query\.js|node:/u);
+    expect(appEntry).not.toMatch(
+      /\.\/adapter\.js|\.\/backend\.js|\.\/query\.js|node:/u,
+    );
     expect(backendEntry).toContain('from "./adapter.js"');
   });
 });

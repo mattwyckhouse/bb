@@ -70,7 +70,7 @@ function mapFamily(
     return [
       unready(
         "verification",
-        "Verification links are unavailable until WP-39 ships the public resolver.",
+        "Verification links from findings are not available yet. Open the Verifications tab to browse the matrix.",
         "inspect",
       ),
     ];
@@ -135,7 +135,7 @@ export function CrossLinks({
       ),
       unready(
         "verification",
-        "Verification links are unavailable until WP-39 ships the public resolver.",
+        "Verification links from findings are not available yet. Open the Verifications tab to browse the matrix.",
         "inspect",
       ),
     ],

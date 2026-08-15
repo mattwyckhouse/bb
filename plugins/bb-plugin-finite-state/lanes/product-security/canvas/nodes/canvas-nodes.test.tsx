@@ -532,7 +532,11 @@ describe("WP-32 inspector and project scope", () => {
     expect(await view.findByText("Slug: component-bad-zone")).toBeTruthy();
     expect(view.getByText("1 selected")).toBeTruthy();
     expect(
-      view.getByRole("button", { name: "Fit" }).hasAttribute("disabled"),
+      view
+        .getByRole("button", {
+          name: "Fit selected architecture entities into view",
+        })
+        .hasAttribute("disabled"),
     ).toBe(false);
   });
 

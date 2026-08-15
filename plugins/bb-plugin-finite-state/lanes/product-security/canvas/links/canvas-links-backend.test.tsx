@@ -246,7 +246,7 @@ describe("WP-34 production link RPC boundary", () => {
       links: [{ kind: "verification", ready: false, reason: "unavailable" }],
       readiness: {
         state: "unavailable",
-        message: expect.stringMatching(/WP-39.*verification matrix/iu),
+        message: expect.stringMatching(/Verifications tab/iu),
       },
     });
     expect(captured.bom).toHaveBeenCalledWith({
