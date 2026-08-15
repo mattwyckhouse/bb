@@ -4,15 +4,25 @@ import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
 import { Skeleton } from "@bb/shared-ui/skeleton";
 import {
+  experimental_useSidebarThreads,
   useBbContext,
   useRealtime,
   useRpc,
   type PluginNavPanelProps,
 } from "@bb/plugin-sdk/app";
 import { type RpcContract } from "../../../shared/contract.js";
+import { bomCachedVersionsContract } from "../../bom/rpc.js";
 import { DocumentViewer } from "./document-viewer.js";
 
-type PanelState = "unconfigured" | "loading" | "empty" | "ready" | "error";
+type PanelState =
+  | "unconfigured"
+  | "custom-version"
+  | "loading"
+  | "empty"
+  | "ready"
+  | "error";
+
+const CUSTOM_VERSION_VALUE = "__custom__";
 
 interface DocumentListItem {
   documentId: string;
@@ -42,9 +52,26 @@ async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
 }
 
 export function DocumentsPanel(_props: PluginNavPanelProps): React.JSX.Element {
-  const { projectId } = useBbContext();
-  const rpc = useRpc<RpcContract>();
+  const { projectId: routeProjectId } = useBbContext();
+  const sidebar = experimental_useSidebarThreads();
+  const rpc = useRpc<RpcContract & typeof bomCachedVersionsContract>();
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    null,
+  );
+  const projectId = routeProjectId ?? selectedProjectId;
+  const [versions, setVersions] = useState<
+    Array<{
+      platformProjectId: string;
+      projectVersionId: string;
+      state: "fresh" | "stale";
+    }>
+  >([]);
   const [projectVersionId, setProjectVersionId] = useState<string | null>(null);
+  const [customVersionSelected, setCustomVersionSelected] = useState(false);
+  const [customVersionId, setCustomVersionId] = useState("");
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [versionsError, setVersionsError] = useState<string | null>(null);
+  const [versionRequest, setVersionRequest] = useState(0);
   const [items, setItems] = useState<DocumentListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [state, setState] = useState<PanelState>(
@@ -57,8 +84,56 @@ export function DocumentsPanel(_props: PluginNavPanelProps): React.JSX.Element {
   const listParent = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    setProjectVersionId(null);
+    setCustomVersionSelected(false);
+    setCustomVersionId("");
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId) {
+      setVersions([]);
+      setVersionsLoading(false);
+      setVersionsError(null);
+      return;
+    }
+    let active = true;
+    setVersions([]);
+    setVersionsLoading(true);
+    setVersionsError(null);
+    void rpc
+      .call("bomCachedProjectVersions", { projectId })
+      .then((result) => {
+        if (active) setVersions(result.versions);
+      })
+      .catch((cause: unknown) => {
+        if (!active) return;
+        setVersions([]);
+        setVersionsError(
+          cause instanceof Error
+            ? cause.message
+            : "Cached project versions could not be loaded.",
+        );
+      })
+      .finally(() => {
+        if (active) setVersionsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [projectId, rpc, versionRequest]);
+
+  useEffect(() => {
     if (!projectId) {
       setState("unconfigured");
+      setItems([]);
+      setSelectedId(null);
+      return;
+    }
+    if (
+      customVersionSelected &&
+      (customVersionId.length === 0 || customVersionId === "@project")
+    ) {
+      setState("custom-version");
       setItems([]);
       setSelectedId(null);
       return;
@@ -117,7 +192,14 @@ export function DocumentsPanel(_props: PluginNavPanelProps): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [projectId, projectVersionId, revision, rpc]);
+  }, [
+    customVersionId,
+    customVersionSelected,
+    projectId,
+    projectVersionId,
+    revision,
+    rpc,
+  ]);
 
   useRealtime("documents:changed", (payload) => {
     if (
@@ -208,6 +290,35 @@ export function DocumentsPanel(_props: PluginNavPanelProps): React.JSX.Element {
             Documents are plugin-local evidence stored under
             product-security/documents in the selected workspace.
           </p>
+          <label
+            className="mt-4 block text-left text-xs font-medium text-muted-foreground"
+            htmlFor="documents-project"
+          >
+            Project
+          </label>
+          <select
+            className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+            disabled={sidebar.status === "loading"}
+            id="documents-project"
+            onChange={(event) => {
+              setSelectedProjectId(event.target.value || null);
+              setProjectVersionId(null);
+              setCustomVersionSelected(false);
+              setCustomVersionId("");
+            }}
+            value={projectId ?? ""}
+          >
+            <option value="">
+              {sidebar.status === "loading"
+                ? "Loading projects…"
+                : "Select project"}
+            </option>
+            {sidebar.projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
     );
@@ -245,26 +356,128 @@ export function DocumentsPanel(_props: PluginNavPanelProps): React.JSX.Element {
             type="file"
           />
         </header>
-        <div className="border-b border-border px-3 py-2">
+        <div className="space-y-2 border-b border-border px-3 py-2">
+          {!routeProjectId ? (
+            <div>
+              <label
+                className="text-xs text-muted-foreground"
+                htmlFor="documents-project"
+              >
+                Project
+              </label>
+              <select
+                className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                id="documents-project"
+                onChange={(event) => {
+                  setSelectedProjectId(event.target.value || null);
+                  setProjectVersionId(null);
+                  setCustomVersionSelected(false);
+                  setCustomVersionId("");
+                }}
+                value={projectId ?? ""}
+              >
+                <option value="">Select project</option>
+                {sidebar.projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
           <label
-            className="text-xs text-muted-foreground"
+            className="block text-xs text-muted-foreground"
             htmlFor="docs-version"
           >
-            Project version (empty = project-level)
+            Project version
           </label>
-          <input
-            className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
+          <select
+            className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+            disabled={versionsLoading}
             id="docs-version"
-            onChange={(event) =>
-              setProjectVersionId(
-                event.target.value.trim().length === 0
-                  ? null
-                  : event.target.value.trim(),
-              )
+            onChange={(event) => {
+              const value = event.target.value;
+              if (value === CUSTOM_VERSION_VALUE) {
+                setCustomVersionSelected(true);
+                setCustomVersionId("");
+                setProjectVersionId(null);
+                return;
+              }
+              setCustomVersionSelected(false);
+              setCustomVersionId("");
+              setProjectVersionId(value || null);
+            }}
+            value={
+              customVersionSelected
+                ? CUSTOM_VERSION_VALUE
+                : (projectVersionId ?? "")
             }
-            placeholder="version id"
-            value={projectVersionId ?? ""}
-          />
+          >
+            <option value="">
+              {versionsLoading ? "Loading cached versions…" : "Project-level"}
+            </option>
+            {versions.map((version) => (
+              <option
+                key={`${version.platformProjectId}/${version.projectVersionId}`}
+                value={version.projectVersionId}
+              >
+                {version.platformProjectId} / {version.projectVersionId}
+                {version.state === "stale" ? " · stale" : ""}
+              </option>
+            ))}
+            <option value={CUSTOM_VERSION_VALUE}>Custom version id…</option>
+          </select>
+          {customVersionSelected ? (
+            <div>
+              <label
+                className="mt-2 block text-xs text-muted-foreground"
+                htmlFor="docs-custom-version"
+              >
+                Custom version id
+              </label>
+              <input
+                aria-describedby="docs-custom-version-help"
+                aria-invalid={customVersionId === "@project"}
+                autoFocus
+                className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                id="docs-custom-version"
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setCustomVersionId(value);
+                  setProjectVersionId(
+                    value.length > 0 && value !== "@project" ? value : null,
+                  );
+                }}
+                placeholder="version id"
+                value={customVersionId}
+              />
+              <p
+                className={`mt-1 text-xs ${customVersionId === "@project" ? "text-destructive" : "text-muted-foreground"}`}
+                id="docs-custom-version-help"
+              >
+                Enter a non-empty version id other than @project.
+              </p>
+            </div>
+          ) : null}
+          {versionsError ? (
+            <div
+              className="rounded-md border border-destructive/40 bg-destructive/5 p-2"
+              role="alert"
+            >
+              <p className="text-xs text-destructive">
+                Cached versions unavailable: {versionsError}
+              </p>
+              <Button
+                className="mt-2"
+                onClick={() => setVersionRequest((value) => value + 1)}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                Retry cached versions
+              </Button>
+            </div>
+          ) : null}
         </div>
         {state === "loading" ? (
           <div
@@ -275,6 +488,14 @@ export function DocumentsPanel(_props: PluginNavPanelProps): React.JSX.Element {
             {Array.from({ length: 8 }, (_, index) => (
               <Skeleton className="h-10 w-full" key={index} />
             ))}
+          </div>
+        ) : null}
+        {state === "custom-version" ? (
+          <div className="m-3 rounded-lg border border-border bg-card p-4 text-center">
+            <p className="text-sm font-medium">Enter a custom version id</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Documents will load after you enter a valid version scope.
+            </p>
           </div>
         ) : null}
         {state === "error" ? (
