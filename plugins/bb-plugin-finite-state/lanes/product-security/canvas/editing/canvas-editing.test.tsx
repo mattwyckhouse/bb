@@ -51,10 +51,12 @@ import {
   parseCanvasEntity,
   serializeCanvasEntity,
   type CanvasFileStore,
+  type CanvasFileListing,
   type CanvasRemoveOutcome,
   type CanvasWriteOutcome,
   type StoredCanvasEntity,
 } from "./writer.js";
+import { isRejectedBeforeWrite } from "./reject-before-write.js";
 
 const roots: string[] = [];
 const scope = {
@@ -107,13 +109,22 @@ class MemoryCanvasStore implements CanvasFileStore {
   }
 
   async list(kind: CanvasEntityKind): Promise<StoredCanvasEntity[]> {
+    return (await this.listWithDiagnostics(kind)).entities;
+  }
+
+  async listWithDiagnostics(
+    kind: CanvasEntityKind,
+  ): Promise<CanvasFileListing> {
     const files = [...this.documents.keys()]
       .filter((file) => file.startsWith(`${ENTITIES[kind].dir}/`))
       .sort();
     const documents = await Promise.all(files.map((file) => this.read(file)));
-    return documents.filter(
-      (document): document is StoredCanvasEntity => document !== null,
-    );
+    return {
+      entities: documents.filter(
+        (document): document is StoredCanvasEntity => document !== null,
+      ),
+      diagnostics: [],
+    };
   }
 
   async write(
@@ -1001,6 +1012,48 @@ describe("WP-35 delete impact, history, and conflict honesty", () => {
       canRedo: false,
       invalidatedEntities: ["component/gateway"],
     });
+  });
+
+  it("keeps undo history when an inverse command is rejected before write", async () => {
+    const { store, deps } = dependencies();
+    const initial = component("gateway", "Gateway");
+    store.seed(initial);
+    const edited = component("gateway", "Gateway v2");
+    const update = await applyCanvasCommand(deps, {
+      kind: "update",
+      entityKind: "component",
+      slug: "gateway",
+      patch: { name: "Gateway v2" },
+    });
+    const history = new CanvasEditHistory(async () => {
+      throw new CanvasEntityValidationError(
+        "IMMUTABLE_SLUG",
+        "Entity kind and slug are immutable. Create a new entity instead.",
+        "slug",
+      );
+    });
+    history.record({
+      kind: "component",
+      slug: "gateway",
+      before: initial,
+      after: edited,
+      currentSha256: update.afterSha256,
+      deleteMode: "cascade",
+    });
+    const rejection = await history.undo().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(rejection).toBeInstanceOf(CanvasEntityValidationError);
+    expect(isRejectedBeforeWrite(rejection)).toBe(true);
+    expect(history.state()).toMatchObject({
+      canUndo: true,
+      canRedo: false,
+      invalidatedEntities: [],
+    });
+    expect(
+      (await store.read(canvasEntityFile("component", "gateway")))?.entity.name,
+    ).toBe("Gateway v2");
   });
 
   it("keeps same-field conflicts as base/ours/theirs data and keeps YAML marker-free", () => {

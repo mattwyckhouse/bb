@@ -8,4 +8,8 @@ export {
   type EditDeps,
   type EditResult,
 } from "./writer.js";
+export {
+  isRejectedBeforeWrite,
+  REJECTED_BEFORE_WRITE_PREFIX,
+} from "./reject-before-write.js";
 export type { DeletionImpact } from "./schema.js";

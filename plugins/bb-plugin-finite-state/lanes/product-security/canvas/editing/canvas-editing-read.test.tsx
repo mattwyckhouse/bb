@@ -1326,4 +1326,101 @@ describe("WP-35 read-classified editing RPCs", () => {
       ),
     ).toMatchObject({ component_type: "firmware" });
   });
+
+  it("carries an accepted-only canvasEditingLoad sha256 into taraCommandApply (FS-142 N1)", async () => {
+    // INVARIANT: canvasEditingLoad predicts the digest of bytes that
+    // taraCommandApply will materialize before applying. Host read/write both
+    // hash raw UTF-8 contents, so the digest is byte-exact only while apply
+    // still materializes-before-write.
+    const files = new Map<string, string>();
+    const host = createFakePluginHost({
+      pluginId: "finite-state-editing-load-hash",
+      sdk: {
+        projects: {
+          get: ({ projectId }) => ({
+            id: projectId,
+            sources: [
+              { hostId: "host-1", path: "/workspace", isDefault: true },
+            ],
+          }),
+        },
+        files: {
+          list: ({ path }) => ({
+            files: [...files.keys()]
+              .filter((candidate) => candidate.startsWith(`${path}/`))
+              .map((path) => ({
+                path,
+                name: path.slice(path.lastIndexOf("/") + 1),
+              })),
+            truncated: false,
+          }),
+          read: ({ path }) => {
+            const content = files.get(path);
+            if (content === undefined) {
+              throw Object.assign(new Error(`ENOENT: ${path}`), {
+                code: "ENOENT",
+              });
+            }
+            return {
+              content,
+              contentEncoding: "utf8" as const,
+              sha256: hash(content),
+            };
+          },
+          write: ({ path, content, expectedSha256 }) => {
+            const current = files.get(path);
+            const currentSha256 = current === undefined ? null : hash(current);
+            if (currentSha256 !== expectedSha256) {
+              return { outcome: "conflict" as const, currentSha256 };
+            }
+            files.set(path, content);
+            return {
+              outcome: "written" as const,
+              sha256: hash(content),
+              sizeBytes: content.length,
+            };
+          },
+        },
+      },
+    });
+    hosts.push(host);
+    const context = createPluginContext(host.bb);
+    const acceptedOnly = component("accepted-only-gateway");
+    seedAccepted(context, [acceptedOnly]);
+    registerCanvasEditingBackend(host.bb, context);
+
+    const target =
+      "/workspace/product-security/architecture/components/accepted-only-gateway.yaml";
+    expect(files.has(target)).toBe(false);
+
+    const loaded = canvasEditingLoadOutputSchema.parse(
+      await host.harness.callRpc("canvasEditingLoad", {
+        projectId: PROJECT,
+        projectVersionId: null,
+        kind: "component",
+        slug: acceptedOnly.slug,
+      }),
+    );
+    expect(loaded).toMatchObject({
+      state: "ready",
+      sha256: hash(serializeCanvasEntity(acceptedOnly)),
+    });
+    if (loaded.state !== "ready") throw new Error("expected accepted entity");
+    expect(files.has(target)).toBe(false);
+
+    const updated = await host.harness.callRpc("taraCommandApply", {
+      projectId: PROJECT,
+      projectVersionId: null,
+      operation: "update",
+      kind: "component",
+      stableKey: acceptedOnly.slug,
+      fields: { name: "Edited accepted-only gateway" },
+      expectedContentSha256: loaded.sha256,
+    });
+    expect(updated).toMatchObject({
+      stableKey: acceptedOnly.slug,
+      beforeSha256: loaded.sha256,
+    });
+    expect(files.get(target)).toContain("name: Edited accepted-only gateway");
+  });
 });

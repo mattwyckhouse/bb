@@ -35,7 +35,10 @@ import {
   type CanvasEntityKind,
   type DeletionImpact,
 } from "./schema.js";
+import { markRejectedBeforeWrite } from "./reject-before-write.js";
+import { installTaraListExclusionAccel } from "./list-tara.js";
 import {
+  CanvasEntityValidationError,
   computeDeletionImpact,
   isRemoteVocabularyValidationAdvisory,
   registerCanvasValidators,
@@ -43,11 +46,15 @@ import {
 } from "./validators.js";
 import {
   applyCanvasCommand,
+  CANVAS_EDITING_MEMORY_MIRROR_LIMIT,
+  canvasDeleteSnapshotKey,
   canvasDeletedMarkerKey,
   canvasDeletedMarkerPrefix,
   canvasEntityFile,
   canvasUsedSlugMarkerKey,
+  CanvasSlugReuseError,
   createSdkCanvasFileStore,
+  parseCanvasEntity,
   RetiredComponentTypeReadAdvisory,
   serializeCanvasEntity,
   type CanvasEditCommand,
@@ -61,9 +68,15 @@ async function isolatedCanvasFileListing(
   files: CanvasFileStore,
   kind: CanvasEntityKind,
 ): Promise<CanvasFileListing> {
-  return files.listWithDiagnostics
-    ? files.listWithDiagnostics(kind)
-    : { entities: await files.list(kind), diagnostics: [] };
+  return files.listWithDiagnostics(kind);
+}
+
+function rememberBoundedKey(keys: Map<string, true>, key: string): void {
+  keys.delete(key);
+  keys.set(key, true);
+  if (keys.size <= CANVAS_EDITING_MEMORY_MIRROR_LIMIT) return;
+  const oldest = keys.keys().next().value;
+  if (oldest !== undefined) keys.delete(oldest);
 }
 
 export const canvasEditingRpcContract = defineRpcContract({
@@ -633,6 +646,9 @@ export function registerCanvasEditingBackend(
   ctx: PluginContext,
 ): void {
   const db = ctx.db();
+  // FS-142 N2: accelerate register.ts taraList exclusion SQL without owning
+  // that file (FS-220 collision). Helper lives in canvas/editing/list-tara.ts.
+  installTaraListExclusionAccel(db);
   const idMap = new IdMapStore(db);
   const resolver = idMapResolver(idMap);
   let remote: RemoteServices | null = null;
@@ -671,7 +687,7 @@ export function registerCanvasEditingBackend(
     },
   });
 
-  const usedSlugs = new Set<string>();
+  const usedSlugs = new Map<string, true>();
   const restorableDeletes = new Map<
     string,
     ReturnType<typeof validateArchitecturePayload>
@@ -688,11 +704,40 @@ export function registerCanvasEditingBackend(
   ) => {
     restorableDeletes.delete(identity);
     restorableDeletes.set(identity, entity);
-    if (restorableDeletes.size > 500) {
+    if (restorableDeletes.size > CANVAS_EDITING_MEMORY_MIRROR_LIMIT) {
       const oldest = restorableDeletes.keys().next().value;
       if (oldest !== undefined) restorableDeletes.delete(oldest);
     }
   };
+  async function loadRestorableDelete(
+    input: EditingScopeInput,
+    kind: CanvasEntityKind,
+    slug: string,
+    identity: string,
+  ): Promise<ReturnType<typeof validateArchitecturePayload> | null> {
+    const remembered = restorableDeletes.get(identity);
+    if (remembered) return remembered;
+    const snapshot = await bb.storage.kv.get<string>(
+      canvasDeleteSnapshotKey(
+        input.projectId,
+        input.projectVersionId,
+        kind,
+        slug,
+      ),
+    );
+    if (typeof snapshot !== "string" || snapshot.length === 0) return null;
+    try {
+      const entity = parseCanvasEntity(
+        kind,
+        snapshot,
+        canvasEntityFile(kind, slug),
+      );
+      rememberDelete(identity, entity);
+      return entity;
+    } catch {
+      return null;
+    }
+  }
   async function dependencies(
     input: EditingScopeInput,
     restoration?: { kind: CanvasEntityKind; slug: string },
@@ -745,7 +790,8 @@ export function registerCanvasEditingBackend(
         return row?.found === 1;
       },
       recordSlugUse(kind, slug) {
-        usedSlugs.add(
+        rememberBoundedKey(
+          usedSlugs,
           `${input.projectId}\u0000${versionId}\u0000${kind}\u0000${slug}`,
         );
         return bb.storage.kv.set(
@@ -849,6 +895,11 @@ export function registerCanvasEditingBackend(
     }
     const accepted = parseAcceptedCanvasWritableEntity(input.kind, acceptedRow);
     const content = serializeCanvasEntity(accepted);
+    // INVARIANT (FS-142 / N1): for accepted-only entities with no working YAML,
+    // this sha256 is the digest of the bytes taraCommandApply will materialize
+    // before applying an update. It stays valid only while apply materializes
+    // first and the host hashes raw UTF-8 bytes on both read and write. Callers
+    // may carry this digest into taraCommandApply.expectedContentSha256.
     return {
       projectId: input.projectId,
       projectVersionId: input.projectVersionId,
@@ -863,6 +914,20 @@ export function registerCanvasEditingBackend(
   bb.rpc.register(canvasEditingRpcContract, { canvasEditingLoad });
 
   async function taraCommandApply(input: EditingApplyInput) {
+    try {
+      return await taraCommandApplyInner(input);
+    } catch (error) {
+      if (
+        error instanceof CanvasEntityValidationError ||
+        error instanceof CanvasSlugReuseError
+      ) {
+        throw markRejectedBeforeWrite(error);
+      }
+      throw error;
+    }
+  }
+
+  async function taraCommandApplyInner(input: EditingApplyInput) {
     let command: CanvasEditCommand;
     let identity: string;
     let restoration: { kind: CanvasEntityKind; slug: string } | undefined;
@@ -870,7 +935,12 @@ export function registerCanvasEditingBackend(
       const entity = validateArchitecturePayload(input.kind, input.fields);
       command = { kind: "create", entity };
       identity = editIdentity(input, input.kind, entity.slug);
-      const deletedSnapshot = restorableDeletes.get(identity);
+      const deletedSnapshot = await loadRestorableDelete(
+        input,
+        entity.kind,
+        entity.slug,
+        identity,
+      );
       if (
         deletedSnapshot &&
         serializeCanvasEntity(deletedSnapshot) === serializeCanvasEntity(entity)
@@ -914,7 +984,7 @@ export function registerCanvasEditingBackend(
       );
     }
     const resultIdentity = identity;
-    usedSlugs.add(identity);
+    rememberBoundedKey(usedSlugs, identity);
     await bb.storage.kv.set(
       canvasUsedSlugMarkerKey(
         input.projectId,
@@ -925,7 +995,18 @@ export function registerCanvasEditingBackend(
       true,
     );
     if (result.operation === "delete") {
-      if (beforeDelete) rememberDelete(resultIdentity, beforeDelete.entity);
+      if (beforeDelete) {
+        rememberDelete(resultIdentity, beforeDelete.entity);
+        await bb.storage.kv.set(
+          canvasDeleteSnapshotKey(
+            input.projectId,
+            input.projectVersionId,
+            input.kind,
+            result.slug,
+          ),
+          beforeDelete.content,
+        );
+      }
       await bb.storage.kv.set(
         canvasDeletedMarkerKey(
           input.projectId,
@@ -939,6 +1020,14 @@ export function registerCanvasEditingBackend(
       restorableDeletes.delete(resultIdentity);
       await bb.storage.kv.delete(
         canvasDeletedMarkerKey(
+          input.projectId,
+          input.projectVersionId,
+          input.kind,
+          result.slug,
+        ),
+      );
+      await bb.storage.kv.delete(
+        canvasDeleteSnapshotKey(
           input.projectId,
           input.projectVersionId,
           input.kind,

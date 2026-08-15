@@ -8,6 +8,10 @@ import type { DeletionImpact } from "./commands.js";
 import { DeleteImpactDialog } from "./delete-impact.js";
 import { EntityForm, type CanvasReferenceOptions } from "./forms.js";
 import { CanvasEditHistory, type CanvasHistoryExecutor } from "./history.js";
+import {
+  displayRejectedBeforeWriteMessage,
+  isRejectedBeforeWrite,
+} from "./reject-before-write.js";
 import type {
   canvasEditingRpcContract,
   versionedCanvasEditingRpcContract,
@@ -73,9 +77,11 @@ function readPersistedProjectId(): string | null {
 }
 
 function safeError(error: unknown): string {
-  return error instanceof Error && error.message.length > 0
-    ? error.message.slice(0, 500)
-    : "The local YAML operation failed. Reload and compare before retrying.";
+  const raw =
+    error instanceof Error && error.message.length > 0
+      ? error.message.slice(0, 500)
+      : "The local YAML operation failed. Reload and compare before retrying.";
+  return displayRejectedBeforeWriteMessage(raw);
 }
 
 function requireAfterSha256(
@@ -451,8 +457,12 @@ function ProjectEditingLayer({
       );
     } catch (saveError) {
       const detail = safeError(saveError);
-      invalidateHistory(entity.kind, entity.slug);
-      setError(`${detail} Undo and redo for this entity were invalidated.`);
+      if (isRejectedBeforeWrite(saveError)) {
+        setError(detail);
+      } else {
+        invalidateHistory(entity.kind, entity.slug);
+        setError(`${detail} Undo and redo for this entity were invalidated.`);
+      }
     } finally {
       setSaving(false);
     }
@@ -540,8 +550,12 @@ function ProjectEditingLayer({
       );
     } catch (deleteError) {
       const detail = safeError(deleteError);
-      invalidateHistory(deleteTarget.kind, deleteTarget.slug);
-      setError(`${detail} Undo and redo for this entity were invalidated.`);
+      if (isRejectedBeforeWrite(deleteError)) {
+        setError(detail);
+      } else {
+        invalidateHistory(deleteTarget.kind, deleteTarget.slug);
+        setError(`${detail} Undo and redo for this entity were invalidated.`);
+      }
     } finally {
       setSaving(false);
     }
@@ -560,7 +574,11 @@ function ProjectEditingLayer({
     } catch (historyError) {
       const detail = safeError(historyError);
       refreshHistoryUi();
-      setError(`${detail} History was invalidated; reload and compare.`);
+      setError(
+        isRejectedBeforeWrite(historyError)
+          ? detail
+          : `${detail} History was invalidated; reload and compare.`,
+      );
     } finally {
       setSaving(false);
     }
