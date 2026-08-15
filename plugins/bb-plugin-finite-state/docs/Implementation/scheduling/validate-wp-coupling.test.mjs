@@ -319,16 +319,16 @@ test("promotion policy cannot regain a mock-chain dependency", () => {
 
 test("temporary stops require paired reasons and resume conditions", () => {
   const missingReason = errorsFor((manifest) => {
-    delete manifest.dispatchPolicy.stoppedWorkPackageReasons.WP56;
+    delete manifest.dispatchPolicy.stoppedWorkPackageReasons.WP74;
   });
-  assert(missingReason.includes("stopped reason for WP56 must be an object"));
+  assert(missingReason.includes("stopped reason for WP74 must be an object"));
 
   const missingResume = errorsFor((manifest) => {
-    manifest.dispatchPolicy.stoppedWorkPackageReasons.WP56.resumeCondition = "";
+    manifest.dispatchPolicy.stoppedWorkPackageReasons.WP74.resumeCondition = "";
   });
   assert(
     missingResume.includes(
-      "stopped reason for WP56 must include a non-empty resumeCondition",
+      "stopped reason for WP74 must include a non-empty resumeCondition",
     ),
   );
 
@@ -337,7 +337,7 @@ test("temporary stops require paired reasons and resume conditions", () => {
   });
   assert(
     orphanedReason.includes(
-      "stopped reason for WP56 has no stoppedWorkPackages entry",
+      "stopped reason for WP74 has no stoppedWorkPackages entry",
     ),
   );
 
@@ -421,16 +421,22 @@ test("promotion excludes prohibited and stopped next work packages", () => {
 
   // C-SPEC78-CONTRACT (WP71) became dependency-ready when AMD-0010…0015 were
   // approved on 2026-08-13 and its temporary stop was lifted, which brings the
-  // independent-cluster count to the six required.
+  // independent-cluster count to the six required. C-DOCUMENT-PROVENANCE
+  // (WP56) became ready when AMD-0026 was ratified 2026-08-15 and its
+  // transport-chokepoint stop was lifted.
   assert.equal(result.eligible, true, result.errors.join("\n"));
-  assert.deepEqual(result.readyClusters, ["C-CANVAS", "C-SPEC78-CONTRACT"]);
+  assert.deepEqual(result.readyClusters, [
+    "C-CANVAS",
+    "C-DOCUMENT-PROVENANCE",
+    "C-SPEC78-CONTRACT",
+  ]);
   assert.deepEqual(result.activeClusters, [
     "C-EARS-AUTHORING",
     "C-FIRMWARE-MATERIALIZATION",
     "C-FIXTURE-CORPUS",
     "C-SYNC-TRANSACTION",
   ]);
-  for (const blockedCluster of ["C-DISTRIBUTION", "C-DOCUMENT-PROVENANCE"]) {
+  for (const blockedCluster of ["C-DISTRIBUTION"]) {
     assert(!result.readyClusters.includes(blockedCluster));
   }
 });

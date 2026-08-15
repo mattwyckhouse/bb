@@ -609,8 +609,8 @@ specs: `docs/Product Specs/SPEC 07` and `SPEC 08`._
 
 ### AMD-0026 — WP-56 document transport revision: versioned JSON envelope upload and query-parameter content retrieval
 
-- Status: proposed
-- Owner pre-decision: Option B approved by product owner Matt Wyckhouse 2026-08-15 01:28Z (relayed by supervisor). This entry is the required interface-revision draft; the specific text below still requires owner ratification before WP-56 dispatches.
+- Status: approved
+- Approved: 2026-08-15 01:44Z, product owner Matt Wyckhouse, verbatim decision `Ratify`, relayed by supervisor thread `thr_rxxqm3px8s`. Supervisor verified the drafted PR #180 text against the approved Option B scope — faithful, no creep. Owner pre-decision Option B was approved 2026-08-15 01:28Z.
 - Artifacts:
   - `docs/Implementation/tasks/WP-56 — Documents store, viewer, extraction overlay & upload.md` (declared interface contract; no frozen code artifact changes — `shared/contract.ts` documents RPC methods are untouched)
 - Reason: at integration `056899c2d`, bb core rejects `multipart/form-data` on local-auth plugin mutation routes before dispatch, and plugin HTTP routes match exact paths only (no `/:sha256` segments). WP-56's declared upload and content routes were therefore unimplementable on today's plugin SDK, stopping the WP and blocking the HBOM chain (WP-44/45/46) and downstream WP-59/WP-62 — flagged as the roadmap's biggest chokepoint.
@@ -619,5 +619,5 @@ specs: `docs/Product Specs/SPEC 07` and `SPEC 08`._
 - Versioning and v2 path: `envelopeVersion` is a required discriminator. Version 1 is the base64 envelope above. Version 2 is reserved for native transport (multipart upload and parameterized path segments) once upstream capability lands — feature request filed as get-bb/bb#1632 — so native transport can be added without contract churn on the plugin side. Unknown envelope versions are rejected with a stable code before any decode.
 - Accepted costs on record: ~33% upload payload inflation from base64 and no browser-native streaming; the owner accepted both at spec-sheet/PDF/XLSX scale. Firmware transfer stays on its own existing lane and is out of scope.
 - Affected WPs and gates: WP-56 (FS-70); once this revision is ratified and WP-56 dispatches, the HBOM chain WP-44/45/46 and downstream WP-59/WP-62 open per the coupling manifest. Documents-lane tests, mock-route fidelity, and Node 22.19 typecheck/test/lint/build gates apply as declared in the WP doc.
-- Approval provenance: pending owner ratification of this exact drafted text.
-- Evidence: WP-56 stop record in `docs/Implementation/scheduling/wp-coupling-manifest.json` (integration `056899c2d` findings); owner Option B decision relayed 2026-08-15 01:28Z; upstream feature request get-bb/bb#1632.
+- Approval provenance: owner ratified the exact text drafted in PR #180 with no modifications. The WP56 manifest stop is lifted in the same ratification-recording change; FS-70 dispatches into C-DOCUMENT-PROVENANCE, and the HBOM chain (WP44/45/46) plus WP59/WP62 open per the manifest as sequenced.
+- Evidence: WP-56 stop record in `docs/Implementation/scheduling/wp-coupling-manifest.json` (integration `056899c2d` findings); owner Option B decision relayed 2026-08-15 01:28Z; ratification relayed 2026-08-15 01:44Z; upstream feature request get-bb/bb#1632.
