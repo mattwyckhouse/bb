@@ -230,8 +230,12 @@
     "prohibitedWorkPackageReasons": {
       "WP02": "ADR — bb Is Not Modified: builtin registration is a BB release decision; dispatch is prohibited and FS-16 stays in backlog until the ADR is superseded."
     },
-    "stoppedWorkPackages": ["WP74", "WP100"],
+    "stoppedWorkPackages": ["WP74", "WP82", "WP100"],
     "stoppedWorkPackageReasons": {
+      "WP82": {
+        "reason": "L10 is post-core per the AUTHORITY ruling (2026-08-14) and the overnight operating directive (2026-08-15) explicitly forbids opening L9/L10. WP82 became dependency-ready when WP56 shipped, so without this stop the ready-queue watchdog re-flags FS-117 every cycle.",
+        "resumeCondition": "Core complete (G4 beats and the AUTHORITY near-term set WP99-WP102 landed) or explicit owner reprioritization of L10 - same gate as WP74."
+      },
       "WP100": {
         "reason": "FS-216 implementer hit a genuine frozen-interface conflict on first dispatch (2026-08-15 02:3xZ): WP-100 requires a human-only Sync-panel seed RPC but shared/contract.ts v11 has no seed method, and the seed write-root (.fs/** vs product-security/** vs both) is ambiguous against the frozen path registry. Paused per the overnight owner-gates-never-idle-capacity directive; no code was written.",
         "resumeCondition": "Owner answers both morning-digest items: (1) ratify a syncSeedFromAs human-only amendment or defer the panel RPC out of WP-100 v1 (CLI-only needs no contract change), and (2) clarify the seed write roots. Re-dispatch is a fresh worktree."
