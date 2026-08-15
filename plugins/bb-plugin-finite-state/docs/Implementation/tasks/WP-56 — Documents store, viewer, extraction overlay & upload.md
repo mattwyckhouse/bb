@@ -4,7 +4,7 @@
 **Depends on:** WP-04, WP-07 · **Blocks:** WP-46, WP-58, WP-59, WP-61
 **Produces a FROZEN artifact:** no — consumes the single frozen document ledger and defines a lane-local source-reference codec shared with BOM
 
-> **Transport revision R2 (AMD-0026, PROPOSED 2026-08-15).** bb core rejects multipart on local-auth plugin mutations and plugin routes match exact paths only, so the original multipart upload and `/<sha256>/content` path routes are unimplementable on today's SDK. The owner approved Option B (2026-08-15 01:28Z): upload via a versioned JSON envelope with base64 content, retrieval via an exact-match route with `sha256` as a query parameter. This doc's transport clauses below reflect R2. The WP remains stopped in the coupling manifest until the AMD-0026 text is owner-ratified; do not dispatch before ratification. Upstream native transport (envelope v2) is tracked as get-bb/bb#1632.
+> **Transport revision R2 (AMD-0026, RATIFIED 2026-08-15 01:44Z).** bb core rejects multipart on local-auth plugin mutations and plugin routes match exact paths only, so the original multipart upload and `/<sha256>/content` path routes are unimplementable on today's SDK. The owner ratified Option B: upload via a versioned JSON envelope with base64 content, retrieval via an exact-match route with `sha256` as a query parameter. This doc's transport clauses reflect R2 and are the binding spec. Upstream native transport (envelope v2) is tracked as get-bb/bb#1632.
 
 ## Files you own
 
