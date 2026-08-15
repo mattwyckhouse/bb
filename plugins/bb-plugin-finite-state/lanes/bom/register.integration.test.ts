@@ -336,6 +336,7 @@ describe("registered SBOM pull surfaces", () => {
           .pluck()
           .all(),
       ).toEqual([projectId, "sibling-project"].sort());
+      const versionRequestsBeforeCacheRead = versionRequests;
       expect(
         await host.harness.behavior.callRpc("bomCachedProjectVersions", {
           projectId: "bb-project-fs172",
@@ -344,9 +345,9 @@ describe("registered SBOM pull surfaces", () => {
         versions: [
           {
             platformProjectId: projectId,
-            platformProjectName: "Eagle Connected Gateway",
+            platformProjectName: null,
             projectVersionId,
-            projectVersionName: "2.4.0",
+            projectVersionName: null,
             asOf: sbomAsOf,
             state: "fresh",
           },
@@ -361,6 +362,33 @@ describe("registered SBOM pull surfaces", () => {
         ],
         selectedPlatformProjectId: projectId,
         selectedProjectVersionId: projectVersionId,
+      });
+      expect(versionRequests).toBe(versionRequestsBeforeCacheRead);
+      await expect(
+        host.harness.behavior.callRpc("bomPlatformScopeNames", {
+          scopes: [
+            { projectId, projectVersionId },
+            {
+              projectId: "sibling-project",
+              projectVersionId: "sibling-version",
+            },
+          ],
+        }),
+      ).resolves.toEqual({
+        scopes: [
+          {
+            projectId,
+            projectName: "Eagle Connected Gateway",
+            projectVersionId,
+            projectVersionName: "2.4.0",
+          },
+          {
+            projectId: "sibling-project",
+            projectName: null,
+            projectVersionId: "sibling-version",
+            projectVersionName: null,
+          },
+        ],
       });
       await expect(
         host.harness.behavior.callRpc("bomCachedProjectVersions", {

@@ -41,10 +41,43 @@ describe("PendingChangesChip", () => {
     );
 
     expect(
-      await slot.findByText(
-        "Sync unavailable · AS_PROJECT_SELECTION_REQUIRED: choose a linked project",
-      ),
+      await slot.findByText("Sync unavailable · AS_PROJECT_SELECTION_REQUIRED"),
     ).toBeTruthy();
+    expect(
+      slot
+        .getByRole("button", {
+          name: /pending change count unavailable: AS_PROJECT_SELECTION_REQUIRED/u,
+        })
+        .getAttribute("title"),
+    ).toBe("choose a linked project");
+  });
+
+  it("keeps internal remote URLs out of the visible label and title", async () => {
+    const slot = renderSlot(
+      await chipRegistration(),
+      {},
+      {
+        rpc: {
+          syncStatus: () =>
+            Promise.reject(
+              new Error(
+                "Platform could not be reached during GET http://127.0.0.1:61715/api/public/v0/versions/pv/findings",
+              ),
+            ),
+        },
+      },
+    );
+
+    expect(
+      await slot.findByText("Sync unavailable · SYNC_STATUS_UNAVAILABLE"),
+    ).toBeTruthy();
+    const button = slot.getByRole("button", {
+      name: /pending change count unavailable/u,
+    });
+    expect(button.getAttribute("title")).toBe(
+      "Platform could not be reached during GET the configured remote endpoint",
+    );
+    expect(button.textContent).not.toContain("127.0.0.1");
   });
 
   it("leaves safe route segments raw for host navigation encoding", async () => {

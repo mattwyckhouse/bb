@@ -117,7 +117,7 @@ export function registerSync(bb: BbPluginApi, ctx: PluginContext): void {
       }
     },
   };
-  registerSyncRpc(bb, deps, remote.assuranceStudio);
+  registerSyncRpc(bb, deps, remote.assuranceStudio, remote.platform);
   const raw = registerSyncCli(
     bb,
     deps,

@@ -20,6 +20,7 @@ import {
 import { componentSubPath, parseBomSubPath } from "./sbom/routes.js";
 import { SbomTable } from "./sbom/sbom-table.js";
 import { bomAppRpcContract } from "../rpc.js";
+import { bomVersionLabel } from "./version-label.js";
 
 function scopeValue(
   platformProjectId: string,
@@ -122,6 +123,44 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
           ) ?? result.versions[0];
         setPlatformProjectId(selected?.platformProjectId ?? null);
         setProjectVersionId(selected?.projectVersionId ?? null);
+        if (result.versions.length > 0) {
+          void rpc
+            .call("bomPlatformScopeNames", {
+              scopes: result.versions.map((version) => ({
+                projectId: version.platformProjectId,
+                projectVersionId: version.projectVersionId,
+              })),
+            })
+            .then((names) => {
+              if (!active) return;
+              const byScope = new Map(
+                names.scopes.map((scope) => [
+                  scopeValue(scope.projectId, scope.projectVersionId),
+                  scope,
+                ]),
+              );
+              setVersions((current) =>
+                current.map((version) => {
+                  const name = byScope.get(
+                    scopeValue(
+                      version.platformProjectId,
+                      version.projectVersionId,
+                    ),
+                  );
+                  return name
+                    ? {
+                        ...version,
+                        platformProjectName: name.projectName,
+                        projectVersionName: name.projectVersionName,
+                      }
+                    : version;
+                }),
+              );
+            })
+            .catch(() => {
+              // Raw cached identifiers remain usable when enrichment is offline.
+            });
+        }
       })
       .catch((cause) => {
         if (!active) return;
@@ -240,10 +279,7 @@ export function BomPanel({ subPath }: PluginNavPanelProps): React.JSX.Element {
                   version.projectVersionId,
                 )}
               >
-                {version.platformProjectName ?? version.platformProjectId} ·{" "}
-                {version.projectVersionName ?? version.projectVersionId} —{" "}
-                {version.platformProjectId} / {version.projectVersionId}
-                {version.state === "stale" ? " · stale" : ""}
+                {bomVersionLabel(version)}
               </option>
             ))}
           </select>

@@ -1,7 +1,15 @@
 import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
 import { z } from "zod";
 
-import type { AssuranceStudioClient } from "../../lib/remote/types.js";
+import type {
+  AssuranceStudioClient,
+  PlatformClient,
+} from "../../lib/remote/types.js";
+import { resolvePlatformScopeNames } from "../../lib/remote/platform/scope-names.js";
+import {
+  connectionStatusMessage,
+  diagnoseRemoteFailure,
+} from "../../lib/remote/errors.js";
 import {
   backfillUnambiguousWorkspaceProjectBinding,
   bindWorkspacePlatformProject,
@@ -41,8 +49,41 @@ const cachedSyncScopesRpc = {
         z
           .object({
             platformProjectId: z.string().min(1).max(512),
+            platformProjectName: z.string().min(1).max(512).nullable(),
             projectVersionId: z.string().min(1).max(512),
+            projectVersionName: z.string().min(1).max(512).nullable(),
             state: z.enum(["fresh", "stale"]),
+          })
+          .strict(),
+      ),
+    })
+    .strict(),
+} as const;
+
+const platformScopeNamesRpc = {
+  input: z
+    .object({
+      scopes: z
+        .array(
+          z
+            .object({
+              projectId: z.string().min(1).max(512),
+              projectVersionId: z.string().min(1).max(512),
+            })
+            .strict(),
+        )
+        .max(100),
+    })
+    .strict(),
+  output: z
+    .object({
+      scopes: z.array(
+        z
+          .object({
+            projectId: z.string().min(1).max(512),
+            projectName: z.string().min(1).max(512).nullable(),
+            projectVersionId: z.string().min(1).max(512),
+            projectVersionName: z.string().min(1).max(512).nullable(),
           })
           .strict(),
       ),
@@ -52,12 +93,14 @@ const cachedSyncScopesRpc = {
 
 export const syncScopeCatalogContract = defineRpcContract({
   syncCachedScopes: cachedSyncScopesRpc,
+  syncPlatformScopeNames: platformScopeNamesRpc,
 });
 
 export const syncAppRpcContract = defineRpcContract({
   connectionsStatus: rpcContract.connectionsStatus,
   ...syncContract,
   syncCachedScopes: cachedSyncScopesRpc,
+  syncPlatformScopeNames: platformScopeNamesRpc,
 });
 
 function entityKinds(values: string[] | undefined): EntityKind[] | undefined {
@@ -87,6 +130,7 @@ export function registerSyncRpc(
   bb: BbPluginApi,
   deps: EngineDeps,
   assuranceStudio: AssuranceStudioClient | null = null,
+  platform: Pick<PlatformClient, "listProjects" | "listVersions"> | null = null,
 ): void {
   bb.rpc.register(syncScopeCatalogContract, {
     async syncCachedScopes(input) {
@@ -113,9 +157,17 @@ export function registerSyncRpc(
       return {
         scopes: rows.map((row) => ({
           platformProjectId: row.project_id,
+          platformProjectName: null,
           projectVersionId: row.project_version_id,
+          projectVersionName: null,
           state: row.stale === 1 ? ("stale" as const) : ("fresh" as const),
         })),
+      };
+    },
+    async syncPlatformScopeNames(input) {
+      if (!platform) return { scopes: [] };
+      return {
+        scopes: await resolvePlatformScopeNames(platform, input.scopes),
       };
     },
   });
@@ -186,15 +238,25 @@ export function registerSyncRpc(
         projectId: input.projectId,
         projectVersionId: input.projectVersionId,
       };
-      const report = await status(deps, scope, kinds, {
-        assuranceStudioProjectId: input.workspaceProjectId
-          ? selectedAssuranceStudioProject(
-              deps,
-              input.workspaceProjectId,
-              scope.projectId,
-            )
-          : null,
-      });
+      let report: Awaited<ReturnType<typeof status>>;
+      try {
+        report = await status(deps, scope, kinds, {
+          assuranceStudioProjectId: input.workspaceProjectId
+            ? selectedAssuranceStudioProject(
+                deps,
+                input.workspaceProjectId,
+                scope.projectId,
+              )
+            : null,
+        });
+      } catch (error: unknown) {
+        const diagnostic = diagnoseRemoteFailure(error);
+        if (diagnostic.service !== null) {
+          const code = `SYNC_REMOTE_${diagnostic.kind.replaceAll("-", "_").toUpperCase()}`;
+          throw new Error(`${code}: ${connectionStatusMessage(diagnostic)}`);
+        }
+        throw error;
+      }
       const metadata = syncMetadata(deps, scope, kinds);
       const scopedChange = (
         change: { kind: EntityKind; key: string; fields: string[] },

@@ -243,6 +243,20 @@ describe("finite-state CLI", () => {
     expect(unknown.stderr).toContain("Usage:");
     expect(unknown.stderr).toContain("bb finite-state pull");
     expect(harness.syncCalls).toEqual([]);
+
+    const helpValue = await harness.run([
+      "bench",
+      "run",
+      "pv-help-value",
+      "--target",
+      "-h",
+      "--json",
+    ]);
+    expect(helpValue.exitCode).toBe(0);
+    expect(helpValue.stdout).not.toContain("Commands:");
+    expect(JSON.parse(helpValue.stdout)).toMatchObject({
+      runId: "run-pv-help-value",
+    });
   });
 
   it("renders table and JSON for each native command family", async () => {

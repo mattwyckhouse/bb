@@ -94,6 +94,8 @@ export interface SyncScope {
 
 interface CachedSyncScope extends SyncScope {
   projectVersionId: string;
+  platformProjectName: string | null;
+  projectVersionName: string | null;
   state: "fresh" | "stale";
 }
 
@@ -429,10 +431,17 @@ function ScopeToolbar({
     scope?.projectVersionId ?? "",
   );
   const [error, setError] = useState<string | null>(null);
-  const cachedScopeValue =
-    projectId && projectVersionId
-      ? `${encodeURIComponent(projectId)}/${encodeURIComponent(projectVersionId)}`
-      : "";
+  const cachedScopeValue = projectId
+    ? `${encodeURIComponent(projectId)}/${projectVersionId ? encodeURIComponent(projectVersionId) : "@project"}`
+    : "";
+  const cachedProjects = [
+    ...new Map(
+      cachedScopes.map((candidate) => [
+        candidate.projectId,
+        candidate.platformProjectName,
+      ]),
+    ),
+  ];
 
   return (
     <div className="flex shrink-0 flex-wrap items-end gap-2 border-b border-border bg-card px-3 py-2">
@@ -467,54 +476,74 @@ function ScopeToolbar({
                   `${encodeURIComponent(candidate.projectId)}/${encodeURIComponent(candidate.projectVersionId)}` ===
                   event.target.value,
               );
-              if (!selected) return;
-              setProjectId(selected.projectId);
-              setProjectVersionId(selected.projectVersionId);
+              if (selected) {
+                setProjectId(selected.projectId);
+                setProjectVersionId(selected.projectVersionId);
+                setError(null);
+                return;
+              }
+              const projectLevel = cachedProjects.find(
+                ([candidateProjectId]) =>
+                  `${encodeURIComponent(candidateProjectId)}/@project` ===
+                  event.target.value,
+              );
+              if (!projectLevel) return;
+              setProjectId(projectLevel[0]);
+              setProjectVersionId("");
               setError(null);
             }}
             value={cachedScopeValue}
           >
             <option value="">Select a cached scope</option>
+            {cachedProjects.map(([candidateProjectId, candidateName]) => (
+              <option
+                key={`${candidateProjectId}\0@project`}
+                value={`${encodeURIComponent(candidateProjectId)}/@project`}
+              >
+                {candidateName ?? candidateProjectId} · Project level —{" "}
+                {candidateProjectId} / @project
+              </option>
+            ))}
             {cachedScopes.map((candidate) => (
               <option
                 key={`${candidate.projectId}\0${candidate.projectVersionId}`}
                 value={`${encodeURIComponent(candidate.projectId)}/${encodeURIComponent(candidate.projectVersionId)}`}
               >
-                {candidate.projectId} / {candidate.projectVersionId}
+                {candidate.platformProjectName === null &&
+                candidate.projectVersionName === null
+                  ? `${candidate.projectId} / ${candidate.projectVersionId}`
+                  : `${candidate.platformProjectName ?? candidate.projectId} · ${candidate.projectVersionName ?? candidate.projectVersionId} — ${candidate.projectId} / ${candidate.projectVersionId}`}
                 {candidate.state === "stale" ? " · stale" : ""}
               </option>
             ))}
           </select>
         </label>
-      ) : (
-        <>
-          <label className="min-w-48 flex-1 text-xs font-medium text-muted-foreground">
-            Platform project ID
-            <Input
-              aria-invalid={error ? true : undefined}
-              className="mt-1 h-8 font-mono text-xs"
-              onChange={(event) => {
-                setProjectId(event.target.value);
-                setError(null);
-              }}
-              placeholder="project-id"
-              value={projectId}
-            />
-          </label>
-          <label className="min-w-48 flex-1 text-xs font-medium text-muted-foreground">
-            Platform version ID · optional
-            <Input
-              className="mt-1 h-8 font-mono text-xs"
-              onChange={(event) => {
-                setProjectVersionId(event.target.value);
-                setError(null);
-              }}
-              placeholder="Blank for project-level scope"
-              value={projectVersionId}
-            />
-          </label>
-        </>
-      )}
+      ) : null}
+      <label className="min-w-48 flex-1 text-xs font-medium text-muted-foreground">
+        Platform project ID
+        <Input
+          aria-invalid={error ? true : undefined}
+          className="mt-1 h-8 font-mono text-xs"
+          onChange={(event) => {
+            setProjectId(event.target.value);
+            setError(null);
+          }}
+          placeholder="project-id"
+          value={projectId}
+        />
+      </label>
+      <label className="min-w-48 flex-1 text-xs font-medium text-muted-foreground">
+        Platform version ID · optional
+        <Input
+          className="mt-1 h-8 font-mono text-xs"
+          onChange={(event) => {
+            setProjectVersionId(event.target.value);
+            setError(null);
+          }}
+          placeholder="Blank for project-level scope"
+          value={projectVersionId}
+        />
+      </label>
       <label className="min-w-44 text-xs font-medium text-muted-foreground">
         Surface
         <select
@@ -576,7 +605,7 @@ function ScopeToolbar({
       ) : workspaceProjectId && cachedScopes.length === 0 ? (
         <p className="w-full text-xs text-muted-foreground">
           No accepted cached scope exists for this bb project yet. Enter IDs
-          manually or pull a Platform version first.
+          manually, or pull a Platform version to add it to this picker.
         </p>
       ) : null}
     </div>
@@ -637,9 +666,9 @@ function MissingScopeState(): React.JSX.Element {
         <Icon className="size-6 text-muted-foreground" name="Target" />
         <h2 className="mt-4 text-lg font-semibold">Choose a Platform scope</h2>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          Enter the Finite State Platform project ID and optional version ID.
-          The bb project ID is intentionally not sent to Platform because the
-          two systems use different identity spaces.
+          Choose an accepted cached scope above, or enter a Finite State
+          Platform project ID and optional version ID manually. Leave the
+          version blank for project-level review.
         </p>
       </section>
     </div>
@@ -931,9 +960,46 @@ export function SyncReviewPanel({
             result.scopes.map((scope) => ({
               projectId: scope.platformProjectId,
               projectVersionId: scope.projectVersionId,
+              platformProjectName: scope.platformProjectName,
+              projectVersionName: scope.projectVersionName,
               state: scope.state,
             })),
           );
+          if (result.scopes.length > 0) {
+            void rpc
+              .call("syncPlatformScopeNames", {
+                scopes: result.scopes.map((scope) => ({
+                  projectId: scope.platformProjectId,
+                  projectVersionId: scope.projectVersionId,
+                })),
+              })
+              .then((names) => {
+                if (!active) return;
+                const byScope = new Map(
+                  names.scopes.map((scope) => [
+                    `${scope.projectId}\0${scope.projectVersionId}`,
+                    scope,
+                  ]),
+                );
+                setCachedScopes((current) =>
+                  current.map((scope) => {
+                    const name = byScope.get(
+                      `${scope.projectId}\0${scope.projectVersionId}`,
+                    );
+                    return name
+                      ? {
+                          ...scope,
+                          platformProjectName: name.projectName,
+                          projectVersionName: name.projectVersionName,
+                        }
+                      : scope;
+                  }),
+                );
+              })
+              .catch(() => {
+                // Raw cached identifiers remain usable when enrichment is offline.
+              });
+          }
         }
       })
       .catch((error: unknown) => {

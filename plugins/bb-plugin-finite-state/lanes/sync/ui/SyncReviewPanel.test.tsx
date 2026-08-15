@@ -290,8 +290,20 @@ function handlers(
       scopes: [
         {
           platformProjectId: PROJECT,
+          platformProjectName: null,
           projectVersionId: VERSION,
+          projectVersionName: null,
           state: "fresh" as const,
+        },
+      ],
+    }),
+    syncPlatformScopeNames: () => ({
+      scopes: [
+        {
+          projectId: PROJECT,
+          projectName: "Platform Project",
+          projectVersionId: VERSION,
+          projectVersionName: "2.4",
         },
       ],
     }),
@@ -321,7 +333,7 @@ function handlers(
 }
 
 describe("Sync review panel", () => {
-  it("selects an accepted cached Platform scope instead of requiring raw IDs", async () => {
+  it("adds named cached and project-level choices without removing manual scope entry", async () => {
     const slot = renderSlot(
       await syncPanel(),
       { subPath: "" },
@@ -341,13 +353,32 @@ describe("Sync review panel", () => {
     );
 
     const picker = await slot.findByLabelText("Cached Platform scope");
-    expect(slot.getByText(`${PROJECT} / ${VERSION}`)).toBeTruthy();
+    expect(
+      await slot.findByText(`Platform Project · 2.4 — ${PROJECT} / ${VERSION}`),
+    ).toBeTruthy();
+    expect(Reflect.get(slot.getByPlaceholderText("project-id"), "value")).toBe(
+      "",
+    );
+    expect(
+      Reflect.get(
+        slot.getByPlaceholderText("Blank for project-level scope"),
+        "value",
+      ),
+    ).toBe("");
     fireEvent.change(picker, {
       target: {
         value: `${encodeURIComponent(PROJECT)}/${encodeURIComponent(VERSION)}`,
       },
     });
-    expect(slot.queryByPlaceholderText("project-id")).toBeNull();
+    expect(Reflect.get(slot.getByPlaceholderText("project-id"), "value")).toBe(
+      PROJECT,
+    );
+    expect(
+      Reflect.get(
+        slot.getByPlaceholderText("Blank for project-level scope"),
+        "value",
+      ),
+    ).toBe(VERSION);
     fireEvent.click(slot.getByRole("button", { name: "Apply scope" }));
 
     await waitFor(() =>
@@ -355,6 +386,29 @@ describe("Sync review panel", () => {
         method: "toPluginPanel",
         path: "sync",
         options: { subPath: SCOPE_PATH },
+      }),
+    );
+
+    fireEvent.change(slot.getByLabelText("Cached Platform scope"), {
+      target: { value: `${encodeURIComponent(PROJECT)}/@project` },
+    });
+    expect(Reflect.get(slot.getByPlaceholderText("project-id"), "value")).toBe(
+      PROJECT,
+    );
+    expect(
+      Reflect.get(
+        slot.getByPlaceholderText("Blank for project-level scope"),
+        "value",
+      ),
+    ).toBe("");
+    fireEvent.click(slot.getByRole("button", { name: "Apply scope" }));
+    await waitFor(() =>
+      expect(slot.inspection.navigateCalls).toContainEqual({
+        method: "toPluginPanel",
+        path: "sync",
+        options: {
+          subPath: `scope/${PROJECT}/@project`,
+        },
       }),
     );
   });

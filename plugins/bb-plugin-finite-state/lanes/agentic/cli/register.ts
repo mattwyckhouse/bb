@@ -152,6 +152,44 @@ function asCliExit(code: number): CliExit {
   return 5;
 }
 
+const HELP_VALUE_OPTIONS = new Set([
+  "--as-project",
+  "--candidate",
+  "--check",
+  "--clause",
+  "--cursor",
+  "--evidence",
+  "--expected-hash",
+  "--filter",
+  "--format",
+  "--justification",
+  "--kind",
+  "--limit",
+  "--output",
+  "--pin",
+  "--project",
+  "--pv",
+  "--reason",
+  "--reqs",
+  "--requirement",
+  "--response",
+  "--status",
+  "--target",
+  "--tier",
+  "--type",
+  "--version",
+  "-o",
+]);
+
+function hasHelpFlag(argv: readonly string[]): boolean {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--help" || arg === "-h") return true;
+    if (arg !== undefined && HELP_VALUE_OPTIONS.has(arg)) index += 1;
+  }
+  return false;
+}
+
 async function collectRecords(
   pages: AsyncIterable<{ items: unknown[] }>,
 ): Promise<JsonRecord[]> {
@@ -1387,6 +1425,14 @@ async function executeCommand(
       return failConfig(error.message);
     }
     if (error instanceof Error) {
+      if (
+        error.message.startsWith("unknown option ") ||
+        error.message.startsWith("unexpected argument ") ||
+        error.message.includes(" requires a value") ||
+        error.message.includes(" accepts only ")
+      ) {
+        return failUsage(error.message);
+      }
       const conflict =
         error.message.includes("CAS") ||
         error.message.includes("cas_mismatch") ||
@@ -1414,7 +1460,7 @@ function createDispatcher(
       syncRun: sync.run,
       context,
     };
-    if (argv.includes("--help") || argv.includes("-h")) {
+    if (hasHelpFlag(argv)) {
       return result(0, renderFiniteStateHelp(argv));
     }
     try {
