@@ -230,8 +230,12 @@
     "prohibitedWorkPackageReasons": {
       "WP02": "ADR — bb Is Not Modified: builtin registration is a BB release decision; dispatch is prohibited and FS-16 stays in backlog until the ADR is superseded."
     },
-    "stoppedWorkPackages": ["WP74", "WP82", "WP100"],
+    "stoppedWorkPackages": ["WP74", "WP78", "WP82", "WP100"],
     "stoppedWorkPackageReasons": {
+      "WP78": {
+        "reason": "L9 is post-core per the AUTHORITY ruling (2026-08-14) and the overnight operating directive (2026-08-15) forbids opening L9/L10. WP78 became dependency-ready when WP44 shipped, so without this stop the ready-queue watchdog re-flags FS-113 every cycle.",
+        "resumeCondition": "Core complete (G4 beats and the AUTHORITY near-term set WP99-WP102 landed) or explicit owner reprioritization of L9 - same gate as WP74/WP82."
+      },
       "WP82": {
         "reason": "L10 is post-core per the AUTHORITY ruling (2026-08-14) and the overnight operating directive (2026-08-15) explicitly forbids opening L9/L10. WP82 became dependency-ready when WP56 shipped, so without this stop the ready-queue watchdog re-flags FS-117 every cycle.",
         "resumeCondition": "Core complete (G4 beats and the AUTHORITY near-term set WP99-WP102 landed) or explicit owner reprioritization of L10 - same gate as WP74."
