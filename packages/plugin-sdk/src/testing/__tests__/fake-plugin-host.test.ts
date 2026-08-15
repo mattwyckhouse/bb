@@ -1,4 +1,13 @@
-import { describe, expect, it } from "vitest";
+import {
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 import {
   PLUGIN_CLI_OUTPUT_MAX_BYTES,
@@ -6,7 +15,12 @@ import {
   type PluginAgentConfigurationContext,
 } from "../../backend-contract.js";
 import { defineRpcContract } from "../../rpc-contract.js";
-import { createFakePluginHost, makeThreadResponse } from "../index.js";
+import {
+  createFakePluginHost,
+  FAKE_PLUGIN_HOST_DIR_PREFIX,
+  makeThreadResponse,
+  sweepStaleFakePluginHostDirs,
+} from "../index.js";
 
 describe("ui.requestInput", () => {
   it("settles a blocking request through the harness", async () => {
@@ -721,6 +735,20 @@ describe("agent tools", () => {
 });
 
 describe("dispose", () => {
+  it("removes the temporary storage root after dispose", async () => {
+    const { bb, harness } = createFakePluginHost();
+    const storageRoot = harness.storageRoot;
+    expect(storageRoot).toContain(FAKE_PLUGIN_HOST_DIR_PREFIX);
+    expect(existsSync(storageRoot)).toBe(true);
+    // Open a database so the root is non-empty — close must not leave the dir.
+    bb.storage.database().exec("CREATE TABLE t (id INTEGER PRIMARY KEY)");
+    expect(existsSync(join(storageRoot, "data.db"))).toBe(true);
+
+    await harness.dispose();
+
+    expect(existsSync(storageRoot)).toBe(false);
+  });
+
   it("reloads atomically while preserving storage and the direct harness API", async () => {
     const host = createFakePluginHost({ pluginId: "reloadable" });
     const oldContract = defineRpcContract({
@@ -804,6 +832,48 @@ describe("dispose", () => {
     expect(() => bb.sdk).toThrow("stale");
     // A second dispose is a no-op.
     await harness.dispose();
+  });
+
+  it("auto-disposes the temp root when the Vitest test finishes", () => {
+    // Register the assertion first so LIFO onTestFinished runs dispose (from
+    // createFakePluginHost) before this check.
+    let storageRoot = "";
+    onTestFinished(() => {
+      expect(storageRoot).not.toBe("");
+      expect(existsSync(storageRoot)).toBe(false);
+    });
+    const { harness } = createFakePluginHost();
+    storageRoot = harness.storageRoot;
+    expect(existsSync(storageRoot)).toBe(true);
+    // Deliberately skip harness.dispose() — onTestFinished must clean up.
+  });
+});
+
+describe("stale fake-host dir sweep", () => {
+  it("removes orphan dirs from dead owner pids once they are old enough", () => {
+    const orphan = mkdtempSync(join(tmpdir(), FAKE_PLUGIN_HOST_DIR_PREFIX));
+    writeFileSync(join(orphan, ".owner-pid"), "999999999\n", {
+      encoding: "utf8",
+    });
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(orphan, twoHoursAgo, twoHoursAgo);
+
+    const removed = sweepStaleFakePluginHostDirs();
+    expect(removed).toBeGreaterThanOrEqual(1);
+    expect(existsSync(orphan)).toBe(false);
+  });
+
+  it("does not remove dirs owned by a still-living process", () => {
+    const live = mkdtempSync(join(tmpdir(), FAKE_PLUGIN_HOST_DIR_PREFIX));
+    writeFileSync(join(live, ".owner-pid"), `${process.pid}\n`, {
+      encoding: "utf8",
+    });
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(live, twoHoursAgo, twoHoursAgo);
+
+    sweepStaleFakePluginHostDirs();
+    expect(existsSync(live)).toBe(true);
+    rmSync(live, { recursive: true, force: true });
   });
 });
 

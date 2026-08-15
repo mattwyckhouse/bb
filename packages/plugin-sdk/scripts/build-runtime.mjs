@@ -29,6 +29,8 @@ const entries = [
       "cron-parser",
       "hono",
       "hono/*",
+      "vitest",
+      "vitest/*",
       "zod",
       "zod/*",
     ],

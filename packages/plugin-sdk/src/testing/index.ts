@@ -10,6 +10,8 @@
 export {
   createFakePluginHost,
   PluginContextStaleError,
+  FAKE_PLUGIN_HOST_DIR_PREFIX,
+  sweepStaleFakePluginHostDirs,
   type CreateFakePluginHostOptions,
   type FakeAgentToolRecord,
   type FakeCliRecord,

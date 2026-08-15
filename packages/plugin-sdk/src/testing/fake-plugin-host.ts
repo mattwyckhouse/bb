@@ -1,4 +1,12 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -62,6 +70,138 @@ import {
   type FakeSdkOverrides,
 } from "./fake-sdk.js";
 
+/** Prefix for per-host temp dirs under `os.tmpdir()`. */
+export const FAKE_PLUGIN_HOST_DIR_PREFIX = "bb-fake-plugin-host-";
+const OWNER_PID_FILENAME = ".owner-pid";
+/** Orphan dirs without a live owner pid older than this are swept on first use. */
+const STALE_FAKE_HOST_DIR_MS = 60 * 60 * 1000;
+
+type LiveFakeHostRoot = {
+  /** Always calls dispose on the current harness that owns this storage root. */
+  disposeCurrent: () => Promise<void>;
+};
+
+const liveFakeHostRoots = new Map<string, LiveFakeHostRoot>();
+let exitCleanupRegistered = false;
+let staleSweepDone = false;
+
+/** Vitest hooks, loaded only when `process.env.VITEST` is set (test runs). */
+const vitestHooks: {
+  onTestFinished?: (fn: () => void | Promise<void>) => void;
+} = await (process.env.VITEST
+  ? import("vitest")
+      .then((vitest) => ({ onTestFinished: vitest.onTestFinished }))
+      .catch(() => ({}))
+  : Promise.resolve({}));
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeFakeHostDir(storageRoot: string): void {
+  try {
+    rmSync(storageRoot, { recursive: true, force: true });
+  } catch {
+    // Best-effort: another worker may have swept it, or the OS still holds a handle.
+  }
+}
+
+function writeOwnerPid(storageRoot: string): void {
+  try {
+    writeFileSync(join(storageRoot, OWNER_PID_FILENAME), `${process.pid}\n`, {
+      encoding: "utf8",
+    });
+  } catch {
+    // Cleanup still works via live tracking + process-exit; pid file is for cross-process sweep.
+  }
+}
+
+/**
+ * Remove abandoned `bb-fake-plugin-host-*` dirs left by dead processes.
+ * Skips dirs whose owner pid is still alive so concurrent suites are safe.
+ */
+export function sweepStaleFakePluginHostDirs(
+  options: { olderThanMs?: number; now?: number } = {},
+): number {
+  const olderThanMs = options.olderThanMs ?? STALE_FAKE_HOST_DIR_MS;
+  const now = options.now ?? Date.now();
+  const root = tmpdir();
+  let removed = 0;
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return 0;
+  }
+  for (const name of entries) {
+    if (!name.startsWith(FAKE_PLUGIN_HOST_DIR_PREFIX)) continue;
+    const storageRoot = join(root, name);
+    if (liveFakeHostRoots.has(storageRoot)) continue;
+    let ageMs = 0;
+    try {
+      ageMs = now - statSync(storageRoot).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (ageMs < olderThanMs) continue;
+    const pidPath = join(storageRoot, OWNER_PID_FILENAME);
+    if (existsSync(pidPath)) {
+      try {
+        const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
+        if (isProcessAlive(pid)) continue;
+      } catch {
+        // Unreadable pid file — fall through and treat as orphan once old enough.
+      }
+    }
+    removeFakeHostDir(storageRoot);
+    removed += 1;
+  }
+  return removed;
+}
+
+function ensureExitCleanup(): void {
+  if (exitCleanupRegistered) return;
+  exitCleanupRegistered = true;
+  process.on("exit", () => {
+    for (const storageRoot of liveFakeHostRoots.keys()) {
+      removeFakeHostDir(storageRoot);
+    }
+    liveFakeHostRoots.clear();
+  });
+}
+
+function trackLiveFakeHostRoot(
+  storageRoot: string,
+  live: LiveFakeHostRoot,
+): void {
+  liveFakeHostRoots.set(storageRoot, live);
+  ensureExitCleanup();
+}
+
+function untrackLiveFakeHostRoot(storageRoot: string): void {
+  liveFakeHostRoots.delete(storageRoot);
+}
+
+function registerVitestAutoDispose(storageRoot: string): void {
+  const onTestFinished = vitestHooks.onTestFinished;
+  if (!onTestFinished) return;
+  try {
+    onTestFinished(async () => {
+      const live = liveFakeHostRoots.get(storageRoot);
+      if (!live) return;
+      await live.disposeCurrent();
+    });
+  } catch {
+    // Module-scope / beforeAll hosts — process-exit cleanup covers them.
+  }
+}
+
 /**
  * `createFakePluginHost` — an in-process stand-in for the BB server's plugin
  * runtime (apps/server/src/services/plugins/plugin-api.ts), for unit-testing
@@ -73,9 +213,15 @@ import {
  * read/update semantics (including onChange), schema-validated rpc/cli
  * invocation shapes (strict JSON boundaries, exit-code normalization), `threads.spawn`
  * attribution, atomic reload, and dispose order (services aborted, hooks LIFO,
- * database closed, stale handles throw). New tests can keep host inputs,
- * assertions, and shutdown explicit through `harness.behavior`,
- * `harness.inspection`, and `harness.lifecycle`; direct members remain aliases.
+ * database closed, temp storage root removed, stale handles throw). New tests
+ * can keep host inputs, assertions, and shutdown explicit through
+ * `harness.behavior`, `harness.inspection`, and `harness.lifecycle`; direct
+ * members remain aliases.
+ *
+ * Temp dirs (`bb-fake-plugin-host-*` under `os.tmpdir()`) are removed on
+ * `harness.lifecycle.dispose()`, on Vitest `onTestFinished` when created
+ * inside a test (including failed tests), and on process exit for any still
+ * live roots. A one-time startup sweep removes orphan dirs from dead PIDs.
  *
  * Deliberately different from the real host:
  * - storage is process-local: kv in a Map, `storage.database()` one shared
@@ -283,7 +429,6 @@ export interface FakeAgentToolRecord {
   ): PluginAgentToolResult | Promise<PluginAgentToolResult>;
 }
 
-
 export interface FakeMentionProviderRecord {
   id: string;
   label: string;
@@ -326,6 +471,11 @@ export interface FakePluginRegistrations {
 /** Read-only state for assertions after a plugin registers or handles work. */
 export interface FakePluginInspectionState {
   readonly pluginId: string;
+  /**
+   * Absolute path of this host's temporary storage root (`bb-fake-plugin-host-*`).
+   * Removed when `lifecycle.dispose()` runs with storage cleanup.
+   */
+  readonly storageRoot: string;
   /** Every `bb.log` line, in order. */
   readonly logEntries: FakeLogEntry[];
   /** Every `bb.realtime.publish`, payload normalized like the wire. */
@@ -437,8 +587,8 @@ export interface FakePluginLifecycleControls {
   /**
    * Dispose like a host reload/disable: abort services started via
    * runService, run onDispose hooks LIFO (isolated), close database handles,
-   * then poison the `bb` handle (further use throws
-   * PluginContextStaleError). Idempotent.
+   * remove the temporary storage root, then poison the `bb` handle (further
+   * use throws PluginContextStaleError). Idempotent.
    */
   dispose(): Promise<void>;
 }
@@ -1050,22 +1200,43 @@ const fakeHostDisposers = new WeakMap<
 export function createFakePluginHost(
   options: CreateFakePluginHostOptions = {},
 ): FakePluginHost {
-  return createFakePluginHostInternal(options);
+  if (!staleSweepDone) {
+    staleSweepDone = true;
+    sweepStaleFakePluginHostDirs();
+  }
+  const host = createFakePluginHostInternal(options);
+  registerVitestAutoDispose(host.harness.storageRoot);
+  return host;
 }
 
 function createFakePluginHostInternal(
   options: CreateFakePluginHostOptions,
   sharedState?: FakePluginPersistentState,
+  liveRoot?: LiveFakeHostRoot,
 ): FakePluginHost {
+  const isNewStorageRoot = sharedState === undefined;
   const persistentState =
     sharedState ??
+    (() => {
+      const storageRoot = mkdtempSync(
+        join(tmpdir(), FAKE_PLUGIN_HOST_DIR_PREFIX),
+      );
+      writeOwnerPid(storageRoot);
+      return {
+        kvRows: new Map<string, string>(),
+        storageRoot,
+        storedSettings: new Map<string, PluginSettingValue>(
+          Object.entries(options.settings ?? {}),
+        ),
+      } satisfies FakePluginPersistentState;
+    })();
+  const live =
+    liveRoot ??
     ({
-      kvRows: new Map<string, string>(),
-      storageRoot: mkdtempSync(join(tmpdir(), "bb-fake-plugin-host-")),
-      storedSettings: new Map<string, PluginSettingValue>(
-        Object.entries(options.settings ?? {}),
-      ),
-    } satisfies FakePluginPersistentState);
+      disposeCurrent: async () => {
+        /* set below once harness exists */
+      },
+    } satisfies LiveFakeHostRoot);
   const pluginId = options.pluginId ?? "test-plugin";
   const agentSkillIds = [...(options.agentSkillIds ?? [])];
   if (new Set(agentSkillIds).size !== agentSkillIds.length) {
@@ -1885,7 +2056,8 @@ function createFakePluginHostInternal(
       }
     }
     if (cleanupStorage) {
-      rmSync(storageRoot, { recursive: true, force: true });
+      untrackLiveFakeHostRoot(storageRoot);
+      removeFakeHostDir(storageRoot);
     }
     invalidated = true;
   }
@@ -1901,6 +2073,7 @@ function createFakePluginHostInternal(
       return this;
     },
     pluginId,
+    storageRoot,
     logEntries,
     realtimeSignals,
     needsConfigurationMessages,
@@ -2190,17 +2363,21 @@ function createFakePluginHostInternal(
 
     async reload(factory) {
       assertLive();
+      const previousDispose = live.disposeCurrent;
       const replacement = createFakePluginHostInternal(
         options,
         persistentState,
+        live,
       );
       try {
         await factory(replacement.bb);
       } catch (error) {
         await fakeHostDisposers.get(replacement.harness)?.(false);
+        live.disposeCurrent = previousDispose;
         throw error;
       }
       await disposeHost(false);
+      live.disposeCurrent = () => replacement.harness.dispose();
       return replacement;
     },
 
@@ -2208,6 +2385,11 @@ function createFakePluginHostInternal(
       await disposeHost(true);
     },
   };
+
+  if (isNewStorageRoot) {
+    live.disposeCurrent = () => harness.dispose();
+    trackLiveFakeHostRoot(storageRoot, live);
+  }
 
   fakeHostDisposers.set(harness, disposeHost);
   return { bb, harness };

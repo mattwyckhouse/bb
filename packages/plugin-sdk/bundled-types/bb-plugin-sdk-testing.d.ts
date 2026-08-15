@@ -49,6 +49,16 @@ declare function createFakeSdk(options: {
     harness: FakeSdkHarness;
 };
 
+/** Prefix for per-host temp dirs under `os.tmpdir()`. */
+declare const FAKE_PLUGIN_HOST_DIR_PREFIX = "bb-fake-plugin-host-";
+/**
+ * Remove abandoned `bb-fake-plugin-host-*` dirs left by dead processes.
+ * Skips dirs whose owner pid is still alive so concurrent suites are safe.
+ */
+declare function sweepStaleFakePluginHostDirs(options?: {
+    olderThanMs?: number;
+    now?: number;
+}): number;
 /**
  * `createFakePluginHost` — an in-process stand-in for the BB server's plugin
  * runtime (apps/server/src/services/plugins/plugin-api.ts), for unit-testing
@@ -60,9 +70,15 @@ declare function createFakeSdk(options: {
  * read/update semantics (including onChange), schema-validated rpc/cli
  * invocation shapes (strict JSON boundaries, exit-code normalization), `threads.spawn`
  * attribution, atomic reload, and dispose order (services aborted, hooks LIFO,
- * database closed, stale handles throw). New tests can keep host inputs,
- * assertions, and shutdown explicit through `harness.behavior`,
- * `harness.inspection`, and `harness.lifecycle`; direct members remain aliases.
+ * database closed, temp storage root removed, stale handles throw). New tests
+ * can keep host inputs, assertions, and shutdown explicit through
+ * `harness.behavior`, `harness.inspection`, and `harness.lifecycle`; direct
+ * members remain aliases.
+ *
+ * Temp dirs (`bb-fake-plugin-host-*` under `os.tmpdir()`) are removed on
+ * `harness.lifecycle.dispose()`, on Vitest `onTestFinished` when created
+ * inside a test (including failed tests), and on process exit for any still
+ * live roots. A one-time startup sweep removes orphan dirs from dead PIDs.
  *
  * Deliberately different from the real host:
  * - storage is process-local: kv in a Map, `storage.database()` one shared
@@ -159,6 +175,11 @@ interface FakePluginRegistrations {
 /** Read-only state for assertions after a plugin registers or handles work. */
 interface FakePluginInspectionState {
     readonly pluginId: string;
+    /**
+     * Absolute path of this host's temporary storage root (`bb-fake-plugin-host-*`).
+     * Removed when `lifecycle.dispose()` runs with storage cleanup.
+     */
+    readonly storageRoot: string;
     /** Every `bb.log` line, in order. */
     readonly logEntries: FakeLogEntry[];
     /** Every `bb.realtime.publish`, payload normalized like the wire. */
@@ -254,8 +275,8 @@ interface FakePluginLifecycleControls {
     /**
      * Dispose like a host reload/disable: abort services started via
      * runService, run onDispose hooks LIFO (isolated), close database handles,
-     * then poison the `bb` handle (further use throws
-     * PluginContextStaleError). Idempotent.
+     * remove the temporary storage root, then poison the `bb` handle (further
+     * use throws PluginContextStaleError). Idempotent.
      */
     dispose(): Promise<void>;
 }
@@ -305,5 +326,5 @@ type ThreadResponse = PluginThreadEventPayloads["thread.created"]["thread"];
  */
 declare function makeThreadResponse(overrides?: Partial<ThreadResponse>): ThreadResponse;
 
-export { PluginContextStaleError, createFakePluginHost, createFakeSdk, makeThreadResponse };
+export { FAKE_PLUGIN_HOST_DIR_PREFIX, PluginContextStaleError, createFakePluginHost, createFakeSdk, makeThreadResponse, sweepStaleFakePluginHostDirs };
 export type { CreateFakePluginHostOptions, FakeAgentToolRecord, FakeCliRecord, FakeHttpRouteRecord, FakeLogEntry, FakeLogLevel, FakeMentionProviderRecord, FakePluginBehaviorDrivers, FakePluginHarness, FakePluginHost, FakePluginInspectionState, FakePluginLifecycleControls, FakePluginRegistrations, FakeRealtimeSignal, FakeScheduleRecord, FakeSdkCall, FakeSdkHarness, FakeSdkOverrides, FakeServiceRecord };
