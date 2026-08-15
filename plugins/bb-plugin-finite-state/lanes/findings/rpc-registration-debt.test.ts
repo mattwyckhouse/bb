@@ -1,6 +1,13 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import type Database from "better-sqlite3";
@@ -47,7 +54,7 @@ function seedAcceptedFinding(
   };
   const stableKey = stableKeyFor(input.platformProjectId, component, cve);
   db.prepare(
-    `INSERT INTO pull_generation
+    `INSERT OR IGNORE INTO pull_generation
       (project_id, project_version_id, generation_id, status,
        requested_kinds_json, started_at, completed_at, accepted_at)
      VALUES (?, ?, ?, 'accepted', '["finding"]', ?, ?, ?)`,
@@ -60,7 +67,7 @@ function seedAcceptedFinding(
     "2026-08-14T12:00:00.000Z",
   );
   db.prepare(
-    `INSERT INTO sync_state
+    `INSERT OR IGNORE INTO sync_state
       (project_id, project_version_id, entity_kind, accepted_generation_id,
        base_revision, last_pull)
      VALUES (?, ?, 'finding', ?, 1, ?)`,
@@ -100,6 +107,27 @@ async function testRoot(prefix: string): Promise<string> {
   return root;
 }
 
+async function worktreeSnapshot(
+  root: string,
+  directory = root,
+): Promise<Record<string, string>> {
+  const snapshot: Record<string, string> = {};
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries.sort((left, right) =>
+    left.name.localeCompare(right.name),
+  )) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      Object.assign(snapshot, await worktreeSnapshot(root, path));
+    } else if (entry.isFile()) {
+      snapshot[relative(root, path)] = (await readFile(path)).toString(
+        "base64",
+      );
+    }
+  }
+  return snapshot;
+}
+
 describe("FS-220 findings frozen registrations", () => {
   it("registers the singular and bulk frozen decision shapes over the CAS writer", async () => {
     const root = await testRoot("fs220-decisions-");
@@ -122,6 +150,12 @@ describe("FS-220 findings frozen registrations", () => {
     const stableKey = seedAcceptedFinding(db, {
       platformProjectId,
       projectVersionId,
+    });
+    const chainedStableKey = seedAcceptedFinding(db, {
+      platformProjectId,
+      projectVersionId,
+      findingId: "finding-2",
+      cve: "CVE-2026-2201",
     });
     db.prepare(
       `INSERT INTO workspace_platform_project_binding
@@ -169,6 +203,16 @@ describe("FS-220 findings frozen registrations", () => {
             expectedContentSha256: single.afterSha256,
           },
           {
+            stableKey: chainedStableKey,
+            status: "NOT_AFFECTED",
+            response: null,
+            justification: "CODE_NOT_REACHABLE",
+            reason: "stale same-file expectation",
+            evidence: "local verification",
+            pin: "exact_version",
+            expectedContentSha256: "f".repeat(64),
+          },
+          {
             stableKey: "missing-stable-key",
             status: "IN_TRIAGE",
             response: null,
@@ -184,11 +228,16 @@ describe("FS-220 findings frozen registrations", () => {
     expect(bulk).toMatchObject({
       projectId: workspaceProjectId,
       projectVersionId,
-      total: 2,
+      total: 3,
       applied: 1,
-      failed: 1,
+      failed: 2,
       results: [
         { stableKey, success: true, error: null },
+        {
+          stableKey: chainedStableKey,
+          success: false,
+          error: { code: "OVERLAY_CAS_CONFLICT" },
+        },
         {
           stableKey: "missing-stable-key",
           success: false,
@@ -205,7 +254,7 @@ describe("FS-220 findings frozen registrations", () => {
     );
   });
 
-  it("registers policy preview/apply with one exact reusable evaluation", async () => {
+  it("registers policy preview/apply and refuses replay before side effects", async () => {
     const root = await testRoot("fs220-policy-");
     await mkdir(join(root, ".fs", "triage"), { recursive: true });
     await writeFile(
@@ -294,6 +343,40 @@ options:
         .prepare("SELECT source, written FROM triage_runs WHERE run_id = ?")
         .get(preview.runId),
     ).toEqual({ source: "policy", written: 1 });
+
+    await rm(join(root, ".fs", "triage", platformProjectId, "controller.yaml"));
+    const worktreeBeforeReplay = await worktreeSnapshot(root);
+    const ledgerBeforeReplay = db
+      .prepare(
+        `SELECT *
+           FROM triage_runs
+          ORDER BY project_id, project_version_id, run_id`,
+      )
+      .all();
+    await expect(
+      host.harness.behavior.callRpc("triagePolicyApply", {
+        projectId: "workspace-project",
+        projectVersionId,
+        pageSize: 50,
+        continuation: null,
+        runId: preview.runId,
+        expectedPolicySha256: policySha256,
+      }),
+    ).rejects.toMatchObject({
+      code: "handler_error",
+      message:
+        "POLICY_ALREADY_APPLIED: policy run id is already recorded; preview again before applying",
+    });
+    expect(await worktreeSnapshot(root)).toEqual(worktreeBeforeReplay);
+    expect(
+      db
+        .prepare(
+          `SELECT *
+             FROM triage_runs
+            ORDER BY project_id, project_version_id, run_id`,
+        )
+        .all(),
+    ).toEqual(ledgerBeforeReplay);
     expect(host.harness.inspection.registrations.rpcMethods).toEqual(
       expect.arrayContaining(["triagePolicyPreview", "triagePolicyApply"]),
     );

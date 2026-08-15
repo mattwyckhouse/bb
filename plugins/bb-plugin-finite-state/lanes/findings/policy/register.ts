@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 
 import { rpcContract } from "../../../shared/contract.js";
 import { findingsCacheState } from "../cache/query.js";
-import { applyPolicy } from "./apply.js";
+import { applyPolicy, PolicyApplyError } from "./apply.js";
 import type { PolicyReport, PolicyRuleReport } from "./report.js";
 
 const policyRpcContract = {
@@ -11,6 +11,8 @@ const policyRpcContract = {
   triagePolicyApply: rpcContract.triagePolicyApply,
 } as const;
 
+// Preview reuse is intentionally process-local and bounded; apply must follow
+// preview within the same plugin lifetime before this small cache evicts it.
 const MAX_REUSABLE_PREVIEWS = 4;
 
 interface ResolvedPolicyScope {
@@ -134,6 +136,27 @@ function reusablePreview(
   return preview;
 }
 
+function assertPolicyRunNotApplied(
+  db: Database.Database,
+  scope: ResolvedPolicyScope,
+  runId: string,
+): void {
+  const existing = db
+    .prepare<[string, string, string], { run_id: string }>(
+      `SELECT run_id
+         FROM triage_runs
+        WHERE project_id = ? AND project_version_id = ? AND run_id = ?
+        LIMIT 1`,
+    )
+    .get(scope.platformProjectId, scope.projectVersionId, runId);
+  if (existing !== undefined) {
+    throw new PolicyApplyError(
+      "POLICY_ALREADY_APPLIED",
+      "POLICY_ALREADY_APPLIED: policy run id is already recorded; preview again before applying",
+    );
+  }
+}
+
 export function registerFindingsPolicy(
   bb: BbPluginApi,
   db: Database.Database,
@@ -164,6 +187,8 @@ export function registerFindingsPolicy(
       return policyReportPage(db, input, scope, report);
     },
     async triagePolicyApply(input) {
+      // The frozen paged input helper erases its extra-field types, but bb has
+      // already validated both fields against the exact RPC schema here.
       const extended = input as typeof input & {
         runId: string;
         expectedPolicySha256: string;
@@ -180,6 +205,7 @@ export function registerFindingsPolicy(
           "POLICY_PREVIEW_SCOPE_MISMATCH: preview and apply must use the same workspace and accepted finding scope",
         );
       }
+      assertPolicyRunNotApplied(db, scope, extended.runId);
       const report = await applyPolicy(
         { db, root: scope.root },
         {
