@@ -36,11 +36,20 @@ import { listTara } from "../../product-security/canvas/editing/list-tara.js";
 import {
   buildConversionBundle,
   getConversionBundlePage,
+  type ConversionCheckSource,
   type ConversionDeps,
   type ConversionPullSnapshot,
+  type ConversionReferenceIndex,
+  type ConversionSource,
 } from "../../product-security/requirements/conversion/bundle.js";
 import { validateConversion } from "../../product-security/requirements/conversion/validate.js";
+import { createSdkRequirementRepository } from "../../product-security/requirements/cards/adapter.js";
+import { requirementIdSchema } from "../../product-security/requirements/cards/schema.js";
+import { queryRequirementsTraceability } from "../../product-security/requirements/traceability/query.js";
+import { queryVerificationMatrix } from "../../product-security/verifications/matrix/query.js";
+import { parseKey } from "../../../lib/sync/registry.js";
 import { toStorageProjectVersionId } from "../../../lib/store/index.js";
+import type Database from "better-sqlite3";
 import {
   benchStatusSchema,
   docSearchSchema,
@@ -284,7 +293,363 @@ function hbomStateFilter(
   return {};
 }
 
-function createCacheConversionDeps(
+// --- Ported read-only from requirements/conversion/backend.ts loadPullSnapshot ---
+const REQUIREMENTS_DIRECTORY = "product-security/requirements";
+const RESULT_SUMMARY_LIMIT = 20;
+const REQUIREMENT_TYPES = new Set([
+  "security",
+  "privacy",
+  "safety",
+  "regulatory",
+  "operational",
+]);
+const WORKFLOW_STATUSES = new Set([
+  "draft",
+  "approved",
+  "implemented",
+  "verified",
+]);
+const VERIFICATION_METHODS = new Set([
+  "config_check",
+  "sbom_query",
+  "binary_analysis",
+  "binary_pattern",
+  "vuln_absence",
+  "dynamic",
+  "external_sync",
+  "manual",
+  "attestation",
+  "document_review",
+]);
+const VERIFICATION_TIERS = new Set(["static", "emulation", "hil", "manual"]);
+
+interface SnapshotRow {
+  entity_key: string;
+  remote_id: string | null;
+  payload: string;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value))
+    : null;
+}
+
+function parseRecordJson(value: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(value);
+  const result = record(parsed);
+  if (!result) {
+    throw new Error(
+      "Accepted requirement cache payload must be a JSON object.",
+    );
+  }
+  return result;
+}
+
+function stringField(
+  value: Record<string, unknown>,
+  ...keys: string[]
+): string | null {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function stringList(
+  value: Record<string, unknown>,
+  ...keys: string[]
+): string[] {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (Array.isArray(candidate)) {
+      return candidate.filter(
+        (entry): entry is string =>
+          typeof entry === "string" && entry.length > 0,
+      );
+    }
+  }
+  return [];
+}
+
+function oneOf<T extends string>(
+  candidate: string | null,
+  allowed: ReadonlySet<string>,
+  fallback: T,
+): T {
+  if (candidate !== null) {
+    for (const value of allowed) {
+      if (value === candidate) return value as T;
+    }
+  }
+  return fallback;
+}
+
+function stableSlug(entityKey: string): string {
+  const segments = parseKey(entityKey);
+  const slug = segments.at(-1);
+  if (!slug) {
+    throw new Error("Accepted id_map key does not contain a stable slug.");
+  }
+  return slug;
+}
+
+function normalizeReferences(
+  values: readonly string[],
+  remoteToSlug: ReadonlyMap<string, string>,
+): string[] {
+  return [...new Set(values.map((value) => remoteToSlug.get(value) ?? value))];
+}
+
+function referenceIndex(
+  db: Database.Database,
+  projectId: string,
+  projectVersionId: string | null,
+  generationId: string,
+  requirements: readonly SnapshotRow[],
+): ConversionReferenceIndex {
+  const storageVersion = toStorageProjectVersionId(projectVersionId);
+  const idRows = db
+    .prepare(
+      `SELECT entity_kind, entity_key, remote_id
+       FROM id_map
+      WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
+      ORDER BY entity_kind, entity_key`,
+    )
+    .all(projectId, storageVersion, generationId) as Array<{
+    entity_kind: string;
+    entity_key: string;
+    remote_id: string;
+  }>;
+  const checks = db
+    .prepare(
+      `SELECT code AS slug, check_id AS remote_id
+       FROM verification_checks
+      WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
+      ORDER BY code`,
+    )
+    .all(projectId, storageVersion, generationId) as Array<{
+    slug: string;
+    remote_id: string;
+  }>;
+  const standards = db
+    .prepare(
+      `SELECT clause_code AS slug, clause_id AS remote_id
+       FROM standards_clauses
+      WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
+      ORDER BY clause_code`,
+    )
+    .all(projectId, storageVersion, generationId) as Array<{
+    slug: string;
+    remote_id: string;
+  }>;
+  const requirementRefs = new Map<string, string>();
+  for (const row of requirements) {
+    const fields = parseRecordJson(row.payload);
+    const id = stringField(fields, "id", "req_id", "reqId", "key");
+    if (id && requirementIdSchema.safeParse(id).success && row.remote_id) {
+      requirementRefs.set(id, row.remote_id);
+    }
+  }
+  const mitigations = new Map<string, string>();
+  const controls = new Map<string, string>();
+  for (const row of idRows) {
+    if (row.entity_kind === "mitigation") {
+      mitigations.set(stableSlug(row.entity_key), row.remote_id);
+    }
+    if (row.entity_kind === "control") {
+      controls.set(stableSlug(row.entity_key), row.remote_id);
+    }
+  }
+  return {
+    requirements: requirementRefs,
+    checks: new Map(checks.map((row) => [row.slug, row.remote_id])),
+    mitigations,
+    controls,
+    standards: new Map(standards.map((row) => [row.slug, row.remote_id])),
+  };
+}
+
+function checkSources(
+  db: Database.Database,
+  projectId: string,
+  projectVersionId: string | null,
+  generationId: string,
+  requirementKey: string,
+): ConversionCheckSource[] {
+  const storageVersion = toStorageProjectVersionId(projectVersionId);
+  const checks = db
+    .prepare(
+      `SELECT checks.check_id, checks.code, checks.check_type, checks.description,
+            checks.pass_criteria, checks.fail_criteria, checks.raw,
+            mapping.is_required, mapping.coverage_level, mapping.suppressed
+       FROM requirement_check_mappings mapping
+       JOIN verification_checks checks
+         ON checks.project_id = mapping.project_id
+        AND checks.project_version_id = mapping.project_version_id
+        AND checks.generation_id = mapping.generation_id
+        AND checks.check_id = mapping.check_id
+      WHERE mapping.project_id = ? AND mapping.project_version_id = ?
+        AND mapping.generation_id = ? AND mapping.requirement_key = ?
+      ORDER BY checks.code
+      LIMIT 1000`,
+    )
+    .all(projectId, storageVersion, generationId, requirementKey) as Array<{
+    check_id: string;
+    code: string;
+    check_type: string;
+    description: string | null;
+    pass_criteria: string | null;
+    fail_criteria: string | null;
+    raw: string;
+    is_required: 0 | 1;
+    coverage_level: string | null;
+    suppressed: 0 | 1;
+  }>;
+  return checks.map((check) => {
+    if (!check.pass_criteria) {
+      throw new Error(
+        `Pulled check ${check.code} has no pass criteria to preserve.`,
+      );
+    }
+    const results = db
+      .prepare(
+        `SELECT tier, status, evidence_summary, executed_at
+         FROM verification_results
+        WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
+          AND requirement_key = ? AND check_id = ? AND is_latest = 1
+        ORDER BY executed_at DESC, result_id
+        LIMIT ${RESULT_SUMMARY_LIMIT}`,
+      )
+      .all(
+        projectId,
+        storageVersion,
+        generationId,
+        requirementKey,
+        check.check_id,
+      ) as Array<{
+      tier: string;
+      status: string;
+      evidence_summary: string | null;
+      executed_at: string | null;
+    }>;
+    let raw: Record<string, unknown> = {};
+    try {
+      raw = parseRecordJson(check.raw);
+    } catch {
+      raw = {};
+    }
+    const tier = oneOf(
+      stringField(raw, "tier") ?? results[0]?.tier ?? null,
+      VERIFICATION_TIERS,
+      "static" as const,
+    );
+    return {
+      id: check.check_id,
+      slug: check.code,
+      method: oneOf(
+        check.check_type,
+        VERIFICATION_METHODS,
+        "document_review" as const,
+      ),
+      tier,
+      required: check.is_required === 1,
+      coverage:
+        check.coverage_level === "full" ||
+        check.coverage_level === "partial" ||
+        check.coverage_level === "none"
+          ? check.coverage_level
+          : null,
+      suppressed: check.suppressed === 1,
+      description: check.description,
+      passCriteria: check.pass_criteria,
+      failCriteria: check.fail_criteria,
+      resultSummaries: results.map((result) => ({
+        status: result.status,
+        summary: result.evidence_summary,
+        executedAt: result.executed_at,
+      })),
+    };
+  });
+}
+
+function conversionSource(
+  db: Database.Database,
+  scope: { projectId: string; projectVersionId: string | null },
+  generationId: string,
+  row: SnapshotRow,
+  remoteToSlug: ReadonlyMap<string, string>,
+): ConversionSource {
+  const fields = parseRecordJson(row.payload);
+  const requirementId = stringField(fields, "id", "req_id", "reqId", "key");
+  if (!requirementId || !requirementIdSchema.safeParse(requirementId).success) {
+    throw new Error("Pulled requirement is missing its stable REQ-* id.");
+  }
+  if (!row.remote_id) {
+    throw new Error(
+      `Pulled requirement ${requirementId} has no remote identity. Pull it again before converting.`,
+    );
+  }
+  const sourceDescription = stringField(
+    fields,
+    "source_description",
+    "sourceDescription",
+    "description",
+    "statement",
+    "title",
+  );
+  if (!sourceDescription) {
+    throw new Error(
+      `Pulled requirement ${requirementId} has no source description.`,
+    );
+  }
+  return {
+    requirementId,
+    remoteId: row.remote_id,
+    targetPath: `${REQUIREMENTS_DIRECTORY}/${requirementId}.yaml`,
+    sourceDescription,
+    reqType: oneOf(
+      stringField(fields, "req_type", "reqType"),
+      REQUIREMENT_TYPES,
+      "security" as const,
+    ),
+    priority: stringField(fields, "priority") ?? "P2",
+    status: oneOf(
+      stringField(fields, "status"),
+      WORKFLOW_STATUSES,
+      "draft" as const,
+    ),
+    rationale: stringField(fields, "rationale"),
+    traces: {
+      mitigations: normalizeReferences(
+        stringList(fields, "mitigations", "threats", "threatIds"),
+        remoteToSlug,
+      ),
+      controls: normalizeReferences(
+        stringList(fields, "controls", "controlIds"),
+        remoteToSlug,
+      ),
+      standards: normalizeReferences(
+        stringList(fields, "standards", "standardIds"),
+        remoteToSlug,
+      ),
+    },
+    checks: checkSources(
+      db,
+      scope.projectId,
+      scope.projectVersionId,
+      generationId,
+      row.entity_key,
+    ),
+    sourceDigest: "",
+  };
+}
+
+/** Cache-only ConversionDeps: loads base_snapshot rows; never spawns threads. */
+export function createCacheConversionDeps(
   ctx: PluginContext,
   scope: { projectId: string; projectVersionId: string | null },
 ): ConversionDeps {
@@ -303,19 +668,40 @@ function createCacheConversionDeps(
         | { accepted_generation_id: string | null; last_pull: string | null }
         | undefined;
       if (!state?.accepted_generation_id || !state.last_pull) return null;
-      // Bundle material is cache-served only. Empty requirements still prove
-      // the adapter never reached Forge/AS for conversion scaffolding.
+      const generationId = state.accepted_generation_id;
+      const rows = ctx
+        .db()
+        .prepare(
+          `SELECT entity_key, remote_id, payload
+           FROM base_snapshot
+          WHERE project_id = ? AND project_version_id = ? AND entity_kind = 'requirement'
+            AND generation_id = ?
+          ORDER BY entity_key
+          LIMIT 10001`,
+        )
+        .all(scope.projectId, storageVersion, generationId) as SnapshotRow[];
+      const references = referenceIndex(
+        ctx.db(),
+        scope.projectId,
+        scope.projectVersionId,
+        generationId,
+        rows,
+      );
+      const remoteToSlug = new Map<string, string>();
+      for (const index of [
+        references.mitigations,
+        references.controls,
+        references.standards,
+      ]) {
+        for (const [slug, remoteId] of index) remoteToSlug.set(remoteId, slug);
+      }
       return {
         projectId: scope.projectId,
         pulledAt: state.last_pull,
-        requirements: [],
-        references: {
-          requirements: new Map(),
-          checks: new Map(),
-          mitigations: new Map(),
-          controls: new Map(),
-          standards: new Map(),
-        },
+        requirements: rows.map((row) =>
+          conversionSource(ctx.db(), scope, generationId, row, remoteToSlug),
+        ),
+        references,
       };
     },
     async readLocalFile() {
@@ -331,6 +717,21 @@ function createCacheConversionDeps(
       });
     },
   };
+}
+
+function unsupportedTaraKind(kind: TaraQueryInput["kind"]): never {
+  throw new KnownToolError({
+    code: "unsupported_kind",
+    message: `fs_tara_query does not support kind=${kind}.`,
+    hint: "Use threat|component|zone|dataflow|asset via listTara, requirement|trace via requirements traceability, or verification via the matrix query. attack_path and clause are not wired as paged list APIs.",
+    retryable: false,
+  });
+}
+
+function filtersRecord(
+  filter: TaraQueryInput["filter"],
+): Record<string, string> {
+  return filter ?? {};
 }
 
 export function createDefaultReadServices(
@@ -443,7 +844,7 @@ export function createDefaultReadServices(
               pageSize: input.limit ?? DEFAULT_PAGE_SIZE,
               continuation: input.cursor ?? null,
               kind: input.kind,
-              filters: input.filter ?? {},
+              filters: filtersRecord(input.filter),
             },
             {
               workspaceProjectId: call.projectId,
@@ -474,50 +875,108 @@ export function createDefaultReadServices(
           };
         }
 
-        // Trace / requirement / verification / clause / attack_path: surface
-        // unresolved links explicitly rather than dropping them. Full index
-        // joins for every kind remain owner-owned; this boundary adapts.
-        const unresolved = input.filter?.unresolved
-          ? [
-              {
-                from: input.filter.from ?? input.kind,
-                to: input.filter.to ?? "unknown",
-                reason: input.filter.unresolved,
-              },
-            ]
-          : input.kind === "trace" ||
-              input.kind === "attack_path" ||
-              input.kind === "clause"
-            ? [
-                {
-                  from: input.kind,
-                  to:
-                    input.filter?.requirementId ??
-                    input.filter?.id ??
-                    "unspecified",
-                  reason:
-                    "Link is unresolved in the local YAML⋈cache join; inspect .fs/ and pull product-security before treating it as absent.",
-                },
-              ]
-            : [];
+        if (input.kind === "requirement" || input.kind === "trace") {
+          const filters = filtersRecord(input.filter);
+          if (input.kind === "trace" && !filters.requirementId) {
+            throw new KnownToolError({
+              code: "not_found",
+              message:
+                "fs_tara_query kind=trace requires filter.requirementId.",
+              hint: "Pass filter.requirementId=REQ-… to load the owner trace rail (including real unresolved gaps).",
+              retryable: false,
+            });
+          }
+          const page = await queryRequirementsTraceability({
+            bb,
+            ctx,
+            repository: createSdkRequirementRepository(bb),
+            input: {
+              projectId: input.projectId,
+              projectVersionId: input.projectVersionId ?? null,
+              pageSize: input.limit ?? DEFAULT_PAGE_SIZE,
+              continuation: input.cursor ?? null,
+              filters: { ...filters },
+            },
+          });
+          return {
+            items: page.items.map((item) => {
+              const fields = item.fields;
+              let unresolved:
+                | ReadonlyArray<{ from: string; to: string; reason: string }>
+                | undefined;
+              if (
+                typeof fields === "object" &&
+                fields !== null &&
+                !Array.isArray(fields)
+              ) {
+                const traceValue = Reflect.get(fields, "trace");
+                if (
+                  typeof traceValue === "object" &&
+                  traceValue !== null &&
+                  !Array.isArray(traceValue)
+                ) {
+                  const rail = Reflect.get(traceValue, "rail");
+                  if (
+                    typeof rail === "object" &&
+                    rail !== null &&
+                    !Array.isArray(rail)
+                  ) {
+                    const gaps = Reflect.get(rail, "gaps");
+                    if (Array.isArray(gaps) && gaps.length > 0) {
+                      unresolved = gaps.flatMap((gap) => {
+                        if (typeof gap !== "object" || gap === null) return [];
+                        const from = Reflect.get(gap, "from");
+                        const to = Reflect.get(gap, "to");
+                        const reason = Reflect.get(gap, "reason");
+                        if (
+                          typeof from !== "string" ||
+                          typeof to !== "string" ||
+                          typeof reason !== "string"
+                        ) {
+                          return [];
+                        }
+                        return [{ from, to, reason }];
+                      });
+                    }
+                  }
+                }
+              }
+              return {
+                id: item.key,
+                label: item.label,
+                kind: item.kind,
+                directive: "fs-threat",
+                ...(unresolved && unresolved.length > 0 ? { unresolved } : {}),
+              };
+            }),
+            total: page.total,
+            cursor: page.next,
+            freshness: cacheFreshness(page.cache),
+          };
+        }
 
-        return {
-          items: unresolved.map((gap) => ({
-            id: `${gap.from}->${gap.to}`,
-            kind: input.kind,
-            directive: "fs-threat",
-            unresolved: gap,
-          })),
-          total: unresolved.length,
-          cursor: null,
-          freshness: {
-            cachePulledAt: null,
-            stale: true,
-            source: "cache" as const,
-            yamlAsOf: null,
-            unresolved,
-          },
-        };
+        if (input.kind === "verification") {
+          const page = queryVerificationMatrix(ctx.db(), {
+            projectId: input.projectId,
+            projectVersionId: input.projectVersionId ?? null,
+            pageSize: input.limit ?? DEFAULT_PAGE_SIZE,
+            continuation: input.cursor ?? null,
+            filters: filtersRecord(input.filter),
+          });
+          return {
+            items: page.items.map((item) => ({
+              id: item.key,
+              label: item.label,
+              kind: item.kind,
+              directive: "fs-threat",
+            })),
+            total: page.total,
+            cursor: page.next,
+            freshness: cacheFreshness(page.cache),
+          };
+        }
+
+        return unsupportedTaraKind(input.kind);
       },
       async earsBundle(input) {
         const deps = createCacheConversionDeps(ctx, {
@@ -533,7 +992,6 @@ export function createDefaultReadServices(
             remoteId: source.remoteId,
             targetPath: source.targetPath,
             checkCount: source.checks.length,
-            // Omit check result bodies / full source text.
           })),
           cursor: page.nextCursor,
           freshness: {

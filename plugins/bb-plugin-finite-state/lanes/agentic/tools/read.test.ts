@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 
 import { createPluginContext } from "../../../lib/context.js";
+import { reqIdKey } from "../../../lib/sync/registry.js";
 import { AGENT_TOOL_REGISTRY } from "../../../lib/agentic/registry.js";
 import { SOFT_RESPONSE_BYTES } from "../../../lib/agentic/budget.js";
 import {
@@ -307,34 +308,96 @@ describe("read tool behavior", () => {
     expect(services.findings.query).toHaveBeenCalledTimes(1);
   });
 
-  it("tara trace reports unresolved link rather than omitting it", async () => {
-    const { host } = fixture();
+  it("tara unsupported kinds fail closed without inventing stale rows", async () => {
+    const host = createFakePluginHost({
+      pluginId: `fs-read-tara-${crypto.randomUUID()}`,
+    });
+    hosts.push(host);
+    const ctx = createPluginContext(host.bb);
+    registerReadTools(host.bb, ctx);
+    for (const kind of ["attack_path", "clause"] as const) {
+      const result = decoded(
+        await host.harness.behavior.callAgentTool("fs_tara_query", {
+          projectId: "p1",
+          kind,
+        }),
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "unsupported_kind", retryable: false },
+      });
+      expect(JSON.stringify(result)).not.toMatch(/"stale":true/u);
+    }
+  });
+
+  it("ears bundle default path loads base_snapshot with zero remote calls", async () => {
+    const host = createFakePluginHost({
+      pluginId: `fs-read-ears-${crypto.randomUUID()}`,
+    });
+    hosts.push(host);
+    const projectsGet = vi.fn(async () => {
+      throw new Error("remote projects.get must not run for ears bundle");
+    });
+    host.harness.sdk.stub("projects.get", projectsGet);
+    const ctx = createPluginContext(host.bb);
+    registerReadTools(host.bb, ctx);
+    const db = ctx.db();
+    const pulledAt = "2026-08-15T00:00:00.000Z";
+    const requirementKey = reqIdKey({ reqId: "REQ-104" });
+    db.prepare(
+      `INSERT INTO pull_generation
+         (project_id, project_version_id, generation_id, status, requested_kinds_json,
+          started_at, completed_at, accepted_at, error)
+       VALUES (?, ?, ?, 'accepted', '[]', ?, ?, ?, NULL)`,
+    ).run(
+      "project-1",
+      "version-1",
+      "generation-1",
+      pulledAt,
+      pulledAt,
+      pulledAt,
+    );
+    db.prepare(
+      `INSERT INTO sync_state
+         (project_id, project_version_id, entity_kind, accepted_generation_id,
+          staging_generation_id, base_revision, last_pull)
+       VALUES (?, ?, 'requirement', ?, NULL, 1, ?)`,
+    ).run("project-1", "version-1", "generation-1", pulledAt);
+    db.prepare(
+      `INSERT INTO base_snapshot
+         (project_id, project_version_id, entity_kind, generation_id, entity_key,
+          remote_id, payload, content_hash, pulled_at)
+       VALUES (?, ?, 'requirement', ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "project-1",
+      "version-1",
+      "generation-1",
+      requirementKey,
+      "remote-req-104",
+      JSON.stringify({
+        reqId: "REQ-104",
+        description: "Signed firmware image must boot.",
+        priority: "P1",
+      }),
+      "b".repeat(64),
+      pulledAt,
+    );
+
     const result = decoded(
-      await host.harness.behavior.callAgentTool("fs_tara_query", {
-        projectId: "p1",
-        kind: "trace",
-        filter: { requirementId: "REQ-1" },
+      await host.harness.behavior.callAgentTool("fs_ears_convert", {
+        action: "bundle",
+        projectId: "project-1",
+        projectVersionId: "version-1",
       }),
     );
     expect(result).toMatchObject({
       ok: true,
       data: {
-        items: [
-          {
-            unresolved: {
-              from: "threat",
-              to: "REQ-1",
-              reason: "Threat cache lookup failed",
-            },
-          },
-        ],
-        freshness: {
-          unresolved: [
-            expect.objectContaining({ from: "threat", to: "REQ-1" }),
-          ],
-        },
+        forgeCalls: 0,
+        items: [{ id: "REQ-104", remoteId: "remote-req-104" }],
       },
     });
+    expect(projectsGet).not.toHaveBeenCalled();
   });
 
   it("ears bundle performs zero Forge calls", async () => {

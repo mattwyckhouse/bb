@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 
 import { createPluginContext } from "../../../lib/context.js";
+import { reqIdKey } from "../../../lib/sync/registry.js";
 import {
   AGENT_TOOL_REGISTRY,
   DIRECTIVE_IDS,
@@ -38,7 +39,7 @@ function pageOf<T>(
 type ToolJson = {
   ok: boolean;
   data?: {
-    items?: Array<{ id: string; directive?: string }>;
+    items?: Array<{ id: string; directive?: string; remoteId?: string }>;
     cursor?: string | null;
     planId?: string;
     directive?: string;
@@ -46,7 +47,9 @@ type ToolJson = {
     basePulledAt?: string | null;
     recoveryHint?: string | null;
     freshness?: { stale?: boolean; source?: string };
+    forgeCalls?: number;
   };
+  error?: { code?: string };
   meta?: { truncated?: boolean; nextCursor?: string };
 };
 
@@ -65,7 +68,7 @@ function decoded(
   return JSON.parse(text) as ToolJson;
 }
 
-function fixture(services: ReadServices) {
+function fixture(services?: ReadServices) {
   const host = createFakePluginHost({
     pluginId: `fs-read-int-${crypto.randomUUID()}`,
   });
@@ -75,7 +78,81 @@ function fixture(services: ReadServices) {
   return { host, ctx };
 }
 
+function seedRequirementCache(
+  ctx: ReturnType<typeof createPluginContext>,
+): void {
+  const db = ctx.db();
+  const pulledAt = "2026-08-15T00:00:00.000Z";
+  const requirementKey = reqIdKey({ reqId: "REQ-104" });
+  db.prepare(
+    `INSERT INTO pull_generation
+       (project_id, project_version_id, generation_id, status, requested_kinds_json,
+        started_at, completed_at, accepted_at, error)
+     VALUES (?, ?, ?, 'accepted', '[]', ?, ?, ?, NULL)`,
+  ).run("project-1", "version-1", "generation-1", pulledAt, pulledAt, pulledAt);
+  db.prepare(
+    `INSERT INTO sync_state
+       (project_id, project_version_id, entity_kind, accepted_generation_id,
+        staging_generation_id, base_revision, last_pull)
+     VALUES (?, ?, 'requirement', ?, NULL, 1, ?)`,
+  ).run("project-1", "version-1", "generation-1", pulledAt);
+  db.prepare(
+    `INSERT INTO base_snapshot
+       (project_id, project_version_id, entity_kind, generation_id, entity_key,
+        remote_id, payload, content_hash, pulled_at)
+     VALUES (?, ?, 'requirement', ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    "project-1",
+    "version-1",
+    "generation-1",
+    requirementKey,
+    "remote-req-104",
+    JSON.stringify({
+      reqId: "REQ-104",
+      description: "Signed firmware image must boot.",
+      priority: "P1",
+    }),
+    "b".repeat(64),
+    pulledAt,
+  );
+}
+
 describe("read tools integration", () => {
+  it("default createDefaultReadServices serves ears bundle from base_snapshot", async () => {
+    const { host, ctx } = fixture();
+    const projectsGet = vi.fn(async () => {
+      throw new Error("remote must not be called");
+    });
+    host.harness.sdk.stub("projects.get", projectsGet);
+    seedRequirementCache(ctx);
+
+    const result = decoded(
+      await host.harness.behavior.callAgentTool("fs_ears_convert", {
+        action: "bundle",
+        projectId: "project-1",
+        projectVersionId: "version-1",
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.data?.forgeCalls).toBe(0);
+    expect(result.data?.items?.[0]?.id).toBe("REQ-104");
+    expect(projectsGet).not.toHaveBeenCalled();
+  });
+
+  it("default createDefaultReadServices refuses unwired tara kinds", async () => {
+    const { host } = fixture();
+    const result = decoded(
+      await host.harness.behavior.callAgentTool("fs_tara_query", {
+        projectId: "project-1",
+        kind: "attack_path",
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "unsupported_kind" },
+    });
+  });
+
   it("query → returned id → paired directive lookup succeeds for one item per surface", async () => {
     const services: ReadServices = {
       sync: {
