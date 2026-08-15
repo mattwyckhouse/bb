@@ -27,6 +27,7 @@ import {
   within,
 } from "@testing-library/react";
 import { createElement } from "react";
+import type Database from "better-sqlite3";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
@@ -40,6 +41,7 @@ import { GOLDEN_LOOP_BEATS, type GoldenLoopBeat } from "./scenario.js";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../../../..");
 const FIXTURE_ROOT = resolve(import.meta.dirname, "../../mock-remote/fixtures");
+const PRE_POLICY_SEED_ROOT = resolve(import.meta.dirname, "seed/pre-policy");
 const WORKSPACE_PROJECT_ID = "workspace-golden-loop";
 const GOLDEN_SEED_WORKSPACE_PROJECT_ID = "workspace-golden-loop-seed";
 const GOLDEN_SEED_PROJECT_ID = "project-ax3000-demo";
@@ -69,10 +71,15 @@ const REVIEWED_BY = "human:golden-loop-reviewer";
 const EDITED_CVE = "CVE-2026-106002";
 const DELETED_CVE = "CVE-2026-106003";
 const BENCH_VERSION = "pv-a481df87dadf";
+const POLICY_PROJECT_ID = "project-ax3000-pre-policy";
+const POLICY_VERSION = "pv-ax3000-pre-policy-2.4";
+const POLICY_RACE_PROJECT_ID = "project-ax3000-pre-policy-race";
+const POLICY_RACE_VERSION = "pv-ax3000-pre-policy-2.3";
 const execFileAsync = promisify(execFile);
 
 interface Runtime {
   host: ReturnType<typeof createFakePluginHost>;
+  db: Database.Database;
   worktree: string;
   projectId: string;
   findingVersion: string;
@@ -82,6 +89,7 @@ interface Runtime {
   findings: Map<string, Record<string, unknown>>;
   versions: Map<string, Record<string, unknown>>;
   evidence: Map<string, unknown>;
+  remoteWriteCalls: Array<Readonly<{ method: string; path: string }>>;
   failSbom: boolean;
   failThreat: boolean;
   failNextTriageWrite: boolean;
@@ -97,6 +105,43 @@ interface Runtime {
   overlayIndexVexCount(projectId: string, cve?: string): number;
   overlayIndexVexStableKeys(projectId: string): string[];
   human: GoldenLoopHarness["human"] | null;
+}
+
+function importPrePolicyDatabase(
+  db: Database.Database,
+  seedDatabase: string,
+): void {
+  db.pragma("foreign_keys = OFF");
+  db.prepare("ATTACH DATABASE ? AS pre_policy").run(seedDatabase);
+  try {
+    const tables = db
+      .prepare(
+        `SELECT name
+           FROM pre_policy.sqlite_master
+          WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+            AND name != '_bb_migrations'
+          ORDER BY name`,
+      )
+      .pluck()
+      .all() as string[];
+    for (const table of tables) {
+      if (!/^[A-Za-z0-9_]+$/u.test(table)) {
+        throw new Error(`Unsafe pre-policy table name: ${table}`);
+      }
+      db.exec(`INSERT INTO main.${table} SELECT * FROM pre_policy.${table}`);
+    }
+  } finally {
+    db.exec("DETACH DATABASE pre_policy");
+    db.pragma("foreign_keys = ON");
+  }
+}
+
+function remoteSnapshot(runtime: Runtime): string {
+  return JSON.stringify(
+    [...runtime.findings.entries()].sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
+  );
 }
 
 class GoldenLoopResizeObserver implements ResizeObserver {
@@ -2440,6 +2485,322 @@ function beats(runtime: Runtime): GoldenLoopBeat[] {
         ];
       },
     },
+    {
+      ...metadata(16),
+      action: async ({ artifacts }) => {
+        // Install this identity-disjoint corpus only for its owning beat. This
+        // keeps earlier beats isolated and composes with the warm-cache seed
+        // installed by FS-232 without overlapping any durable primary keys.
+        importPrePolicyDatabase(
+          runtime.db,
+          join(PRE_POLICY_SEED_ROOT, "warm-cache", "data.db"),
+        );
+        await mkdir(join(runtime.worktree, ".fs", "triage"), {
+          recursive: true,
+        });
+        await writeFile(
+          join(runtime.worktree, ".fs", "triage", "policy.yaml"),
+          await readFile(
+            join(
+              PRE_POLICY_SEED_ROOT,
+              "worktree",
+              ".fs",
+              "triage",
+              "policy.yaml",
+            ),
+            "utf8",
+          ),
+          "utf8",
+        );
+        const humanBefore = runtime.db
+          .prepare(
+            `SELECT stable_key, vex_status, vex_justification, vex_reason
+               FROM findings
+              WHERE project_id = ? AND project_version_id = ?
+                AND vex_reason = 'Golden Loop durable human review'`,
+          )
+          .get(POLICY_PROJECT_ID, POLICY_VERSION);
+        if (!humanBefore) {
+          throw new Error("Pre-policy durable human decision is missing");
+        }
+        const initialRuns = runtime.db
+          .prepare(
+            `SELECT COUNT(*) FROM triage_runs
+              WHERE project_id = ? AND project_version_id = ?`,
+          )
+          .pluck()
+          .get(POLICY_PROJECT_ID, POLICY_VERSION);
+        const remoteBefore = remoteSnapshot(runtime);
+        const remoteWriteCountBefore = runtime.remoteWriteCalls.length;
+        const preview = object(
+          await runtime.host.harness.behavior.callRpc("triagePolicyPreview", {
+            projectId: WORKSPACE_PROJECT_ID,
+            projectVersionId: POLICY_VERSION,
+            pageSize: 50,
+            continuation: null,
+          }),
+          "policy preview",
+        );
+        const previewItem = object(
+          array(preview["items"], "policy preview items")[0],
+          "policy preview item",
+        );
+        const previewFields = object(
+          previewItem["fields"],
+          "policy preview fields",
+        );
+        const policySha256 = string(
+          previewFields["policySha256"],
+          "policy preview digest",
+        );
+        const runsAfterPreview = runtime.db
+          .prepare(
+            `SELECT COUNT(*) FROM triage_runs
+              WHERE project_id = ? AND project_version_id = ?`,
+          )
+          .pluck()
+          .get(POLICY_PROJECT_ID, POLICY_VERSION);
+        const applied = object(
+          await runtime.host.harness.behavior.callRpc("triagePolicyApply", {
+            projectId: WORKSPACE_PROJECT_ID,
+            projectVersionId: POLICY_VERSION,
+            pageSize: 50,
+            continuation: null,
+            runId: string(preview["runId"], "policy preview run id"),
+            expectedPolicySha256: policySha256,
+          }),
+          "policy apply",
+        );
+        const durable = object(
+          await runtime.host.harness.behavior.callRpc("triageSummaryGet", {
+            projectId: POLICY_PROJECT_ID,
+            projectVersionId: POLICY_VERSION,
+            runId: string(preview["runId"], "policy run id"),
+          }),
+          "durable policy summary",
+        );
+        const humanAfter = runtime.db
+          .prepare(
+            `SELECT stable_key, vex_status, vex_justification, vex_reason
+               FROM findings
+              WHERE project_id = ? AND project_version_id = ?
+                AND vex_reason = 'Golden Loop durable human review'`,
+          )
+          .get(POLICY_PROJECT_ID, POLICY_VERSION);
+        if (!humanAfter) {
+          throw new Error("Policy apply removed the durable human decision");
+        }
+        const kev = runtime.db
+          .prepare<[string, string], { stable_key: string; cve: string }>(
+            `SELECT stable_key, cve
+               FROM findings
+              WHERE project_id = ? AND project_version_id = ?
+                AND in_kev = 1`,
+          )
+          .get(POLICY_PROJECT_ID, POLICY_VERSION);
+        if (!kev) throw new Error("Pre-policy KEV finding is missing");
+        const raceTarget = runtime.db
+          .prepare<[string, string], { stable_key: string; cve: string }>(
+            `SELECT stable_key, cve
+               FROM findings
+              WHERE project_id = ? AND project_version_id = ?
+                AND severity = 'high' AND in_kev = 0 AND soft_deleted = 0
+                AND vex_status IS NULL AND vex_response IS NULL
+                AND vex_justification IS NULL AND vex_reason IS NULL
+              ORDER BY stable_key COLLATE BINARY
+              LIMIT 1`,
+          )
+          .get(POLICY_RACE_PROJECT_ID, POLICY_RACE_VERSION);
+        if (!raceTarget) {
+          throw new Error("Pre-policy concurrent-decision target is missing");
+        }
+        const racePreview = object(
+          await runtime.host.harness.behavior.callRpc("triagePolicyPreview", {
+            projectId: WORKSPACE_PROJECT_ID,
+            projectVersionId: POLICY_RACE_VERSION,
+            pageSize: 50,
+            continuation: null,
+          }),
+          "concurrent-decision policy preview",
+        );
+        const racePreviewFields = object(
+          object(
+            array(racePreview["items"], "race policy preview items")[0],
+            "race policy preview item",
+          )["fields"],
+          "race policy preview fields",
+        );
+        const concurrentWrite = runtime.db
+          .prepare(
+            `UPDATE findings
+                SET vex_status = 'IN_TRIAGE',
+                    vex_reason = 'Golden Loop concurrent human review'
+              WHERE project_id = ? AND project_version_id = ?
+                AND stable_key = ? AND soft_deleted = 0`,
+          )
+          .run(
+            POLICY_RACE_PROJECT_ID,
+            POLICY_RACE_VERSION,
+            raceTarget.stable_key,
+          );
+        if (concurrentWrite.changes !== 1) {
+          throw new Error("Concurrent durable human decision was not written");
+        }
+        const raceApplied = object(
+          await runtime.host.harness.behavior.callRpc("triagePolicyApply", {
+            projectId: WORKSPACE_PROJECT_ID,
+            projectVersionId: POLICY_RACE_VERSION,
+            pageSize: 50,
+            continuation: null,
+            runId: string(racePreview["runId"], "race preview run id"),
+            expectedPolicySha256: string(
+              racePreviewFields["policySha256"],
+              "race policy preview digest",
+            ),
+          }),
+          "concurrent-decision policy apply",
+        );
+        const raceDurable = object(
+          await runtime.host.harness.behavior.callRpc("triageSummaryGet", {
+            projectId: POLICY_RACE_PROJECT_ID,
+            projectVersionId: POLICY_RACE_VERSION,
+            runId: string(racePreview["runId"], "race policy run id"),
+          }),
+          "concurrent-decision durable policy summary",
+        );
+        const overlayModule =
+          await import("../../../lanes/findings/overlay/reader.js");
+        const overlays = await overlayModule.readOverlayFiles(runtime.worktree);
+        const authoredCves = overlays.files
+          .filter((file) => file.overlay.project === POLICY_PROJECT_ID)
+          .flatMap((file) => Object.keys(file.overlay.decisions));
+        const raceAuthoredCves = overlays.files
+          .filter((file) => file.overlay.project === POLICY_RACE_PROJECT_ID)
+          .flatMap((file) => Object.keys(file.overlay.decisions));
+        const evidence = {
+          initialRuns,
+          runsAfterPreview,
+          preview,
+          applied,
+          durable,
+          humanBefore,
+          humanAfter,
+          kev,
+          raceTarget,
+          racePreview,
+          raceApplied,
+          raceDurable,
+          raceAuthoredDecisionCount: raceAuthoredCves.length,
+          raceTargetAuthored: raceAuthoredCves.includes(raceTarget.cve),
+          authoredDecisionCount: authoredCves.length,
+          kevAuthored: authoredCves.includes(kev.cve),
+          overlayErrors: overlays.errors,
+          remoteUnchanged: remoteSnapshot(runtime) === remoteBefore,
+          remoteWriteCalls:
+            runtime.remoteWriteCalls.length - remoteWriteCountBefore,
+        };
+        runtime.evidence.set("fs230-policy", evidence);
+        await artifacts.writeJson("policy-preview-apply.json", evidence);
+      },
+      assert: async () => {
+        const evidence = object(
+          runtime.evidence.get("fs230-policy"),
+          "FS-230 policy evidence",
+        );
+        const preview = object(evidence["preview"], "policy preview");
+        const previewFields = object(
+          object(
+            array(preview["items"], "policy preview items")[0],
+            "policy preview item",
+          )["fields"],
+          "policy preview fields",
+        );
+        const applied = object(evidence["applied"], "policy apply");
+        const durable = object(evidence["durable"], "durable policy summary");
+        const kev = object(evidence["kev"], "KEV finding");
+        const raceTarget = object(
+          evidence["raceTarget"],
+          "concurrent human decision",
+        );
+        const racePreview = object(
+          evidence["racePreview"],
+          "concurrent-decision policy preview",
+        );
+        const racePreviewFields = object(
+          object(
+            array(racePreview["items"], "race policy preview items")[0],
+            "race policy preview item",
+          )["fields"],
+          "race policy preview fields",
+        );
+        const raceApplied = object(
+          evidence["raceApplied"],
+          "concurrent-decision policy apply",
+        );
+        const raceDurable = object(
+          evidence["raceDurable"],
+          "concurrent-decision durable policy summary",
+        );
+        const holdbacks = array(durable["holdbacks"], "durable holdbacks");
+        return [
+          assertion(
+            "pre-policy seed has no proposals or durable run",
+            evidence["initialRuns"] === 0 &&
+              evidence["runsAfterPreview"] === 0 &&
+              previewFields["dryRun"] === true &&
+              preview["written"] === 0,
+          ),
+          assertion(
+            "registered preview and apply write all eligible proposals",
+            previewFields["wouldWrite"] === 304 &&
+              previewFields["skippedExisting"] === 1 &&
+              preview["held"] === 1 &&
+              applied["written"] === 304 &&
+              applied["held"] === 1,
+          ),
+          assertion(
+            "durable policy summary records 304 writes, one existing decision, and one KEV holdback",
+            durable["source"] === "policy" &&
+              durable["status"] === "completed" &&
+              durable["written"] === 304 &&
+              durable["held"] === 1 &&
+              durable["skippedExisting"] === 1 &&
+              holdbacks.some(
+                (item) =>
+                  object(item, "durable holdback")["stableKey"] ===
+                  kev["stable_key"],
+              ),
+          ),
+          assertion(
+            "KEV remains held while 304 local YAML decisions are durable",
+            evidence["authoredDecisionCount"] === 304 &&
+              evidence["kevAuthored"] === false &&
+              array(evidence["overlayErrors"], "overlay errors").length === 0,
+          ),
+          assertion(
+            "existing human decision is byte-for-byte unchanged",
+            JSON.stringify(evidence["humanAfter"]) ===
+              JSON.stringify(evidence["humanBefore"]),
+          ),
+          assertion(
+            "apply preserves a durable human decision created after preview",
+            racePreviewFields["wouldWrite"] === 23 &&
+              racePreviewFields["skippedExisting"] === 0 &&
+              raceApplied["written"] === 22 &&
+              raceDurable["written"] === 22 &&
+              raceDurable["skippedExisting"] === 1 &&
+              evidence["raceAuthoredDecisionCount"] === 22 &&
+              evidence["raceTargetAuthored"] === false &&
+              typeof raceTarget["stable_key"] === "string",
+          ),
+          assertion(
+            "policy apply performs no remote write",
+            evidence["remoteUnchanged"] === true &&
+              evidence["remoteWriteCalls"] === 0,
+          ),
+        ];
+      },
+    },
   ];
   return list;
 }
@@ -2767,6 +3128,12 @@ async function createRun(
           const url = new URL(
             input instanceof Request ? input.url : input.toString(),
           );
+          const method = (
+            init?.method ?? (input instanceof Request ? input.method : "GET")
+          ).toUpperCase();
+          if (method !== "GET" && method !== "HEAD") {
+            runtime?.remoteWriteCalls.push({ method, path: url.pathname });
+          }
           if (runtime?.failSbom && url.pathname.includes("/components")) {
             return Response.json(
               { message: "induced recoverable SBOM failure" },
@@ -2783,6 +3150,12 @@ async function createRun(
           const url = new URL(
             input instanceof Request ? input.url : input.toString(),
           );
+          const method = (
+            init?.method ?? (input instanceof Request ? input.method : "GET")
+          ).toUpperCase();
+          if (method !== "GET" && method !== "HEAD") {
+            runtime?.remoteWriteCalls.push({ method, path: url.pathname });
+          }
           if (runtime?.failThreat && url.pathname.includes("/threats")) {
             return Response.json(
               { message: "induced FS-196 threat failure" },
@@ -2823,6 +3196,7 @@ async function createRun(
       });
       runtime = {
         host,
+        db: ctx.db(),
         worktree,
         projectId,
         findingVersion,
@@ -2832,6 +3206,7 @@ async function createRun(
         findings: state.findings,
         versions: state.versions,
         evidence: new Map(),
+        remoteWriteCalls: [],
         failSbom: false,
         failThreat: false,
         failNextTriageWrite: false,
@@ -2946,12 +3321,12 @@ afterEach(() => cleanup());
 
 describe.sequential("Golden Loop incremental acceptance", () => {
   it(
-    "runs all fifteen ordered beats twice with the same semantic result",
+    "runs all sixteen ordered beats twice with the same semantic result",
     async () => {
       const first = await createRun("run-1");
       try {
         const firstResults = await first.harness.runAll();
-        expect(firstResults).toHaveLength(15);
+        expect(firstResults).toHaveLength(16);
         expect(firstResults.map(({ beat }) => beat)).toEqual(
           GOLDEN_LOOP_BEATS.map(({ number }) => number),
         );
@@ -2971,11 +3346,11 @@ describe.sequential("Golden Loop incremental acceptance", () => {
         const second = await createRun("run-2");
         try {
           const secondResults = await second.harness.runAll();
-          expect(secondResults).toHaveLength(15);
+          expect(secondResults).toHaveLength(16);
           second.harness.assertNoExternalNetwork();
           expect(semanticReport(second.harness.report!)).toEqual(firstSemantic);
           expect(second.harness.report?.durationMs).toBeLessThan(
-            15 * 60 * 1_000,
+            16 * 60 * 1_000,
           );
         } finally {
           await second.harness.dispose();
@@ -2984,14 +3359,14 @@ describe.sequential("Golden Loop incremental acceptance", () => {
         await first.harness.dispose();
       }
     },
-    15 * 60 * 1_000,
+    16 * 60 * 1_000,
   );
 
   it("rejects missing or duplicated beat modules before creating a run", async () => {
     const complete = new Map(
       GOLDEN_LOOP_BEATS.map((beat) => [beat.number, beat]),
     );
-    expect(complete.size).toBe(15);
+    expect(complete.size).toBe(16);
     expect(GOLDEN_LOOP_BEATS.map(({ number }) => number)).toEqual([
       ...complete.keys(),
     ]);

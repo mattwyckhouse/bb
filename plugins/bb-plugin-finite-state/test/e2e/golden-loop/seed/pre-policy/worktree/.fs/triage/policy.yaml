@@ -1,0 +1,15 @@
+schema: fs-triage-policy/v1
+rules:
+  - name: broad-high-severity-review
+    when:
+      severity: high
+    set:
+      status: IN_TRIAGE
+      justification: null
+      response: null
+      reason: Golden Loop broad high-severity policy
+      pin: exact_version
+holdback:
+  - kev: true
+options:
+  overwrite_existing: false

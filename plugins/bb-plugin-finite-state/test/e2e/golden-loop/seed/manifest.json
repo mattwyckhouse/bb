@@ -2,7 +2,7 @@
   "seedVersion": 1,
   "generatorVersion": "wp66-v2",
   "seed": 66,
-  "sourceSeed": "wp08-sha256:16aa519b5b568dcb08646f31a76cc76bea210db5f572f645689ded51af589d61;seed=66;generator=wp66-v2",
+  "sourceSeed": "wp08-sha256:cad23795044637b39f73916bc4a4e9047c168cdab56432ef3be8f02d74d1ecf7;seed=66;generator=wp66-v2",
   "generatedAt": "2026-01-01T00:00:00.000Z",
   "products": {
     "v23": {
@@ -38,12 +38,12 @@
     },
     {
       "path": "generate.ts",
-      "sha256": "79158bfbc964f103e184febecce0fc9cb6b2bd39bbe500249afa7aec67d7f84b",
+      "sha256": "a10d4511508de6662b08c979e7781812518027be5452c404c8a56a9994f3ba0d",
       "purpose": "versioned deterministic Golden Loop generator"
     },
     {
       "path": "seed.test.ts",
-      "sha256": "43a379dba7a83474355c48e1d98e561694603723d0f42ade234595c764791836",
+      "sha256": "41eb8b06867d2eedfdc0976600aae5e998d78b82bed9492d53de7f5c803d3c5c",
       "purpose": "seed determinism, integrity, and safety tests"
     },
     {
