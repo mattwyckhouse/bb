@@ -101,7 +101,7 @@ function unavailableVerificationFamily() {
       kind: "verification" as const,
       state: "unavailable" as const,
       message:
-        "Verification links are not implemented yet. They become available when WP-39 registers the verification matrix.",
+        "Verification links from architecture nodes are not available yet. Open the Verifications tab to browse the matrix.",
     },
   };
 }
@@ -274,7 +274,7 @@ describe("WP-34 inspector links", () => {
     );
     expect(
       slot.getByText(
-        "Verification links are not implemented yet. They become available when WP-39 registers the verification matrix.",
+        "Verification links from architecture nodes are not available yet. Open the Verifications tab to browse the matrix.",
       ),
     ).toBeTruthy();
     expect(

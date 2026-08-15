@@ -409,7 +409,7 @@ describe("finding detail", () => {
       ]),
     );
     expect(within(section).getByText(/no public node resolver/u)).toBeTruthy();
-    expect(within(section).getByText(/WP-39 ships/u)).toBeTruthy();
+    expect(within(section).getByText(/Verifications tab/u)).toBeTruthy();
     const unavailable = within(section).getAllByRole("button", {
       name: "Unavailable",
     }) as HTMLButtonElement[];

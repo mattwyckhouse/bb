@@ -291,14 +291,13 @@ function firmwareSurface(
 function verificationSurface(): LinkSurfaceResolver {
   return {
     async resolve() {
-      // WP-39 owns the frozen verificationsMatrix producer. Until it ships,
-      // returning a designed unavailable family is truthful and keeps the
-      // other three link families independent. This resolver can call the
-      // registered matrix RPC when WP-39 lands.
+      // Matrix cells are reachable from the Verifications tab; component-scoped
+      // cross-links still need a dedicated mapping surface before they can open
+      // a specific cell from a TARA node.
       return {
         state: "unavailable",
         message:
-          "Verification links are not implemented yet. They become available when WP-39 registers the verification matrix.",
+          "Verification links from architecture nodes are not available yet. Open the Verifications tab to browse the matrix.",
       };
     },
   };

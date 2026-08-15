@@ -95,10 +95,7 @@ export function CanvasCoordinator(): null {
       if (ids.length !== 1) return;
       const selectedId = ids[0];
       if (!selectedId) return;
-      onFocusRoute(
-        edgesBySlug.has(selectedId) ? "edge" : "node",
-        selectedId,
-      );
+      onFocusRoute(edgesBySlug.has(selectedId) ? "edge" : "node", selectedId);
     },
     [edgesBySlug, onFocusRoute, setSelectedIds],
   );
@@ -149,6 +146,8 @@ export function CanvasCoordinator(): null {
     storedNodeIds,
   ]);
 
+  const fittedGraphKeyRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!focusId) return;
     setNodes((current) =>
@@ -161,9 +160,25 @@ export function CanvasCoordinator(): null {
     void fitView({ nodes: [{ id: focusId }], duration: 180, padding: 0.45 });
   }, [fitView, focusId, setEdges, setNodes, setSelectedIds]);
 
+  // Auto-fit once per graph identity so the first paint is not clipped under
+  // the inspector rail. Skip when a focus route already drives a targeted fit.
+  useEffect(() => {
+    if (focusId || !storedNodeIds) return;
+    if (fittedGraphKeyRef.current === storedNodeIds) return;
+    fittedGraphKeyRef.current = storedNodeIds;
+    const frame = requestAnimationFrame(() => {
+      void fitView({ duration: 250, padding: 0.2 });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [fitView, focusId, storedNodeIds]);
+
   useEffect(() => {
     setFitSelection(() => {
-      if (selectedIds.length === 0) return;
+      // Match React Flow Controls "Fit View": no selection fits the full graph.
+      if (selectedIds.length === 0) {
+        void fitView({ duration: 180, padding: 0.2 });
+        return;
+      }
       const nodeIds = selectedIds.flatMap((selectedId) => {
         if (nodesBySlug.has(selectedId)) return [selectedId];
         const edge = edgesBySlug.get(selectedId);
@@ -176,13 +191,7 @@ export function CanvasCoordinator(): null {
       });
     });
     return () => setFitSelection(null);
-  }, [
-    edgesBySlug,
-    fitView,
-    nodesBySlug,
-    selectedIds,
-    setFitSelection,
-  ]);
+  }, [edgesBySlug, fitView, nodesBySlug, selectedIds, setFitSelection]);
 
   return null;
 }

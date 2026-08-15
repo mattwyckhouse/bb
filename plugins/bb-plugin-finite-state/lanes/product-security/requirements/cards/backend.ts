@@ -9,11 +9,11 @@ import {
 import { reqIdKey } from "../../../../lib/sync/registry.js";
 import type { JsonValue } from "../../../../shared/contract.js";
 import { rpcContract } from "../../../../shared/contract.js";
-import { createSdkRequirementRepository, type RequirementDocument } from "./adapter.js";
 import {
-  cardModelToFields,
-  loadRequirementCardModel,
-} from "./query.js";
+  createSdkRequirementRepository,
+  type RequirementDocument,
+} from "./adapter.js";
+import { cardModelToFields, loadRequirementCardModel } from "./query.js";
 import type { RequirementCardModel } from "./schema.js";
 import { validateRequirement } from "./validator.js";
 import {
@@ -71,10 +71,14 @@ function cacheMessageWithDiagnostics(
     ? `${truncateDetail(sanitizeCacheDetail(cacheMessage), 200)} `
     : "";
   const remainingCount = diagnostics.length - 1;
-  const remainder = remainingCount === 0
-    ? ""
-    : ` And ${remainingCount} more invalid requirement ${remainingCount === 1 ? "file" : "files"}.`;
-  const available = Math.max(0, CACHE_MESSAGE_MAX_LENGTH - prefix.length - remainder.length);
+  const remainder =
+    remainingCount === 0
+      ? ""
+      : ` And ${remainingCount} more invalid requirement ${remainingCount === 1 ? "document" : "documents"}.`;
+  const available = Math.max(
+    0,
+    CACHE_MESSAGE_MAX_LENGTH - prefix.length - remainder.length,
+  );
   const first = diagnostics[0];
   const firstDetail = first
     ? `${first.artifactId}:${first.line} ${first.code}: ${first.message}`
@@ -88,14 +92,16 @@ function resolvedProjectVersionId(
   requested: string | null,
 ): string | null {
   if (requested !== null) return requested;
-  const row = db.prepare<[string, string], VersionRow>(
-    `SELECT project_version_id
+  const row = db
+    .prepare<[string, string], VersionRow>(
+      `SELECT project_version_id
        FROM sync_state
       WHERE project_id = ? AND entity_kind = 'requirement'
         AND project_version_id <> ? AND accepted_generation_id IS NOT NULL
       ORDER BY last_pull DESC, project_version_id DESC
       LIMIT 1`,
-  ).get(projectId, PROJECT_LEVEL_VERSION_ID);
+    )
+    .get(projectId, PROJECT_LEVEL_VERSION_ID);
   return row ? fromStorageProjectVersionId(row.project_version_id) : null;
 }
 
@@ -114,18 +120,28 @@ function readFilters(value: unknown): Record<string, JsonValue> {
       typeof entry === "string" ||
       typeof entry === "number" ||
       typeof entry === "boolean"
-    ) parsed[key] = entry;
+    )
+      parsed[key] = entry;
   }
   return parsed;
 }
 
-function matchesFilters(model: RequirementCardModel, filters: Record<string, JsonValue>): boolean {
+function matchesFilters(
+  model: RequirementCardModel,
+  filters: Record<string, JsonValue>,
+): boolean {
   const { requirement } = model;
   for (const [key, value] of Object.entries(filters)) {
     if (key === "query" && typeof value === "string") {
       const query = value.toLocaleLowerCase();
-      if (!`${requirement.id} ${requirement.ears.text}`.toLocaleLowerCase().includes(query)) return false;
-    } else if (key === "pattern" && value !== requirement.ears.pattern) return false;
+      if (
+        !`${requirement.id} ${requirement.ears.text}`
+          .toLocaleLowerCase()
+          .includes(query)
+      )
+        return false;
+    } else if (key === "pattern" && value !== requirement.ears.pattern)
+      return false;
     else if (key === "req_type" && value !== requirement.req_type) return false;
     else if (key === "priority" && value !== requirement.priority) return false;
     else if (key === "evidence" && value !== model.evidenceState) return false;
@@ -157,7 +173,8 @@ function cacheState(
     return {
       state: "empty",
       asOf: row?.last_pull ?? null,
-      message: "No accepted evidence cache is available; showing tracked local requirements.",
+      message:
+        "No accepted evidence cache is available; showing tracked local requirements.",
       acceptedGenerationId: null,
       baseRevision: row?.base_revision ?? 0,
     };
@@ -178,8 +195,16 @@ function cachedDocuments(
   projectId: string,
   projectVersionId: string | null,
   generationId: string | null,
-): RequirementDocument[] {
-  if (!generationId) return [];
+): {
+  documents: RequirementDocument[];
+  diagnostics: Array<{
+    artifactId: string;
+    line: number;
+    code: string;
+    message: string;
+  }>;
+} {
+  if (!generationId) return { documents: [], diagnostics: [] };
   const rows = db
     .prepare<[string, string, string], SnapshotRow>(
       `SELECT entity_key, payload
@@ -189,24 +214,51 @@ function cachedDocuments(
         ORDER BY entity_key`,
     )
     .all(projectId, toStorageProjectVersionId(projectVersionId), generationId);
-  return rows.flatMap((row) => {
+  const documents: RequirementDocument[] = [];
+  const diagnostics: Array<{
+    artifactId: string;
+    line: number;
+    code: string;
+    message: string;
+  }> = [];
+  for (const row of rows) {
     let value: unknown;
     try {
       value = JSON.parse(row.payload);
     } catch {
-      return [];
+      diagnostics.push({
+        artifactId: `cache:${row.entity_key}`,
+        line: 1,
+        code: "INVALID_CACHED_REQUIREMENT",
+        message: "Cached requirement payload is not valid JSON.",
+      });
+      continue;
     }
     const validated = validateRequirement(value);
-    if (!validated.success) return [];
-    if (row.entity_key !== reqIdKey({ reqId: validated.data.id })) {
-      throw new Error(`Cached requirement ${validated.data.id} has a mismatched entity key.`);
+    if (!validated.success) {
+      const first = validated.errors[0];
+      diagnostics.push({
+        artifactId: `cache:${row.entity_key}`,
+        line: first?.line ?? 1,
+        code: first?.code ?? "INVALID_CACHED_REQUIREMENT",
+        message:
+          first?.message ??
+          "Cached requirement payload failed fs-requirement/v1 validation.",
+      });
+      continue;
     }
-    return [{
+    if (row.entity_key !== reqIdKey({ reqId: validated.data.id })) {
+      throw new Error(
+        `Cached requirement ${validated.data.id} has a mismatched entity key.`,
+      );
+    }
+    documents.push({
       artifactId: `product-security/requirements/${validated.data.id}.yaml`,
       requirement: validated.data,
       sha256: null,
-    }];
-  });
+    });
+  }
+  return { documents, diagnostics };
 }
 
 async function listModels(
@@ -215,7 +267,12 @@ async function listModels(
   scope: { projectId: string; projectVersionId: string | null },
 ): Promise<RequirementCardModel[]> {
   return documents.map((document) =>
-    loadRequirementCardModel(ctx.db(), scope, document.requirement, document.sha256),
+    loadRequirementCardModel(
+      ctx.db(),
+      scope,
+      document.requirement,
+      document.sha256,
+    ),
   );
 }
 
@@ -230,11 +287,15 @@ export function registerRequirementsCardsBackend(
         return queryRequirementsTraceability({ bb, ctx, repository, input });
       }
       const projectVersionId = resolvedProjectVersionId(
-        ctx.db(), input.projectId, input.projectVersionId,
+        ctx.db(),
+        input.projectId,
+        input.projectVersionId,
       );
       const cache = cacheState(ctx.db(), input.projectId, projectVersionId);
       const filters = readFilters(input);
-      const listing = await repository.list(input.projectId, { refresh: filters.refresh === true });
+      const listing = await repository.list(input.projectId, {
+        refresh: filters.refresh === true,
+      });
       const cached = cachedDocuments(
         ctx.db(),
         input.projectId,
@@ -242,30 +303,42 @@ export function registerRequirementsCardsBackend(
         cache.acceptedGenerationId,
       );
       const localById = new Map(
-        listing.documents.map((document) => [document.requirement.id, document]),
+        listing.documents.map((document) => [
+          document.requirement.id,
+          document,
+        ]),
       );
       const documents = [
-        ...cached.filter((document) => !localById.has(document.requirement.id)),
+        ...cached.documents.filter(
+          (document) => !localById.has(document.requirement.id),
+        ),
         ...listing.documents,
       ];
-      const allModels = (await listModels(
-        ctx, documents, { projectId: input.projectId, projectVersionId },
-      ))
+      const allModels = (
+        await listModels(ctx, documents, {
+          projectId: input.projectId,
+          projectVersionId,
+        })
+      )
         .filter((model) => matchesFilters(model, filters))
-        .sort((left, right) => left.requirement.id.localeCompare(right.requirement.id));
+        .sort((left, right) =>
+          left.requirement.id.localeCompare(right.requirement.id),
+        );
       const after = input.continuation;
-      const afterIndex = after === null
-        ? -1
-        : allModels.findIndex((model) => model.requirement.id === after);
+      const afterIndex =
+        after === null
+          ? -1
+          : allModels.findIndex((model) => model.requirement.id === after);
       if (after !== null && afterIndex < 0) {
         throw new Error("Requirement continuation token is no longer valid.");
       }
       const start = afterIndex + 1;
       const pageSize = input.pageSize ?? 50;
       const visible = allModels.slice(start, start + pageSize);
-      const next = start + pageSize < allModels.length
-        ? visible.at(-1)?.requirement.id ?? null
-        : null;
+      const next =
+        start + pageSize < allModels.length
+          ? (visible.at(-1)?.requirement.id ?? null)
+          : null;
       return {
         items: visible.map((model) => ({
           projectId: input.projectId,
@@ -279,22 +352,39 @@ export function registerRequirementsCardsBackend(
         next,
         cache: {
           ...cache,
-          message: cacheMessageWithDiagnostics(cache.message, listing.diagnostics),
+          message: cacheMessageWithDiagnostics(cache.message, [
+            ...listing.diagnostics,
+            ...cached.diagnostics,
+          ]),
         },
       };
     },
     async requirementsGet(input) {
       const projectVersionId = resolvedProjectVersionId(
-        ctx.db(), input.projectId, input.projectVersionId,
+        ctx.db(),
+        input.projectId,
+        input.projectVersionId,
       );
       const cache = cacheState(ctx.db(), input.projectId, projectVersionId);
-      let document = await repository.read(input.projectId, input.requirementId);
+      let document = await repository.read(
+        input.projectId,
+        input.requirementId,
+      );
       if (!document) {
-        document = cachedDocuments(
-          ctx.db(), input.projectId, projectVersionId, cache.acceptedGenerationId,
-        ).find((candidate) => candidate.requirement.id === input.requirementId) ?? null;
+        document =
+          cachedDocuments(
+            ctx.db(),
+            input.projectId,
+            projectVersionId,
+            cache.acceptedGenerationId,
+          ).documents.find(
+            (candidate) => candidate.requirement.id === input.requirementId,
+          ) ?? null;
       }
-      if (!document) throw new Error(`Requirement ${input.requirementId} was not found locally.`);
+      if (!document)
+        throw new Error(
+          `Requirement ${input.requirementId} was not found locally.`,
+        );
       const model = loadRequirementCardModel(
         ctx.db(),
         { projectId: input.projectId, projectVersionId },
@@ -316,10 +406,14 @@ export function registerRequirementsCardsBackend(
       const validated = validateRequirement(input.fields);
       if (!validated.success) {
         const first = validated.errors[0];
-        throw new Error(first ? `${first.code}: ${first.message}` : "Requirement is invalid.");
+        throw new Error(
+          first ? `${first.code}: ${first.message}` : "Requirement is invalid.",
+        );
       }
       if (validated.data.id !== input.requirementId) {
-        throw new Error("Requirement id must match the immutable RPC requirementId.");
+        throw new Error(
+          "Requirement id must match the immutable RPC requirementId.",
+        );
       }
       const write = await repository.write(
         input.projectId,

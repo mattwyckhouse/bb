@@ -156,7 +156,8 @@ describe("registered sync CLI remote diagnostics", () => {
       exitCode: 1,
       stdout: "",
       stderr:
-        "Platform authentication failed for GET https://platform.example/api/public/v0/projects?offset=0&limit=200 with HTTP 401 using X-Authorization. Refresh Platform token (platformToken).\n",
+        "Platform authentication failed for GET https://platform.example/api/public/v0/projects?offset=0&limit=200 with HTTP 401 using X-Authorization. Refresh Platform token (platformToken).\n" +
+        "code=REMOTE_HTTP_401 service=platform status=401\n",
     });
     expect(platformFetch).toHaveBeenCalledTimes(1);
   });
@@ -177,7 +178,7 @@ describe("registered sync CLI remote diagnostics", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toMatch(
-      /^Assurance Studio authentication failed for GET https:\/\/fs-alpha\.finitestate\.io\/api\/.+ with HTTP 401 using X-API-Key\. Refresh Assurance Studio API key \(asApiKey\)\.\n$/u,
+      /^Assurance Studio authentication failed for GET https:\/\/fs-alpha\.finitestate\.io\/api\/.+ with HTTP 401 using X-API-Key\. Refresh Assurance Studio API key \(asApiKey\)\.\ncode=REMOTE_HTTP_401 service=assurance-studio status=401\n$/u,
     );
     expect(assuranceStudioFetch).toHaveBeenCalledTimes(1);
     const headers = new Headers(
@@ -208,7 +209,8 @@ describe("registered sync CLI remote diagnostics", () => {
       exitCode: 1,
       stdout: "",
       stderr:
-        "Platform could not be reached during GET https://platform.example/api/public/v0/projects?offset=0&limit=200. Check DNS, proxy, and network connectivity.\n",
+        "Platform could not be reached during GET https://platform.example/api/public/v0/projects?offset=0&limit=200. Check DNS, proxy, and network connectivity.\n" +
+        "code=REMOTE_TRANSPORT_ERROR service=platform status=none\n",
     });
     expect(platformFetch).toHaveBeenCalledTimes(1);
   });
