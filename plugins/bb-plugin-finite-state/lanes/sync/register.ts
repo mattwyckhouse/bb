@@ -13,7 +13,7 @@ import { FINDINGS_DRIFT_CHANGED_CHANNEL } from "../findings/drift/report.js";
 import { registerSyncCli } from "./cli.js";
 import type { NamespacedCliRunner } from "./cli.js";
 import { registerAdapter, registerResolver } from "./engine/adapter.js";
-import type { EngineDeps } from "./engine/pull.js";
+import type { EngineDeps, PullPublication } from "./engine/pull.js";
 import {
   createVexDecisionAdapter,
   createVexDecisionResolver,
@@ -56,6 +56,39 @@ async function resolveSyncWorktreeRoot(
   };
 }
 
+/**
+ * Kind-specific invalidation after the engine's accepted-pointer flip.
+ * The engine must invoke this only after `publishGeneration` commits.
+ */
+export function emitAcceptedPullHints(
+  publish: BbPluginApi["realtime"]["publish"],
+  publication: PullPublication,
+): void {
+  const { scope, kinds } = publication;
+  if (scope.projectVersionId === null) return;
+  const payload = {
+    projectId: scope.projectId,
+    projectVersionId: scope.projectVersionId,
+  };
+  if (kinds.includes("sbomComponent")) {
+    publish("bom:changed", {
+      projectVersionId: scope.projectVersionId,
+    });
+  }
+  if (kinds.includes("finding")) {
+    publish("findings:changed", payload);
+    publish(FINDINGS_DRIFT_CHANGED_CHANNEL, {
+      pvId: scope.projectVersionId,
+    });
+  }
+  if (kinds.includes("requirement")) {
+    publish("requirements:changed", payload);
+  }
+  if (kinds.includes("threat")) {
+    publish("tara:changed", payload);
+  }
+}
+
 export function registerSync(bb: BbPluginApi, ctx: PluginContext): void {
   registerRepoContractLoadService(bb, openStore(bb), ctx.log);
   const remote = ctx.service<RemoteServices>("remote-services", () => {
@@ -76,30 +109,8 @@ export function registerSync(bb: BbPluginApi, ctx: PluginContext): void {
     // Keep kind-specific channels so mounted consumers only invalidate the
     // accepted surface they read. The engine invokes this callback after the
     // atomic generation publish has committed.
-    published: ({ scope, kinds }) => {
-      if (scope.projectVersionId === null) return;
-      const payload = {
-        projectId: scope.projectId,
-        projectVersionId: scope.projectVersionId,
-      };
-      if (kinds.includes("sbomComponent")) {
-        ctx.bb.realtime.publish("bom:changed", {
-          projectVersionId: scope.projectVersionId,
-        });
-      }
-      if (kinds.includes("finding")) {
-        ctx.bb.realtime.publish("findings:changed", payload);
-        ctx.bb.realtime.publish(FINDINGS_DRIFT_CHANGED_CHANNEL, {
-          pvId: scope.projectVersionId,
-        });
-      }
-      if (kinds.includes("requirement")) {
-        ctx.bb.realtime.publish("requirements:changed", payload);
-      }
-      if (kinds.includes("threat")) {
-        ctx.bb.realtime.publish("tara:changed", payload);
-      }
-    },
+    published: (publication) =>
+      emitAcceptedPullHints(ctx.bb.realtime.publish, publication),
     fastForwardWorking: async ({ adapter, baseRows, files, worktreeRoot }) => {
       if (adapter.kind === "vexDecision") {
         await fastForwardVexWorking(worktreeRoot, files, baseRows);
