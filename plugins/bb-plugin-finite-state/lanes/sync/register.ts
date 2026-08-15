@@ -1,6 +1,8 @@
 import type { BbPluginApi, PluginCliContext } from "@bb/plugin-sdk";
+import { registerRepoContractLoadService } from "../../lib/contract-load/index.js";
 import type { PluginContext } from "../../lib/context.js";
 import type { RemoteServices } from "../../lib/remote/types.js";
+import { openStore } from "../../lib/store/index.js";
 import { registerSyncCli } from "./cli.js";
 import type { NamespacedCliRunner } from "./cli.js";
 import { registerAdapter, registerResolver } from "./engine/adapter.js";
@@ -48,6 +50,7 @@ async function resolveSyncWorktreeRoot(
 }
 
 export function registerSync(bb: BbPluginApi, ctx: PluginContext): void {
+  registerRepoContractLoadService(bb, openStore(bb), ctx.log);
   const remote = ctx.service<RemoteServices>("remote-services", () => {
     throw new Error("Sync registration requires remote services");
   });
