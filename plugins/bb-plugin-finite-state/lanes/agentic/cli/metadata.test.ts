@@ -27,6 +27,7 @@ describe("finite-state CLI metadata", () => {
       "project",
       "as-projects",
       "as-project-select",
+      "seed",
       "pull",
       "status",
       "plan",
