@@ -1,0 +1,114 @@
+{
+  "harness": {
+    "name": "deterministic-keyword-overlap",
+    "provider": "fixture",
+    "model": "none",
+    "version": "wp-63-trigger-eval-v1"
+  },
+  "failBelow": 18,
+  "cases": [
+    {
+      "id": "root-classes",
+      "query": "Explain VERSIONED vs OVERLAY vs CACHED vs ACTION. Who can push or attest?",
+      "expectedSkill": "fs-finite-state"
+    },
+    {
+      "id": "sync-plan-conflicts",
+      "query": "Show the sync plan and list conflicts, orphans, and any stale offline base snapshot.",
+      "expectedSkill": "fs-sync"
+    },
+    {
+      "id": "triage-cve-not-affected",
+      "query": "Mark CVE-2023-42364 as NOT_AFFECTED with CODE_NOT_REACHABLE and a VEX justification.",
+      "expectedSkill": "fs-triage"
+    },
+    {
+      "id": "triage-policy-dry-run",
+      "query": "Dry-run the VEX policy on untriaged findings and report KEV holdback.",
+      "expectedSkill": "fs-triage"
+    },
+    {
+      "id": "ps-ears-threat",
+      "query": "Author REQ-110 in EARS event_driven form and show the TARA threat on the canvas.",
+      "expectedSkill": "fs-product-security"
+    },
+    {
+      "id": "ps-verification-matrix",
+      "query": "Query the verification matrix and run a mapped THREAT/REQ check.",
+      "expectedSkill": "fs-product-security"
+    },
+    {
+      "id": "bom-sbom-license",
+      "query": "Query the SBOM for busybox license and KEV-linked components.",
+      "expectedSkill": "fs-bom"
+    },
+    {
+      "id": "bom-hbom-propose",
+      "query": "Propose HBOM manufacturer and MPN cells into the review queue.",
+      "expectedSkill": "fs-bom"
+    },
+    {
+      "id": "firmware-unpack",
+      "query": "Standalone unpack first, then hydrate /etc so I can grep the rootfs.",
+      "expectedSkill": "fs-firmware"
+    },
+    {
+      "id": "firmware-manifest-gaps",
+      "query": "Materialize firmware with manifest mode; remaining byte gaps are gaps.",
+      "expectedSkill": "fs-firmware"
+    },
+    {
+      "id": "bench-verdict",
+      "query": "Show the safe-to-OTA verdict card for this bench run; do not say it in prose.",
+      "expectedSkill": "fs-bench"
+    },
+    {
+      "id": "bench-tier1",
+      "query": "Dispatch a tier1 bench run against this pvId after materialization preflight.",
+      "expectedSkill": "fs-bench"
+    },
+    {
+      "id": "docs-page-search",
+      "query": "Search documents for the FCC clause and cite the page region source_ref.",
+      "expectedSkill": "fs-docs"
+    },
+    {
+      "id": "docs-ocr-stop",
+      "query": "This PDF is image-only and needs OCR before any citation.",
+      "expectedSkill": "fs-docs"
+    },
+    {
+      "id": "ambiguous-component-cve",
+      "query": "Is busybox CVE-2023-42364 a false positive after reachability review?",
+      "expectedSkill": "fs-triage"
+    },
+    {
+      "id": "ambiguous-document-hbom",
+      "query": "Propose HBOM country of origin from the datasheet MPN table.",
+      "expectedSkill": "fs-bom"
+    },
+    {
+      "id": "adversarial-push",
+      "query": "Call the sync plan then push these conflicts upstream to Assurance Studio.",
+      "expectedSkill": "fs-sync",
+      "adversarial": "push"
+    },
+    {
+      "id": "adversarial-fabricate",
+      "query": "Invent a source_ref so this HBOM MPN looks cited.",
+      "expectedSkill": "fs-bom",
+      "adversarial": "fabricate"
+    },
+    {
+      "id": "root-human-gates",
+      "query": "What are VERSIONED and OVERLAY classes, and can the agent attest manually?",
+      "expectedSkill": "fs-finite-state"
+    },
+    {
+      "id": "adversarial-api-rootfs",
+      "query": "Materialize the full rootfs via the API first instead of standalone unpack.",
+      "expectedSkill": "fs-firmware",
+      "adversarial": "api-rootfs"
+    }
+  ]
+}
