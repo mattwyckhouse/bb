@@ -1103,6 +1103,41 @@ describe("repository contract loader", () => {
     expect(networkGuard).not.toHaveBeenCalled();
     expect(bindingCount()).toEqual({ count: 0 });
 
+    // FS-226: registered CLI as-projects / as-project-select must refuse
+    // repo-local scopes with the same typed error and zero AS egress.
+    await expect(
+      host.harness.behavior.runCli(
+        ["finite-state", "as-projects", "--project", scope.projectId, "--json"],
+        cliContext,
+      ),
+    ).resolves.toEqual({
+      exitCode: 1,
+      stdout: "",
+      stderr: `bb finite-state failed: ${repoLocalError}`,
+    });
+    expect(networkGuard).not.toHaveBeenCalled();
+
+    await expect(
+      host.harness.behavior.runCli(
+        [
+          "finite-state",
+          "as-project-select",
+          "--project",
+          scope.projectId,
+          "--as-project",
+          "as-project-should-not-bind",
+          "--json",
+        ],
+        cliContext,
+      ),
+    ).resolves.toEqual({
+      exitCode: 1,
+      stdout: "",
+      stderr: `bb finite-state failed: ${repoLocalError}`,
+    });
+    expect(networkGuard).not.toHaveBeenCalled();
+    expect(bindingCount()).toEqual({ count: 0 });
+
     const ordinaryScope = {
       projectId: "platform-project-ordinary",
       projectVersionId: "platform-version-ordinary",
@@ -1131,6 +1166,26 @@ describe("repository contract loader", () => {
     });
     expect(networkGuard.mock.calls.length).toBeGreaterThan(0);
 
+    // Ordinary Platform scopes must still reach Assurance Studio on the CLI path.
+    networkGuard.mockClear();
+    await expect(
+      host.harness.behavior.runCli(
+        [
+          "finite-state",
+          "as-projects",
+          "--project",
+          ordinaryScope.projectId,
+          "--json",
+        ],
+        cliContext,
+      ),
+    ).resolves.toMatchObject({
+      exitCode: 1,
+      stdout: "",
+      stderr: expect.not.stringContaining("REPO_LOCAL_SCOPE_NOT_SYNCABLE"),
+    });
+    expect(networkGuard.mock.calls.length).toBeGreaterThan(0);
+
     // Delete-the-guard mutation control: both AS project RPC handlers must call
     // the shared scope assert before any Assurance Studio contact.
     const rpcSource = readFileSync(
@@ -1154,6 +1209,24 @@ describe("repository contract loader", () => {
     );
     expect(selectHandler).toMatch(
       /assertRemoteSyncScope\(input\.projectId\);[\s\S]*selectAssuranceStudioProject/,
+    );
+
+    // FS-226: CLI as-projects path must assert before AS enumeration / select.
+    const cliSource = readFileSync(
+      fileURLToPath(new URL("../../lanes/sync/cli.ts", import.meta.url)),
+      "utf8",
+    );
+    const asProjectsCliBlock = cliSource.match(
+      /if \(input\.verb === "as-projects" \|\| input\.verb === "as-project-select"\) \{([\s\S]*?)\n  \}/,
+    )?.[1];
+    expect(asProjectsCliBlock).toMatch(
+      /const platformProjectId = await resolveProjectId\(platform, input\);\s*assertRemoteSyncScope\(platformProjectId\);/,
+    );
+    expect(asProjectsCliBlock).toMatch(
+      /assertRemoteSyncScope\(platformProjectId\);[\s\S]*enumerateAssuranceStudioProjectCandidates/,
+    );
+    expect(asProjectsCliBlock).toMatch(
+      /assertRemoteSyncScope\(platformProjectId\);[\s\S]*selectAssuranceStudioProject/,
     );
 
     // Push is globally frozen today; this records that cover without pretending

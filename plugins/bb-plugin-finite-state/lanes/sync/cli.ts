@@ -14,6 +14,7 @@ import { RemoteError } from "../../lib/remote/types.js";
 import { bindWorkspacePlatformProject } from "../../lib/store/project-scope.js";
 import { ENTITIES, type EntityKind } from "../../lib/sync/registry.js";
 import { pullIsolated, type EngineDeps } from "./engine/pull.js";
+import { assertRemoteSyncScope } from "./engine/scope.js";
 import { pullReportHasFailures, renderPullOutcomeCli } from "./pull-outcome.js";
 import { statusPerKind } from "./engine/status.js";
 import { computePlan } from "./plan/index.js";
@@ -245,6 +246,7 @@ async function run(
   const workspace = await resolveWorktreeRoot(context);
   if (input.verb === "as-projects" || input.verb === "as-project-select") {
     const platformProjectId = await resolveProjectId(platform, input);
+    assertRemoteSyncScope(platformProjectId);
     if (input.verb === "as-projects") {
       const items = await enumerateAssuranceStudioProjectCandidates(
         assuranceStudio,
