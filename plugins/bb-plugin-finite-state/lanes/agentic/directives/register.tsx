@@ -1,6 +1,5 @@
 import { useEffect, useState, type ComponentType } from "react";
 import {
-  useBbContext,
   useBbNavigate,
   useRpc,
   type PluginAppBuilder,
@@ -9,6 +8,7 @@ import {
 import type { AppContext } from "../../../lib/app-context.js";
 import { bomAppRpcContract } from "../../bom/rpc.js";
 import { FindingCard } from "../../findings/ui/detail/FindingCard.js";
+import { TriageSummaryCard } from "../../findings/ui/TriageSummaryCard.js";
 import { RequirementCard } from "../../product-security/requirements/cards/RequirementCard.js";
 import {
   BomScopeProvider,
@@ -17,17 +17,29 @@ import {
 import { HbomSummaryCard } from "../../bom/app/hbom/hbom-summary-card.js";
 import { BenchRunCard } from "../../bench/app/bench-run-card.js";
 import { VerdictCard } from "../../bench/app/verdict-card.js";
+import { PlanCard } from "../../sync/ui/PlanCard.js";
+import { ThreatCard } from "../../product-security/canvas/threat-overlay/ThreatCard.js";
+import { DocumentCard } from "../../documents/app/document-card.js";
+import { VerificationMatrix } from "../../product-security/verifications/matrix/index.js";
 import {
   benchRunDirectiveSubPath,
   componentDirectiveSubPath,
+  docDirectiveSubPath,
   encodeFindingDirectiveKey,
   findingDirectiveSubPath,
+  MATRIX_DIRECTIVE_MAX_ROWS,
+  matrixDirectiveSubPath,
   parseDirectiveAttributes,
-  PR1_DIRECTIVE_IDS,
+  planDirectiveSubPath,
+  REGISTERED_DIRECTIVE_IDS,
   requirementDirectiveSubPath,
+  threatDirectiveSubPath,
+  triageSummaryDirectiveSubPath,
   verdictDirectiveSubPath,
   type Pr1DirectiveId,
+  type Pr2DirectiveId,
 } from "./attributes.js";
+import { CanvasDirective } from "./canvas-directive.js";
 import {
   DirectiveBoundary,
   DirectiveInvalidAttributes,
@@ -35,15 +47,9 @@ import {
   DirectiveShell,
   DirectiveUnconfiguredState,
 } from "./DirectiveBoundary.js";
+import { useDirectiveProjectId } from "./project-id.js";
 
 type DirectiveComponent = ComponentType<PluginMessageDirectiveProps>;
-
-function useDirectiveProjectId(
-  message: PluginMessageDirectiveProps["message"],
-): string | null {
-  const { projectId: contextProjectId } = useBbContext();
-  return message.projectId ?? contextProjectId;
-}
 
 function FindingDirective(
   props: PluginMessageDirectiveProps,
@@ -348,6 +354,202 @@ function VerdictDirective(
   );
 }
 
+function PlanDirective(props: PluginMessageDirectiveProps): React.JSX.Element {
+  const navigate = useBbNavigate();
+  const projectId = useDirectiveProjectId(props.message);
+  const parsed = parseDirectiveAttributes("fs-plan", props.attributes);
+  if (!parsed.ok) {
+    return (
+      <DirectiveInvalidAttributes
+        issues={parsed.issues}
+        source={props.source}
+      />
+    );
+  }
+  if (!projectId) {
+    return (
+      <DirectiveUnconfiguredState
+        detail="Select a bb project so the sync plan card can self-fetch."
+        title="Choose a project"
+      />
+    );
+  }
+  return (
+    <DirectiveBoundary source={props.source}>
+      <DirectiveShell
+        onOpen={() =>
+          navigate.toPluginPanel("sync", {
+            subPath: planDirectiveSubPath(parsed.value.id),
+          })
+        }
+        openLabel="Open in Sync"
+      >
+        <PlanCard id={parsed.value.id} />
+      </DirectiveShell>
+    </DirectiveBoundary>
+  );
+}
+
+function TriageSummaryDirective(
+  props: PluginMessageDirectiveProps,
+): React.JSX.Element {
+  const navigate = useBbNavigate();
+  const projectId = useDirectiveProjectId(props.message);
+  const parsed = parseDirectiveAttributes(
+    "fs-triage-summary",
+    props.attributes,
+  );
+  if (!parsed.ok) {
+    return (
+      <DirectiveInvalidAttributes
+        issues={parsed.issues}
+        source={props.source}
+      />
+    );
+  }
+  if (!projectId) {
+    return (
+      <DirectiveUnconfiguredState
+        detail="Select a bb project so the triage-run summary can self-fetch."
+        title="Choose a project"
+      />
+    );
+  }
+  return (
+    <DirectiveBoundary source={props.source}>
+      <DirectiveShell
+        onOpen={() =>
+          navigate.toPluginPanel("findings", {
+            subPath: triageSummaryDirectiveSubPath(),
+          })
+        }
+        openLabel="Open in Findings"
+      >
+        <TriageSummaryCard
+          id={parsed.value.id}
+          version={parsed.value.version}
+        />
+      </DirectiveShell>
+    </DirectiveBoundary>
+  );
+}
+
+function ThreatDirective(
+  props: PluginMessageDirectiveProps,
+): React.JSX.Element {
+  const navigate = useBbNavigate();
+  const projectId = useDirectiveProjectId(props.message);
+  const parsed = parseDirectiveAttributes("fs-threat", props.attributes);
+  if (!parsed.ok) {
+    return (
+      <DirectiveInvalidAttributes
+        issues={parsed.issues}
+        source={props.source}
+      />
+    );
+  }
+  if (!projectId) {
+    return (
+      <DirectiveUnconfiguredState
+        detail="Select a bb project so the threat card can self-fetch from the TARA cache."
+        title="Choose a project"
+      />
+    );
+  }
+  return (
+    <DirectiveBoundary source={props.source}>
+      <DirectiveShell
+        onOpen={() =>
+          navigate.toPluginPanel("product-security", {
+            subPath: threatDirectiveSubPath(parsed.value.id),
+          })
+        }
+        openLabel="Open in Product Security"
+      >
+        <ThreatCard id={parsed.value.id} />
+      </DirectiveShell>
+    </DirectiveBoundary>
+  );
+}
+
+function DocDirective(props: PluginMessageDirectiveProps): React.JSX.Element {
+  const navigate = useBbNavigate();
+  const projectId = useDirectiveProjectId(props.message);
+  const parsed = parseDirectiveAttributes("fs-doc", props.attributes);
+  if (!parsed.ok) {
+    return (
+      <DirectiveInvalidAttributes
+        issues={parsed.issues}
+        source={props.source}
+      />
+    );
+  }
+  if (!projectId) {
+    return (
+      <DirectiveUnconfiguredState
+        detail="Select a bb project so the document card can self-fetch."
+        title="Choose a project"
+      />
+    );
+  }
+  return (
+    <DirectiveBoundary source={props.source}>
+      <DirectiveShell
+        onOpen={() =>
+          navigate.toPluginPanel("documents", {
+            subPath: docDirectiveSubPath(parsed.value.id),
+          })
+        }
+        openLabel="Open in Documents"
+      >
+        <DocumentCard id={parsed.value.id} />
+      </DirectiveShell>
+    </DirectiveBoundary>
+  );
+}
+
+function MatrixDirective(
+  props: PluginMessageDirectiveProps,
+): React.JSX.Element {
+  const navigate = useBbNavigate();
+  const projectId = useDirectiveProjectId(props.message);
+  const parsed = parseDirectiveAttributes("fs-matrix", props.attributes);
+  if (!parsed.ok) {
+    return (
+      <DirectiveInvalidAttributes
+        issues={parsed.issues}
+        source={props.source}
+      />
+    );
+  }
+  if (!projectId) {
+    return (
+      <DirectiveUnconfiguredState
+        detail="Select a bb project so the verification matrix slice can load."
+        title="Choose a project"
+      />
+    );
+  }
+  return (
+    <DirectiveBoundary source={props.source}>
+      <DirectiveShell
+        onOpen={() =>
+          navigate.toPluginPanel("product-security", {
+            subPath: matrixDirectiveSubPath(),
+          })
+        }
+        openLabel="Open verification matrix"
+      >
+        <VerificationMatrix
+          filterText={parsed.value.filter}
+          maxRows={MATRIX_DIRECTIVE_MAX_ROWS}
+          projectId={projectId}
+        />
+      </DirectiveShell>
+    </DirectiveBoundary>
+  );
+}
+
 const PR1_COMPONENTS: Readonly<Record<Pr1DirectiveId, DirectiveComponent>> = {
   "fs-finding": FindingDirective,
   "fs-req": RequirementDirective,
@@ -357,20 +559,36 @@ const PR1_COMPONENTS: Readonly<Record<Pr1DirectiveId, DirectiveComponent>> = {
   "fs-verdict": VerdictDirective,
 };
 
+const PR2_COMPONENTS: Readonly<Record<Pr2DirectiveId, DirectiveComponent>> = {
+  "fs-plan": PlanDirective,
+  "fs-triage-summary": TriageSummaryDirective,
+  "fs-threat": ThreatDirective,
+  "fs-canvas": CanvasDirective,
+  "fs-matrix": MatrixDirective,
+  "fs-doc": DocDirective,
+};
+
+const ALL_COMPONENTS: Readonly<
+  Record<(typeof REGISTERED_DIRECTIVE_IDS)[number], DirectiveComponent>
+> = {
+  ...PR1_COMPONENTS,
+  ...PR2_COMPONENTS,
+};
+
 /**
- * Composition-only registrar for WP-61 PR 1. Registers the six card-backed
- * directive ids; FS-229 supplies the remaining six owner cards/modes for PR 2.
+ * Composition-only registrar for WP-61. Registers all twelve directive ids —
+ * six card-backed (PR1) plus FS-229 owner cards / canvas+matrix modes (PR2).
  */
 export function registerDirectives(
   app: PluginAppBuilder,
   _ctx: AppContext,
 ): void {
-  for (const id of PR1_DIRECTIVE_IDS) {
+  for (const id of REGISTERED_DIRECTIVE_IDS) {
     app.slots.messageDirective({
       id,
-      component: PR1_COMPONENTS[id],
+      component: ALL_COMPONENTS[id],
     });
   }
 }
 
-export const registeredDirectiveComponents = PR1_COMPONENTS;
+export const registeredDirectiveComponents = ALL_COMPONENTS;

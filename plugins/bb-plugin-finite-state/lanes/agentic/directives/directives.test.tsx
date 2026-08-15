@@ -9,7 +9,13 @@ import {
 } from "@bb/plugin-sdk/testing/app";
 import { findingStableKey } from "../../../lib/sync/registry.js";
 import { AGENT_SURFACE, DIRECTIVE_IDS } from "../../../lib/agentic/registry.js";
-import { PR1_DIRECTIVE_IDS, PR2_DIRECTIVE_IDS } from "./attributes.js";
+import { resolveTestTaraScope } from "../../product-security/canvas/scope/test-fixture.js";
+import {
+  MATRIX_DIRECTIVE_MAX_ROWS,
+  PR1_DIRECTIVE_IDS,
+  PR2_DIRECTIVE_IDS,
+  REGISTERED_DIRECTIVE_IDS,
+} from "./attributes.js";
 import {
   DirectiveBoundary,
   DirectiveEmptyState,
@@ -23,6 +29,10 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
+
+const PLAN_ID = "01K2G8Z4Q9A1B2C3D4E5F6G7H8";
+const DOC_ID = "a".repeat(64);
+const TRIAGE_RUN_ID = "tr-20260811-1402";
 
 const stableKey = findingStableKey(
   {
@@ -200,19 +210,197 @@ function verdictWarm() {
   };
 }
 
-describe("WP-61 PR1 directives", () => {
-  it("registers exactly the six PR1 ids and keeps registry parity", async () => {
+function planWarm() {
+  return {
+    projectId: "proj_1",
+    projectVersionId: "version-1",
+    planId: PLAN_ID,
+    planSha256: "a".repeat(64),
+    baseGenerationIds: {},
+    baseRevisions: {},
+    baseStateSha256: "b".repeat(64),
+    createdAt: "2026-08-15T00:00:00.000Z",
+    staleness: { asOf: "2026-08-15T00:00:00.000Z", degraded: false },
+    items: [],
+    summary: {
+      creates: 2,
+      updates: 3,
+      deletes: 1,
+      noops: 0,
+      conflicts: 1,
+      orphans: 0,
+    },
+    blastRadius: {
+      requiresHumanReview: true,
+      changed: 6,
+      deletes: 1,
+      remoteCalls: 2,
+      surfaces: ["threat"],
+    },
+    validationErrors: [],
+    total: 6,
+    next: null,
+    cache: freshCache,
+  };
+}
+
+function triageWarm() {
+  return {
+    runId: TRIAGE_RUN_ID,
+    source: "policy" as const,
+    status: "completed" as const,
+    dryRun: false,
+    written: 39,
+    held: 2,
+    conflicts: 0,
+    skippedExisting: 1,
+    errors: 0,
+    holdbacks: [],
+    createdAt: "2026-08-15T00:00:00.000Z",
+    finishedAt: "2026-08-15T00:01:00.000Z",
+  };
+}
+
+function threatWarm() {
+  return {
+    projectId: "proj_1",
+    projectVersionId: null,
+    kind: "threat",
+    key: "THREAT-22",
+    label: "Unsigned boot path",
+    fields: {
+      slug: "THREAT-22",
+      name: "Unsigned boot path",
+      category: "spoofing",
+      severity: "high",
+      description: "Bootloader accepts unsigned images.",
+      affected_components: ["COMP-boot"],
+      mitigations: ["MIT-secure-boot"],
+    },
+    links: [],
+    cache: freshCache,
+  };
+}
+
+function documentWarm() {
+  return {
+    projectId: "proj_1",
+    projectVersionId: "version-1",
+    kind: "document",
+    key: DOC_ID,
+    label: "BCM6755 datasheet.pdf",
+    fields: {
+      sha256: DOC_ID,
+      path: "product-security/documents/a…-BCM6755.pdf",
+      docKind: "datasheet",
+      mimeType: "application/pdf",
+      bytes: 1024,
+      withdrawn: false,
+      needsOcr: false,
+      uploadedAt: "2026-08-15T00:00:00.000Z",
+      retention: "plugin-local",
+    },
+    links: [],
+    cache: freshCache,
+  };
+}
+
+function emptyTaraCanvasPage() {
+  return {
+    items: [],
+    total: 0,
+    next: null,
+    cache: freshCache,
+  };
+}
+
+function matrixCell(requirementId: string, tier: string) {
+  return {
+    requirementId,
+    tier,
+    state: "mapped_not_run" as const,
+    checkCount: 0,
+    requiredCount: 0,
+    latestAt: null,
+    runIds: [] as string[],
+  };
+}
+
+function matrixPage(pageSize: number) {
+  return {
+    items: Array.from({ length: Math.min(pageSize, 3) }, (_, index) => {
+      const requirementId = `REQ-${index}`;
+      return {
+        projectId: "proj_1",
+        projectVersionId: "version-1",
+        kind: "verificationMatrixRow",
+        key: requirementId,
+        label: requirementId,
+        fields: {
+          row: {
+            requirementId,
+            title: `Requirement ${index}`,
+            pattern: "ubiquitous",
+            requirementType: "security",
+            priority: "P1",
+            stale: false,
+            unknownCheckCount: 0,
+            suppressedCheckCount: 0,
+            cells: {
+              static: matrixCell(requirementId, "static"),
+              emulation: matrixCell(requirementId, "emulation"),
+              hil: matrixCell(requirementId, "hil"),
+              manual: matrixCell(requirementId, "manual"),
+              hardware: matrixCell(requirementId, "hardware"),
+            },
+          },
+          rollup: {
+            requirements: 3,
+            verified: 0,
+            failed: 0,
+            error: 0,
+            inconclusive: 0,
+            running: 0,
+            pending: 3,
+            skipped: 0,
+          },
+        },
+        cache: freshCache,
+      };
+    }),
+    total: 3,
+    next: null,
+    cache: freshCache,
+  };
+}
+
+function matrixInputPageSize(input: unknown): number {
+  if (typeof input !== "object" || input === null) return 200;
+  const pageSize = Reflect.get(input, "pageSize");
+  return typeof pageSize === "number" ? pageSize : 200;
+}
+
+function matrixInputText(input: unknown): string | null {
+  if (typeof input !== "object" || input === null) return null;
+  const filters = Reflect.get(input, "filters");
+  if (typeof filters !== "object" || filters === null) return null;
+  const text = Reflect.get(filters, "text");
+  return typeof text === "string" ? text : null;
+}
+
+describe("WP-61 directives (all twelve)", () => {
+  it("registers exactly twelve ids with registry parity", async () => {
     const app = await loadPluginApp(() => import("../../../app.js"));
     const registered = app.messageDirectives.map((directive) => directive.id);
-    expect(registered.sort()).toEqual([...PR1_DIRECTIVE_IDS].sort());
-    expect(registered).toHaveLength(6);
+    expect(registered.sort()).toEqual([...REGISTERED_DIRECTIVE_IDS].sort());
+    expect(registered).toHaveLength(12);
+    expect(registered.sort()).toEqual([...DIRECTIVE_IDS].sort());
     for (const id of registered) {
       expect(AGENT_SURFACE.directives).toContain(id);
     }
-    for (const id of PR2_DIRECTIVE_IDS) {
-      expect(registered).not.toContain(id);
-      expect(DIRECTIVE_IDS).toContain(id);
-    }
+    expect(new Set([...PR1_DIRECTIVE_IDS, ...PR2_DIRECTIVE_IDS])).toEqual(
+      new Set(REGISTERED_DIRECTIVE_IDS),
+    );
   });
 
   it("renders shared UI states without crashing the message tree", () => {
@@ -377,13 +565,22 @@ describe("WP-61 PR1 directives", () => {
         },
       }),
       benchOtaVerdictGet: () => verdictWarm(),
+      syncPlan: () => planWarm(),
+      triageSummaryGet: () => triageWarm(),
+      taraGet: () => threatWarm(),
+      documentsGet: () => documentWarm(),
+      taraScopeResolve: resolveTestTaraScope,
+      taraCanvasList: () => emptyTaraCanvasPage(),
+      verificationsMatrix: (input: unknown) =>
+        matrixPage(matrixInputPageSize(input)),
+      verificationMatrixPreferenceGet: () => ({ showManual: false }),
       forgeJobCreate: forge,
       forgeJobStatus: forge,
       forgeCompute: forge,
     };
 
     const cases: Array<{
-      id: (typeof PR1_DIRECTIVE_IDS)[number];
+      id: (typeof REGISTERED_DIRECTIVE_IDS)[number];
       attributes: Record<string, string>;
     }> = [
       { id: "fs-finding", attributes: { id: stableKey } },
@@ -395,6 +592,12 @@ describe("WP-61 PR1 directives", () => {
       { id: "fs-hbom-summary", attributes: {} },
       { id: "fs-bench", attributes: { id: "run-1" } },
       { id: "fs-verdict", attributes: { id: "pv-1" } },
+      { id: "fs-plan", attributes: { id: PLAN_ID } },
+      { id: "fs-triage-summary", attributes: { id: TRIAGE_RUN_ID } },
+      { id: "fs-threat", attributes: { id: "THREAT-22" } },
+      { id: "fs-doc", attributes: { id: DOC_ID } },
+      { id: "fs-canvas", attributes: { focus: "COMP-httpd" } },
+      { id: "fs-matrix", attributes: { filter: "status:failed" } },
     ];
 
     for (const item of cases) {
@@ -406,14 +609,9 @@ describe("WP-61 PR1 directives", () => {
         context: { projectId: "proj_1" },
         rpc,
       });
+      cleanup();
     }
     expect(forge).not.toHaveBeenCalled();
-    for (const call of Object.values(
-      // Collect across slots is awkward; assert forge stubs were never hit.
-      {},
-    )) {
-      void call;
-    }
   });
 
   it("cold-cache and warm-cache renders work per PR1 directive", async () => {
@@ -579,6 +777,158 @@ describe("WP-61 PR1 directives", () => {
       },
     });
     expect(await warmBench.findByText("Unknown bench run")).toBeTruthy();
+  });
+
+  it("PR2 card directives render warm and navigate to owner panels", async () => {
+    const app = await loadPluginApp(() => import("../../../app.js"));
+
+    const plan = app.messageDirectives.find((d) => d.id === "fs-plan")!;
+    const warmPlan = renderSlot(plan, messageProps({ id: PLAN_ID }), {
+      context: { projectId: "proj_1" },
+      rpc: { syncPlan: () => planWarm() },
+    });
+    expect(await warmPlan.findByLabelText(`Sync plan ${PLAN_ID}`)).toBeTruthy();
+    fireEvent.click(warmPlan.getByRole("button", { name: "Open in Sync" }));
+    expect(warmPlan.inspection.navigateCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "toPluginPanel",
+          path: "sync",
+          options: expect.objectContaining({
+            subPath: `plan/${PLAN_ID}`,
+          }),
+        }),
+      ]),
+    );
+    cleanup();
+
+    const triage = app.messageDirectives.find(
+      (d) => d.id === "fs-triage-summary",
+    )!;
+    const warmTriage = renderSlot(
+      triage,
+      messageProps({ id: TRIAGE_RUN_ID, version: "version-1" }),
+      {
+        context: { projectId: "proj_1" },
+        rpc: {
+          cachedProjectVersions: () => ({
+            versions: [
+              {
+                platformProjectId: "platform-1",
+                projectVersionId: "version-1",
+                asOf: "2026-08-15T00:00:00.000Z",
+                state: "fresh",
+              },
+            ],
+            selectedPlatformProjectId: "platform-1",
+            selectedProjectVersionId: "version-1",
+          }),
+          triageSummaryGet: () => triageWarm(),
+        },
+      },
+    );
+    expect(
+      await warmTriage.findByLabelText(`Triage summary ${TRIAGE_RUN_ID}`),
+    ).toBeTruthy();
+    cleanup();
+
+    const threat = app.messageDirectives.find((d) => d.id === "fs-threat")!;
+    const warmThreat = renderSlot(threat, messageProps({ id: "THREAT-22" }), {
+      context: { projectId: "proj_1" },
+      rpc: { taraGet: () => threatWarm() },
+    });
+    expect(await warmThreat.findByLabelText("Threat THREAT-22")).toBeTruthy();
+    cleanup();
+
+    const doc = app.messageDirectives.find((d) => d.id === "fs-doc")!;
+    const warmDoc = renderSlot(doc, messageProps({ id: DOC_ID }), {
+      context: { projectId: "proj_1" },
+      rpc: { documentsGet: () => documentWarm() },
+    });
+    expect(await warmDoc.findByText("BCM6755 datasheet.pdf")).toBeTruthy();
+    cleanup();
+
+    const coldPlan = renderSlot(plan, messageProps({ id: PLAN_ID }, null), {
+      context: { projectId: null },
+    });
+    expect(await coldPlan.findByText("Choose a project")).toBeTruthy();
+  });
+
+  it("canvas lazy chunk has open-in-panel affordance and no mutation control", async () => {
+    const app = await loadPluginApp(() => import("../../../app.js"));
+    const canvas = app.messageDirectives.find((d) => d.id === "fs-canvas")!;
+    const preferenceSet = vi.fn();
+    const layoutSave = vi.fn();
+    const slot = renderSlot(
+      canvas,
+      messageProps({ focus: "COMP-httpd", height: "420" }),
+      {
+        context: { projectId: "proj_1" },
+        rpc: {
+          taraScopeResolve: resolveTestTaraScope,
+          taraCanvasList: () => emptyTaraCanvasPage(),
+          canvasLayoutSave: layoutSave,
+          verificationMatrixPreferenceSet: preferenceSet,
+        },
+      },
+    );
+    expect(await slot.findByText("No architecture model yet")).toBeTruthy();
+    fireEvent.click(
+      slot.getByRole("button", { name: "Open in Product Security" }),
+    );
+    expect(slot.inspection.navigateCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "toPluginPanel",
+          path: "product-security",
+          options: expect.objectContaining({
+            subPath: "tara/nodes/COMP-httpd",
+          }),
+        }),
+      ]),
+    );
+    expect(layoutSave).not.toHaveBeenCalled();
+    expect(preferenceSet).not.toHaveBeenCalled();
+    expect(
+      slot.inspection.rpcCalls.some(
+        (call) => call.method === "canvasLayoutSave",
+      ),
+    ).toBe(false);
+  });
+
+  it("matrix directive caps at 15 rows and never preference-writes", async () => {
+    const app = await loadPluginApp(() => import("../../../app.js"));
+    const matrix = app.messageDirectives.find((d) => d.id === "fs-matrix")!;
+    const preferenceSet = vi.fn();
+    const slot = renderSlot(matrix, messageProps({ filter: "status:failed" }), {
+      context: { projectId: "proj_1" },
+      rpc: {
+        verificationMatrixPreferenceGet: () => ({ showManual: false }),
+        verificationMatrixPreferenceSet: preferenceSet,
+        verificationsMatrix: (input: unknown) => {
+          expect(matrixInputPageSize(input)).toBe(MATRIX_DIRECTIVE_MAX_ROWS);
+          expect(matrixInputText(input)).toBe("status:failed");
+          return matrixPage(matrixInputPageSize(input));
+        },
+      },
+    });
+    await waitFor(() => {
+      expect(
+        slot.inspection.rpcCalls.some(
+          (call) => call.method === "verificationsMatrix",
+        ),
+      ).toBe(true);
+    });
+    const manual = slot.queryByLabelText(/Manual evidence/iu);
+    if (manual) {
+      fireEvent.click(manual);
+    }
+    expect(preferenceSet).not.toHaveBeenCalled();
+    expect(
+      slot.inspection.rpcCalls.some(
+        (call) => call.method === "verificationMatrixPreferenceSet",
+      ),
+    ).toBe(false);
   });
 
   it("rejects unknown attributes before any owner RPC", async () => {
