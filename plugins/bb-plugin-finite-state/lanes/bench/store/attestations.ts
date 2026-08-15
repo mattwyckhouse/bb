@@ -45,8 +45,13 @@ function serializedIdentifiers(
   label: string,
 ): string | null {
   if (values === undefined) return null;
-  if (values.length > 10_000 || values.some((value) => !IDENTIFIER.test(value))) {
-    throw new Error(`Bench attestation ${label} must contain valid identifiers`);
+  if (
+    values.length > 10_000 ||
+    values.some((value) => !IDENTIFIER.test(value))
+  ) {
+    throw new Error(
+      `Bench attestation ${label} must contain valid identifiers`,
+    );
   }
   return JSON.stringify([...new Set(values)].sort());
 }
@@ -60,30 +65,45 @@ export function upsertBenchAttestation(
   const attestation = bundle.attestation;
   if (!attestation) return 0;
   if (!SHA256.test(attestation.subjectDigest)) {
-    throw new Error("Bench attestation subjectDigest must be a lowercase sha256 digest");
+    throw new Error(
+      "Bench attestation subjectDigest must be a lowercase sha256 digest",
+    );
   }
   validateEnvelope(attestation.payload);
-  const runDigest = bundle.run.firmwareDigest ?? location.row?.firmware_digest ?? null;
-  const subjectMatchesRun = runDigest !== null && attestation.subjectDigest === runDigest;
+  const runDigest =
+    bundle.run.firmwareDigest ?? location.row?.firmware_digest ?? null;
+  const subjectMatchesRun =
+    runDigest !== null && attestation.subjectDigest === runDigest;
   const signatureVerified = attestation.verified;
   const verified = signatureVerified && subjectMatchesRun;
-  const requirementIds = serializedIdentifiers(attestation.requirementIds, "requirementIds");
+  const requirementIds = serializedIdentifiers(
+    attestation.requirementIds,
+    "requirementIds",
+  );
   const checkIds = serializedIdentifiers(attestation.checkIds, "checkIds");
-  const resultRefs = serializedIdentifiers(attestation.resultRefs, "resultRefs");
-  if (attestation.signerIdentity !== undefined && attestation.signerIdentity.length > 2_000) {
+  const resultRefs = serializedIdentifiers(
+    attestation.resultRefs,
+    "resultRefs",
+  );
+  if (
+    attestation.signerIdentity !== undefined &&
+    attestation.signerIdentity.length > 2_000
+  ) {
     throw new Error("Bench attestation signerIdentity is too large");
   }
+  // Identity is (run, format, subject, payload) only. Coverage and signer are
+  // mutable verification outcomes carried by ON CONFLICT DO UPDATE — folding
+  // them into the id made retractions insert a second row and left stale SAFE
+  // proof reachable (FS-141 / FS-69 delta).
   const attestationId = `bench-attestation-${createHash("sha256")
-    .update([
-      bundle.run.runId,
-      attestation.format,
-      attestation.subjectDigest,
-      attestation.payload,
-      requirementIds ?? "",
-      checkIds ?? "",
-      resultRefs ?? "",
-      attestation.signerIdentity ?? "",
-    ].join("\0"))
+    .update(
+      [
+        bundle.run.runId,
+        attestation.format,
+        attestation.subjectDigest,
+        attestation.payload,
+      ].join("\0"),
+    )
     .digest("hex")}`;
   const write = db
     .prepare(
@@ -157,7 +177,11 @@ export function listBenchAttestations(
   db: Database.Database,
   query: BenchPageQuery,
 ): Page<BenchAttestationSummary> {
-  if (!Number.isInteger(query.pageSize) || query.pageSize < 1 || query.pageSize > 200) {
+  if (
+    !Number.isInteger(query.pageSize) ||
+    query.pageSize < 1 ||
+    query.pageSize > 200
+  ) {
     throw new Error("Bench attestation pageSize must be between 1 and 200");
   }
   const location = resolveRunLocation(db, {
@@ -179,7 +203,10 @@ export function listBenchAttestations(
     : null;
   const rows = after
     ? db
-        .prepare<[string, string, string, string, string, number], BenchAttestationRow>(
+        .prepare<
+          [string, string, string, string, string, number],
+          BenchAttestationRow
+        >(
           `SELECT * FROM attestations
            WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
              AND run_id = ? AND attestation_id > ?
@@ -207,19 +234,26 @@ export function listBenchAttestations(
           query.pageSize + 1,
         );
   const visible = rows.slice(0, query.pageSize);
-  const count = db
-    .prepare<[string, string, string, string], CountRow>(
-      `SELECT COUNT(*) AS count FROM attestations
+  const count =
+    db
+      .prepare<[string, string, string, string], CountRow>(
+        `SELECT COUNT(*) AS count FROM attestations
        WHERE project_id = ? AND project_version_id = ? AND generation_id = ? AND run_id = ?`,
-    )
-    .get(location.projectId, location.projectVersionId, location.generationId, query.runId)
-    ?.count ?? 0;
+      )
+      .get(
+        location.projectId,
+        location.projectVersionId,
+        location.generationId,
+        query.runId,
+      )?.count ?? 0;
   return {
     items: visible.map(summarize),
     total: count,
     next:
       rows.length > query.pageSize && visible.at(-1)
-        ? Buffer.from(visible.at(-1)!.attestation_id, "utf8").toString("base64url")
+        ? Buffer.from(visible.at(-1)!.attestation_id, "utf8").toString(
+            "base64url",
+          )
         : null,
     cache: getBenchCacheState(db, query.projectId, query.pvId, query.now),
   };

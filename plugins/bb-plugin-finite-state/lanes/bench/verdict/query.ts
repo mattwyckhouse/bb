@@ -22,56 +22,77 @@ const sha256Schema = z.string().regex(SHA256);
 const identifierSchema = z.string().regex(IDENTIFIER);
 const timestampSchema = z.string().datetime({ offset: true });
 const matrixTierSchema = z.enum(TIERS);
-const evidenceSchema = z.object({
-  requirementId: identifierSchema,
-  tier: matrixTierSchema,
-  state: z.enum([
-    "proven", "failed", "error", "unmapped", "not_run", "running",
-    "skipped", "unsigned", "invalid_signature", "stale_digest",
-    "insufficient_scope",
-  ]),
-  required: z.boolean(),
-  runId: identifierSchema.optional(),
-  checkId: identifierSchema.optional(),
-  resultId: identifierSchema.optional(),
-  outcome: z.string().max(100).optional(),
-  attestationId: identifierSchema.optional(),
-  attestationVerified: z.boolean(),
-  signatureVerified: z.boolean().optional(),
-  subjectMatchesDigest: z.boolean().optional(),
-  signerIdentity: z.string().max(2_000).optional(),
-  evidenceDigest: sha256Schema.optional(),
-  runStartedAt: timestampSchema.optional(),
-  runFinishedAt: timestampSchema.optional(),
-  resultExecutedAt: timestampSchema.optional(),
-  attestationCreatedAt: timestampSchema.optional(),
-}).strict();
-const verdictResultSchema = z.object({
-  pvId: identifierSchema,
-  firmwareDigest: sha256Schema.nullable(),
-  currentMountedDigest: sha256Schema.nullable(),
-  verdict: z.enum(["SAFE_TO_OTA", "NOT_SAFE", "INCONCLUSIVE"]),
-  stale: z.boolean(),
-  required: z.number().int().nonnegative(),
-  proven: z.number().int().nonnegative(),
-  failed: z.number().int().nonnegative(),
-  gaps: z.number().int().nonnegative(),
-  evidence: z.array(evidenceSchema).max(10_000),
-  issues: z.array(z.object({
-    code: z.enum(["MODEL_UNAVAILABLE", "MISSING_CURRENT_DIGEST"]),
-    message: z.string().max(2_000),
-  }).strict()).max(10),
-  computedAt: timestampSchema,
-}).strict();
+const evidenceSchema = z
+  .object({
+    requirementId: identifierSchema,
+    tier: matrixTierSchema,
+    state: z.enum([
+      "proven",
+      "failed",
+      "error",
+      "unmapped",
+      "not_run",
+      "running",
+      "skipped",
+      "unsigned",
+      "unverified",
+      "invalid_signature",
+      "stale_digest",
+      "insufficient_scope",
+    ]),
+    required: z.boolean(),
+    runId: identifierSchema.optional(),
+    checkId: identifierSchema.optional(),
+    resultId: identifierSchema.optional(),
+    outcome: z.string().max(100).optional(),
+    attestationId: identifierSchema.optional(),
+    attestationVerified: z.boolean(),
+    signatureVerified: z.boolean().optional(),
+    subjectMatchesDigest: z.boolean().optional(),
+    signerIdentity: z.string().max(2_000).optional(),
+    evidenceDigest: sha256Schema.optional(),
+    runStartedAt: timestampSchema.optional(),
+    runFinishedAt: timestampSchema.optional(),
+    resultExecutedAt: timestampSchema.optional(),
+    attestationCreatedAt: timestampSchema.optional(),
+  })
+  .strict();
+const verdictResultSchema = z
+  .object({
+    pvId: identifierSchema,
+    firmwareDigest: sha256Schema.nullable(),
+    currentMountedDigest: sha256Schema.nullable(),
+    verdict: z.enum(["SAFE_TO_OTA", "NOT_SAFE", "INCONCLUSIVE"]),
+    stale: z.boolean(),
+    required: z.number().int().nonnegative(),
+    proven: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    gaps: z.number().int().nonnegative(),
+    evidence: z.array(evidenceSchema).max(10_000),
+    issues: z
+      .array(
+        z
+          .object({
+            code: z.enum(["MODEL_UNAVAILABLE", "MISSING_CURRENT_DIGEST"]),
+            message: z.string().max(2_000),
+          })
+          .strict(),
+      )
+      .max(10),
+    computedAt: timestampSchema,
+  })
+  .strict();
 
 /** Lane-local additive contract; the frozen summary RPC remains unchanged. */
 export const otaVerdictRpcContract = defineRpcContract({
   benchOtaVerdictGet: {
-    input: z.object({
-      projectId: identifierSchema,
-      pvId: identifierSchema,
-      digest: sha256Schema.optional(),
-    }).strict(),
+    input: z
+      .object({
+        projectId: identifierSchema,
+        pvId: identifierSchema,
+        digest: sha256Schema.optional(),
+      })
+      .strict(),
     output: verdictResultSchema,
   },
 });
@@ -150,11 +171,15 @@ function syncRow(
   pvId: string,
   kind: string,
 ): SyncRow | null {
-  return db.prepare<[string, string, string], SyncRow>(
-    `SELECT accepted_generation_id, last_pull, error, base_revision
+  return (
+    db
+      .prepare<[string, string, string], SyncRow>(
+        `SELECT accepted_generation_id, last_pull, error, base_revision
        FROM sync_state
       WHERE project_id = ? AND project_version_id = ? AND entity_kind = ?`,
-  ).get(projectId, toStorageProjectVersionId(pvId), kind) ?? null;
+      )
+      .get(projectId, toStorageProjectVersionId(pvId), kind) ?? null
+  );
 }
 
 function parseStringArray(value: string | null): string[] {
@@ -185,23 +210,28 @@ function loadRequirementModel(
   if (!requirementSync?.accepted_generation_id) {
     return { available: false, requirements: [] };
   }
-  const snapshots = db.prepare<[string, string, string], SnapshotRow>(
-    `SELECT entity_key, payload
+  const snapshots = db
+    .prepare<[string, string, string], SnapshotRow>(
+      `SELECT entity_key, payload
        FROM base_snapshot
       WHERE project_id = ? AND project_version_id = ?
         AND entity_kind = 'requirement' AND generation_id = ?
       ORDER BY entity_key`,
-  ).all(
-    projectId,
-    toStorageProjectVersionId(pvId),
-    requirementSync.accepted_generation_id,
-  );
+    )
+    .all(
+      projectId,
+      toStorageProjectVersionId(pvId),
+      requirementSync.accepted_generation_id,
+    );
   const parsed: RequirementYamlV1[] = [];
   let corrupt = snapshots.length === 0;
   for (const snapshot of snapshots) {
     try {
       const validated = validateRequirement(JSON.parse(snapshot.payload));
-      if (!validated.success || snapshot.entity_key !== reqIdKey({ reqId: validated.data.id })) {
+      if (
+        !validated.success ||
+        snapshot.entity_key !== reqIdKey({ reqId: validated.data.id })
+      ) {
         corrupt = true;
         continue;
       }
@@ -210,10 +240,12 @@ function loadRequirementModel(
       corrupt = true;
     }
   }
-  const mappings = evidenceGeneration === null
-    ? []
-    : db.prepare<[string, string, string], MappingRow>(
-      `SELECT mapping.requirement_key, mapping.check_id, checks.code,
+  const mappings =
+    evidenceGeneration === null
+      ? []
+      : db
+          .prepare<[string, string, string], MappingRow>(
+            `SELECT mapping.requirement_key, mapping.check_id, checks.code,
               mapping.suppressed
          FROM requirement_check_mappings mapping
          JOIN verification_checks checks
@@ -224,23 +256,33 @@ function loadRequirementModel(
         WHERE mapping.project_id = ? AND mapping.project_version_id = ?
           AND mapping.generation_id = ?
         ORDER BY mapping.requirement_key, checks.code, mapping.check_id`,
-    ).all(projectId, toStorageProjectVersionId(pvId), evidenceGeneration);
-  const requirements = parsed.flatMap((requirement): VerdictRequirementInput[] => {
-    const aliases = new Set([requirement.id, reqIdKey({ reqId: requirement.id })]);
-    return requirement.verification.map((contract) => ({
-      requirementId: requirement.id,
-      tier: contract.tier,
-      required: contract.required,
-      mappedCheckIds: contract.check === null
-        ? []
-        : mappings
-          .filter((mapping) =>
-            aliases.has(mapping.requirement_key)
-            && mapping.suppressed === 0
-            && (mapping.code === contract.check || mapping.check_id === contract.check))
-          .map((mapping) => mapping.check_id),
-    }));
-  });
+          )
+          .all(projectId, toStorageProjectVersionId(pvId), evidenceGeneration);
+  const requirements = parsed.flatMap(
+    (requirement): VerdictRequirementInput[] => {
+      const aliases = new Set([
+        requirement.id,
+        reqIdKey({ reqId: requirement.id }),
+      ]);
+      return requirement.verification.map((contract) => ({
+        requirementId: requirement.id,
+        tier: contract.tier,
+        required: contract.required,
+        mappedCheckIds:
+          contract.check === null
+            ? []
+            : mappings
+                .filter(
+                  (mapping) =>
+                    aliases.has(mapping.requirement_key) &&
+                    mapping.suppressed === 0 &&
+                    (mapping.code === contract.check ||
+                      mapping.check_id === contract.check),
+                )
+                .map((mapping) => mapping.check_id),
+      }));
+    },
+  );
   return { available: !corrupt && parsed.length > 0, requirements };
 }
 
@@ -250,14 +292,16 @@ function loadAttestations(
   pvId: string,
   generation: string,
 ): Map<string, VerdictAttestationInput[]> {
-  const rows = db.prepare<[string, string, string], AttestationRow>(
-    `SELECT attestation_id, run_id, subject_digest, requirement_ids, check_ids,
+  const rows = db
+    .prepare<[string, string, string], AttestationRow>(
+      `SELECT attestation_id, run_id, subject_digest, requirement_ids, check_ids,
             result_refs, signer_identity, signature_verified,
             subject_matches_run, verified, created_at
        FROM attestations
       WHERE project_id = ? AND project_version_id = ? AND generation_id = ?
       ORDER BY created_at DESC, attestation_id DESC`,
-  ).all(projectId, toStorageProjectVersionId(pvId), generation);
+    )
+    .all(projectId, toStorageProjectVersionId(pvId), generation);
   const byRun = new Map<string, VerdictAttestationInput[]>();
   for (const row of rows) {
     const subjectDigest = normalizeDigest(row.subject_digest);
@@ -281,11 +325,16 @@ function loadAttestations(
   return byRun;
 }
 
-function requirementAliases(requirements: readonly VerdictRequirementInput[]): Map<string, string> {
+function requirementAliases(
+  requirements: readonly VerdictRequirementInput[],
+): Map<string, string> {
   const aliases = new Map<string, string>();
   for (const requirement of requirements) {
     aliases.set(requirement.requirementId, requirement.requirementId);
-    aliases.set(reqIdKey({ reqId: requirement.requirementId }), requirement.requirementId);
+    aliases.set(
+      reqIdKey({ reqId: requirement.requirementId }),
+      requirement.requirementId,
+    );
   }
   return aliases;
 }
@@ -300,8 +349,9 @@ function loadCandidates(
   if (generation === null) return [];
   const aliases = requirementAliases(requirements);
   const attestations = loadAttestations(db, projectId, pvId, generation);
-  const rows = db.prepare<[string, string, string], ResultRow>(
-    `SELECT result.result_id, result.requirement_key, result.check_id,
+  const rows = db
+    .prepare<[string, string, string], ResultRow>(
+      `SELECT result.result_id, result.requirement_key, result.check_id,
             result.tier, result.status, result.outcome, result.run_id,
             run.status AS run_status, run.firmware_digest,
             run.started_at, run.finished_at, result.executed_at,
@@ -316,28 +366,32 @@ function loadCandidates(
         AND result.generation_id = ? AND result.mapping_state = 'mapped'
         AND result.is_latest = 1 AND result.superseded_by IS NULL
       ORDER BY result.executed_at DESC, result.result_id DESC`,
-  ).all(projectId, toStorageProjectVersionId(pvId), generation);
+    )
+    .all(projectId, toStorageProjectVersionId(pvId), generation);
   return rows.flatMap((row): VerdictCandidateInput[] => {
     const requirementId = aliases.get(row.requirement_key);
     if (!requirementId || !TIERS.includes(row.tier as MatrixTier)) return [];
-    return [{
-      resultId: row.result_id,
-      requirementId,
-      tier: row.tier as MatrixTier,
-      mappingState: "mapped",
-      runId: row.run_id,
-      checkId: row.check_id,
-      outcome: row.outcome,
-      resultStatus: row.status,
-      runStatus: row.run_status,
-      firmwareDigest: normalizeDigest(row.firmware_digest),
-      runStartedAt: row.started_at,
-      runFinishedAt: row.finished_at,
-      resultExecutedAt: row.executed_at,
-      pulledAt: row.pulled_at,
-      superseded: row.superseded_by !== null,
-      attestations: row.run_id === null ? [] : (attestations.get(row.run_id) ?? []),
-    }];
+    return [
+      {
+        resultId: row.result_id,
+        requirementId,
+        tier: row.tier as MatrixTier,
+        mappingState: "mapped",
+        runId: row.run_id,
+        checkId: row.check_id,
+        outcome: row.outcome,
+        resultStatus: row.status,
+        runStatus: row.run_status,
+        firmwareDigest: normalizeDigest(row.firmware_digest),
+        runStartedAt: row.started_at,
+        runFinishedAt: row.finished_at,
+        resultExecutedAt: row.executed_at,
+        pulledAt: row.pulled_at,
+        superseded: row.superseded_by !== null,
+        attestations:
+          row.run_id === null ? [] : (attestations.get(row.run_id) ?? []),
+      },
+    ];
   });
 }
 
@@ -346,12 +400,14 @@ function mountedDigest(
   projectId: string,
   pvId: string,
 ): string | null {
-  const row = db.prepare<[string, string], MountRow>(
-    `SELECT artifact_hash, input_sha256
+  const row = db
+    .prepare<[string, string], MountRow>(
+      `SELECT artifact_hash, input_sha256
        FROM firmware_mounts
       WHERE project_id = ? AND project_version_id = ?
       ORDER BY pulled_at DESC LIMIT 1`,
-  ).get(projectId, toStorageProjectVersionId(pvId));
+    )
+    .get(projectId, toStorageProjectVersionId(pvId));
   return normalizeDigest(row?.artifact_hash ?? row?.input_sha256 ?? null);
 }
 
@@ -360,7 +416,12 @@ export async function getOtaVerdict(
   pvId: string,
   digest?: string,
 ): Promise<VerdictResult> {
-  const evidenceSync = syncRow(deps.db, deps.projectId, pvId, "verificationRun");
+  const evidenceSync = syncRow(
+    deps.db,
+    deps.projectId,
+    pvId,
+    "verificationRun",
+  );
   const generation = evidenceSync?.accepted_generation_id ?? null;
   const model = loadRequirementModel(deps.db, deps.projectId, pvId, generation);
   const currentMountedDigest = mountedDigest(deps.db, deps.projectId, pvId);
@@ -407,7 +468,8 @@ export function projectFrozenVerdict(
   verdictId: string,
   result: VerdictResult,
 ): FrozenVerdictProjection {
-  if (result.firmwareDigest === null) throw new Error("FIRMWARE_DIGEST_UNAVAILABLE");
+  if (result.firmwareDigest === null)
+    throw new Error("FIRMWARE_DIGEST_UNAVAILABLE");
   const cache = syncRow(db, projectId, result.pvId, "verificationRun");
   const blockers = result.evidence
     .filter((entry) => entry.required && entry.state !== "proven")
@@ -416,20 +478,28 @@ export function projectFrozenVerdict(
     projectId,
     projectVersionId: result.pvId,
     id: verdictId,
-    verdict: result.verdict === "SAFE_TO_OTA"
-      ? "green"
-      : result.verdict === "NOT_SAFE" ? "red" : "amber",
+    verdict:
+      result.verdict === "SAFE_TO_OTA"
+        ? "green"
+        : result.verdict === "NOT_SAFE"
+          ? "red"
+          : "amber",
     firmwareSha256: result.firmwareDigest,
     required: result.required,
     proven: result.proven,
     evidenceIds: result.evidence.flatMap((entry) =>
-      entry.resultId ? [entry.resultId] : []),
+      entry.resultId ? [entry.resultId] : [],
+    ),
     reasons: [
       ...result.issues.map((issue) => `${issue.code}: ${issue.message}`),
       ...blockers,
     ],
     cache: {
-      state: cache?.error ? "stale" : cache?.accepted_generation_id ? "fresh" : "empty",
+      state: cache?.error
+        ? "stale"
+        : cache?.accepted_generation_id
+          ? "fresh"
+          : "empty",
       asOf: cache?.last_pull ?? null,
       message: cache?.error ?? null,
       acceptedGenerationId: cache?.accepted_generation_id ?? null,
